@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository contains a browser-first, installable 3D incremental city simulation.
+This repository contains **Idle City**, a browser-first, installable 3D incremental city simulation.
 
 The game uses:
 
@@ -14,15 +14,32 @@ The game uses:
 - Playwright
 - `vite-plugin-pwa`
 
-The game presents a voxel-style virtual city whose citizens and developers act autonomously. The player influences the simulation through broad district seeds and simulation upgrades rather than direct building placement or unit micromanagement.
+The player places broad district seeds and purchases simulation upgrades. Citizens, developers, construction, travel, and growth are autonomous.
 
-Read `docs/design.md` for gameplay design and `docs/architecture.md` for technical architecture before making broad changes.
+Read `docs/design.md` and `docs/architecture.md` before broad changes.
+
+---
+
+## Repository Truth
+
+Inspect the current checkout and tests before acting.
+
+Do not infer that a planned feature exists because it appears in:
+
+- `docs/design.md`
+- a roadmap
+- a prompt
+- an issue
+- an earlier conversation
+- an uncommitted agent run
+
+The current branch is the source of truth for implementation state.
+
+At the time this file was updated, the committed baseline includes deterministic spatial demand. District seed work may exist on a later branch, but agents must inspect rather than assume.
 
 ---
 
 ## Repository Layout
-
-Expected high-level structure:
 
 ```text
 /
@@ -45,99 +62,106 @@ Expected high-level structure:
 └── package.json
 ```
 
-Keep gameplay design documentation in `docs/design.md`.
+Use:
 
-Keep this file at the repository root. Add narrower `AGENTS.md` files inside subdirectories only when those directories need additional instructions that should override or supplement this file.
+- `docs/design.md` for player-facing mechanics and balance goals.
+- `docs/architecture.md` for state ownership, loops, data flow, and technical decisions.
+- `README.md` for setup, commands, and current capabilities.
+- `AGENTS.md` for coding-agent constraints.
 
 ---
 
-## Architectural Boundaries
+## Dependency Direction
 
 The intended dependency direction is:
 
 ```text
-shared
-  ↑
-simulation
-  ↑
-renderer
-  ↑
-game
+shared <- simulation <- renderer <- game
+             ^
+             +-- balance-runner
 ```
 
-The balance runner may import `simulation` and `shared`.
+No package may introduce a reverse dependency without an intentional architecture change.
 
-### Simulation package
+### `packages/simulation`
 
-`packages/simulation` is the authoritative game model.
+The authoritative model.
 
 It must:
 
-- Run directly under Node.
-- Use deterministic fixed-step updates.
-- Use explicit seeded randomness.
-- Avoid Babylon.js imports.
-- Avoid DOM and browser-only APIs.
-- Avoid UI dependencies.
-- Avoid frame-time-dependent logic.
+- Run under Node without a browser.
+- Advance only through explicit fixed logical steps.
+- Own seeded randomness.
+- Avoid Babylon.js.
+- Avoid DOM and browser APIs.
+- Avoid wall-clock-dependent decisions.
 - Avoid `Math.random()`.
-- Expose serializable snapshots or equivalent read-only state.
+- Expose detached serializable snapshots.
 - Keep stable entity IDs.
-- Throw clear errors for invalid references and impossible states.
+- Validate references and impossible states.
+- Define explicit ordering and tie-breaking.
+- Remain usable by the headless balance runner.
 
-Do not move rendering convenience state into the simulation unless it is part of the authoritative logical model.
+### `packages/renderer`
 
-### Renderer package
+A downstream projection of snapshots.
 
-`packages/renderer` translates simulation snapshots into Babylon.js objects.
+It may own:
 
-It may:
-
-- Use Babylon.js.
-- Maintain interpolation state.
-- Maintain mesh, instance, material, camera, and effect state.
-- Use `NullEngine` for tests.
+- Babylon scenes
+- meshes and instances
+- materials
+- camera state
+- effects
+- interpolation
+- renderer-only caches
 
 It must not:
 
-- Decide authoritative citizen behavior.
-- Modify simulation state through render updates.
-- Use render transforms as logical positions.
-- Make simulation results depend on frame rate.
+- decide authoritative behavior,
+- generate authoritative IDs,
+- mutate simulation state,
+- mutate snapshots,
+- use transforms as logical positions,
+- make simulation results frame-rate dependent.
 
-### Game application
+### `apps/game`
 
-`apps/game` owns:
+Owns:
 
-- Browser startup
-- Main loop wiring
-- DOM-based UI
-- Input
+- browser startup
+- fixed-step loop wiring
+- DOM controls
+- input translation
 - PWA registration
-- Speed and pause controls
-- Connecting the simulation to the renderer
+- speed controls
+- command submission
+- connecting simulation snapshots to renderer
 
-Keep substantial simulation rules out of the application package.
+Keep substantial simulation rules out of the game application.
 
-### Shared package
+### `packages/shared`
 
-`packages/shared` contains small engine-independent utilities and types that are genuinely shared.
+Contains only small engine-independent primitives that are genuinely shared.
 
-Do not turn it into a miscellaneous dumping ground.
+Do not use it as a miscellaneous utility package.
 
-### Balance runner
+### `tools/balance-runner`
 
-`tools/balance-runner` must run headlessly and deterministically without Babylon.js, a browser, or a graphical display.
+Must:
 
-It should produce machine-readable output and deterministic hashes suitable for regression testing.
+- run headlessly,
+- import no Babylon.js,
+- produce machine-readable stable output,
+- run deterministic scenarios,
+- report invariant failures,
+- support regression and balance analysis.
 
 ---
 
-## Simulation Rules
+## Fixed-Step Simulation
 
-Use a discrete fixed-step simulation.
-
-The render loop and simulation loop are separate:
+Simulation and rendering are separate:
 
 ```text
 Simulation:
@@ -145,186 +169,492 @@ Simulation:
 
 Rendering:
     requestAnimationFrame
-    interpolation between previous and current logical state
+    interpolation between snapshots
 ```
 
-A visual entity may store renderer-owned interpolation data such as:
+Each citizen moves at most one logical navigation cell per tick unless the design is deliberately revised.
 
-```ts
-interface RenderTransform {
-  previousPosition: Vec3;
-  currentPosition: Vec3;
-}
-```
-
-Do not expose interpolation progress to simulation code.
+Interpolation progress belongs only to the renderer.
 
 When adding simulation behavior:
 
-1. Define the logical state transition.
-2. Make it deterministic.
-3. Add focused unit tests.
-4. Add invariants for invalid state.
-5. Expose enough snapshot data for rendering and debugging.
-6. Add or update headless metrics when the behavior affects balance.
+1. Define the authoritative transition.
+2. Define ordering and tie-breaking.
+3. Make it deterministic.
+4. Add focused tests.
+5. Add invalid-state invariants.
+6. Expose only necessary snapshot state.
+7. Update headless metrics and scenarios.
+8. Verify repeated-run equality.
 
 ---
 
-## Gameplay Constraints
+## Player Actions and Scope
 
-The simplified design centers on two player actions:
+The main recurring player actions are:
 
 1. Place a district seed.
 2. Buy a simulation upgrade.
 
-Initial district seeds:
+Starting seed kinds:
 
 - Living
 - Working
 - Services
 
-Autonomous systems should handle:
+Autonomous systems own:
 
-- Citizen schedules
-- Destination choice
-- Path selection
-- Building placement
-- Construction
-- Occupancy
-- Path and transit formation
-- Redevelopment
-- City expansion
+- citizen schedules
+- destination choice
+- path selection
+- building placement
+- construction
+- occupancy
+- traffic formation
+- redevelopment
+- city expansion
 
-Avoid reintroducing unnecessary planning layers such as detailed zoning, individual road placement, per-building approval, or frequent policy micromanagement unless `docs/design.md` is intentionally revised first.
+Do not reintroduce detailed zoning, individual road placement, building-by-building approval, or unit micromanagement without intentionally revising the design.
 
-The main city concepts presented to the player are:
+The primary city concepts are:
 
 - Space
 - Access
 - Activity
 
-Prefer visible behavioral changes over invisible percentage bonuses.
+Prefer visible behavioral changes over hidden percentage bonuses.
 
 ---
 
-## Voxel Rendering Guidelines
+## Authoritative Commands
 
-The visual style should clearly resemble a simulated virtual environment.
+Player intent enters the simulation through explicit validated commands.
+
+Examples:
+
+- `placeDistrictSeed(...)`
+- future upgrade-purchase commands
+
+Command rules:
+
+- Validate entirely in simulation.
+- Return structured accepted/rejected results.
+- Centralize costs and unlock rules.
+- Rejected commands must be mutation-free.
+- Rejected commands must not consume RNG or IDs.
+- The UI must not duplicate authoritative validation.
+- Identical commands at identical ticks must replay identically.
+
+Avoid a generic command framework until multiple commands clearly require one.
+
+---
+
+## Fine-Grained Logical Grid
+
+The logical navigation grid is intentionally finer than the visible building scale.
+
+A typical small building should occupy approximately `5 × 5` logical cells. Larger buildings may occupy larger rectangles. Citizens occupy and move over individual logical cells.
+
+Keep three coordinate concepts separate:
+
+1. **Logical grid coordinates**
+   - authoritative simulation positions
+   - used for movement, occupancy, entrances, demand, and placement
+
+2. **Building/project footprints**
+   - authoritative rectangles or explicit logical-cell regions
+   - cover multiple navigation cells
+
+3. **Babylon world coordinates**
+   - renderer-owned projections
+   - derived through centralized conversion functions
+
+Do not assume one logical cell equals one Babylon world unit.
+
+A reasonable initial scale is approximately:
+
+- logical map: `60 × 50`
+- logical cell: `0.25` world units
+- home: `5 × 5` cells
+- workplace: `7 × 7` cells
+
+These are starting points, not scattered literals. Keep chosen values centralized and documented.
+
+---
+
+## Building and Project Footprints
+
+Use one authoritative footprint representation.
+
+Prefer a rectangle such as:
+
+```ts
+interface GridRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+```
+
+Derive occupied cells in stable row-major order.
+
+Do not store several redundant authoritative forms—such as anchor, center, dimensions, and occupied cells—unless consistency is enforced.
+
+Every building type must define or derive:
+
+- footprint dimensions
+- occupied cells
+- one or more entrance candidates
+- selected entrance
+- capacity
+- orientation if orientation is implemented
+
+All building footprint cells are non-walkable.
+
+Active construction projects reserve their entire footprint. Document the construction phase at which reserved cells become non-walkable.
+
+Placement validation must check the complete footprint, not only an anchor cell.
+
+Reject placement when:
+
+- any cell is out of bounds,
+- any cell overlaps a building,
+- any cell overlaps a reserved project,
+- any cell overlaps another reserved object,
+- the entrance is invalid,
+- the entrance is unreachable,
+- another documented buildability rule fails.
+
+Use stable ordering for:
+
+- footprint cells
+- candidate anchors
+- building types
+- orientations
+- entrance candidates
+- equally scored placements
+
+---
+
+## Entrances
+
+Citizens route to building entrances, not building centers or blocked interiors.
+
+An entrance should normally be:
+
+- outside the blocked footprint,
+- orthogonally adjacent to the perimeter,
+- in bounds,
+- walkable,
+- reachable from surrounding walkable space.
+
+Citizens must never occupy blocked building-interior cells.
+
+It is acceptable before local collision avoidance is implemented for multiple inactive citizens to share an entrance cell. Once reservations are introduced, entrance throughput and queue semantics must be explicit.
+
+Access and planned trip distance should use entrance-to-entrance travel, not arbitrary building-center distance.
+
+Demand proximity should use a documented spatial reference such as:
+
+- nearest entrance,
+- distance to footprint,
+- or another intentionally chosen measure.
+
+---
+
+## Pathfinding
+
+Pathfinding operates over individual logical cells.
+
+It must:
+
+- accept or derive static walkability,
+- block complete building footprints,
+- block relevant project footprints,
+- leave valid entrances walkable,
+- use explicit deterministic neighbor ordering,
+- return adjacent moves,
+- remain in bounds,
+- handle no-path cases explicitly,
+- avoid Babylon.js and render transforms.
+
+The current pathfinder's walkability callback is an appropriate seam. Do not replace it with a broad navigation framework without need.
+
+Do not initially treat every citizen's current cell as a permanent global pathfinding obstacle. Doing so causes excessive replanning, oscillation, and deadlock.
+
+---
+
+## Traffic Development Stages
+
+Implement citizen traffic in stages.
+
+### Stage 1: Route usage
+
+Record deterministic logical edge or cell traversal usage.
+
+Prefer edge usage when direction and corridors matter.
+
+Requirements:
+
+- canonical stable keys,
+- bounded history,
+- logical-tick timing,
+- stable snapshot ordering,
+- no wall-clock decay.
+
+### Stage 2: Congestion-aware long-range routing
+
+Use historical traffic as a bounded path cost.
+
+Prefer integer costs to reduce floating-point ambiguity.
+
+Requirements:
+
+- base positive movement cost,
+- bounded congestion penalty,
+- explicit tie-breaking,
+- route calculation normally at trip start,
+- no per-tick global replanning,
+- current citizen positions are still not static obstacles.
+
+### Stage 3: Local movement reservations
+
+When immediate collision avoidance is implemented, use:
+
+1. proposal,
+2. resolution,
+3. simultaneous commit.
+
+Do not mutate citizens sequentially in a way that makes results depend on array order.
+
+Suggested conflict priority:
+
+1. greater wait age,
+2. fewer remaining route cells,
+3. earlier trip start,
+4. stable citizen ID.
+
+Define:
+
+- target-cell conflict policy,
+- opposite-direction edge-swap policy,
+- queue behavior,
+- anti-starvation behavior,
+- bounded deadlock recovery,
+- replan threshold.
+
+Do not add continuous crowd physics unless the design is intentionally changed.
+
+---
+
+## Demand, Indicators, and Data
+
+The simulation currently exposes:
+
+- Space
+- Access
+- Activity
+- Data
+- spatial Living, Working, and Services demand
+
+Demand cells must:
+
+- cover the logical grid,
+- use stable row-major order,
+- contain finite bounded values,
+- expose stable totals,
+- remain detached in snapshots.
+
+District seed influence should enter through authoritative simulation state and pure demand calculations.
+
+Data:
+
+- is authoritative,
+- changes only in logical simulation transitions,
+- uses centralized activity values and costs,
+- uses deterministic rounding,
+- must never depend on rendering or wall-clock timing.
+
+---
+
+## Autonomous Developers and Construction
+
+Developer evaluation must:
+
+- run on a fixed cadence,
+- enumerate candidates in stable order,
+- validate complete footprints,
+- validate entrances,
+- use pure scoring where practical,
+- define exact tie-breaking,
+- avoid consuming RNG for rejected candidates,
+- save a player-readable reason.
+
+Construction projects must:
+
+- own stable IDs,
+- reserve complete footprints,
+- advance through tick-based phases,
+- eventually complete or fail explicitly,
+- create buildings with matching footprints and entrances,
+- expose enough state for rendering and explanation.
+
+Do not add demolition, conversion, redevelopment, or transit until the base build loop works.
+
+---
+
+## Population and Occupancy
+
+Population growth must require compatible available capacity.
+
+Rules:
+
+- home and workplace references must exist,
+- references must match building types,
+- occupancy must not exceed capacity,
+- assignments use documented spatial cost,
+- equal assignments use stable tie-breaking,
+- population respects a configured cap,
+- citizen IDs are stable,
+- existing citizens are not silently reassigned unless relocation is the task.
+
+Footprint area does not automatically equal capacity.
+
+---
+
+## Rendering Guidelines
+
+The visual style should use procedural voxel-like geometry, reusable modules, instances, grid lines, holograms, and clear silhouettes.
 
 Prefer:
 
-- Procedural geometry
-- Reusable voxel modules
-- Thin instances or instances for repeated objects
-- Chunk or combined meshes for static completed structures
-- Individual voxels during visible construction
-- Glowing traces, grid lines, holograms, and wireframes
-- Simple materials and lighting
-- Clear silhouettes
-- Scalable levels of visual detail
+- one ground mesh or chunked ground,
+- grid materials or shaders,
+- combined completed-building meshes,
+- thin instances for repeated details,
+- individual instanced voxels during construction,
+- dynamic overlays only for relevant cells/edges.
 
-Do not create one Babylon.js mesh per permanent voxel in large completed buildings.
+Do not create one permanent Babylon mesh per logical navigation cell on a large map.
 
-A useful strategy is:
+Do not create one permanent mesh per voxel in completed large buildings.
+
+Centralize logical-to-world coordinate conversion.
+
+Dynamic renderer layers should reconcile by stable ID:
 
 ```text
-Logical building:
-    voxel or modular occupancy representation
-
-Under construction:
-    visible instanced voxel blocks
-
-Completed:
-    combined or chunked mesh
-
-Repeated details:
-    thin instances
+renderer-only IDs -> dispose
+snapshot-only IDs -> create
+shared IDs        -> update
 ```
 
-Avoid external art assets unless the task explicitly requires them.
+Repeated updates with an unchanged snapshot must not duplicate resources.
+
+Use `NullEngine` for renderer tests where possible.
 
 ---
 
-## UI and Input Guidelines
+## UI and Input
 
 The shipped interaction model is mouse- and touch-only.
 
-Use ordinary accessible DOM controls layered over the Babylon.js canvas.
+Use accessible DOM controls over the Babylon canvas.
 
-Required characteristics:
+Requirements:
 
-- Large touch targets
-- Stable accessible names
-- No required keyboard input
-- No numeric up/down selectors
-- No text entry for ordinary gameplay
-- Menus and cards usable at mobile viewport sizes
-- Pointer and touch input tested through Playwright
+- large touch targets,
+- stable accessible names,
+- no required keyboard input,
+- no text entry for ordinary play,
+- no numeric steppers,
+- mobile viewport support,
+- pointer and touch Playwright coverage,
+- plain-language command rejection,
+- `aria-live` for important status.
 
-Babylon.js should render the city. HTML and CSS should render menus, cards, indicators, and inspection panels.
+Babylon renders the city. HTML/CSS renders menus, cards, indicators, and inspection panels.
 
-Keyboard shortcuts may exist for developer-only debugging, but core gameplay must not require them.
+Pointer-to-logical-grid conversion must use centralized coordinate rules and must not make meshes authoritative.
 
 ---
 
-## Testing Requirements
+## Testing
 
-Every nontrivial change should include the smallest meaningful test at the correct layer.
+Every nontrivial change needs the smallest meaningful test at the correct layer.
 
 ### Unit tests
 
 Use Vitest for:
 
-- Seeded randomness
-- Pathfinding
-- Schedule transitions
-- Destination scoring
-- Developer scoring
-- Serialization
-- Deterministic snapshots and hashes
-- Economy calculations
-- Invariants
+- seeded randomness
+- pathfinding
+- footprints
+- entrances
+- placement validation
+- demand
+- command rejection
+- destination scoring
+- developer scoring
+- construction phases
+- occupancy
+- traffic costs
+- movement conflict resolution
+- serialization
+- stable hashes
+- economy calculations
+- invariants
 
 ### Simulation integration tests
 
-Run the pure simulation for many ticks and verify:
+Verify:
 
-- No exceptions
-- Stable references
-- In-bounds positions
-- Valid routes
-- Deterministic replay
-- No impossible negative counts
-- No permanently invalid agent state
-- Expected long-run behavior
+- no exceptions
+- unique stable IDs
+- valid references
+- in-bounds positions
+- no building-interior citizen positions
+- valid adjacent routes
+- valid entrances
+- no overlap
+- capacity respected
+- deterministic replay
+- no negative counts
+- no permanently invalid agent state
+- long-run progress
 
 ### Renderer tests
 
-Use Babylon.js `NullEngine` where possible.
+Use `NullEngine` where possible.
 
 Test:
 
-- Scene creation and disposal
-- Snapshot-to-render synchronization
-- Instance lifecycle
-- Interpolation targets
-- No mutation of simulation state
+- scene creation/disposal
+- snapshot reconciliation
+- entity creation/removal
+- interpolation
+- footprint dimensions
+- project phases
+- no duplicate resources
+- no snapshot mutation
+- bounded ground mesh count
 
-### End-to-end tests
+### E2E tests
 
-Use Playwright for browser-visible behavior:
+Use Playwright for:
 
-- App startup
-- No unexpected console errors
-- Canvas presence
-- Pause, normal speed, and fast speed
-- Reset
-- Seed placement when implemented
-- Upgrade purchase when implemented
-- Touch-sized viewport behavior
-- Save/load when implemented
-
-Capture traces or screenshots on failure.
+- startup
+- no console errors
+- canvas
+- speed controls
+- reset
+- seed placement
+- touch-sized viewport
+- construction visibility
+- dynamic population
+- traffic overlay when implemented
+- upgrades and saves only when implemented
 
 Do not replace deterministic simulation tests with screenshot tests.
 
@@ -332,44 +662,44 @@ Do not replace deterministic simulation tests with screenshot tests.
 
 ## Validation Commands
 
-Before completing a change, run the relevant commands from the repository root.
+Run focused tests first, then the full relevant suite.
 
-Expected commands:
+Expected root commands:
 
 ```bash
-npm run typecheck
-npm run lint
 npm run format:check
-npm run test
+npm run lint
+npm run typecheck
+npm test
 npm run build
-npm run sim:run -- --seed 1234 --ticks 1000
 npm run test:e2e
+npm run sim:run -- --seed 1234 --ticks 1000
 npm run validate
 ```
 
-For a small localized change, run focused tests first, then the full relevant suite.
+When deterministic behavior changes:
 
-When modifying deterministic behavior, run the same headless command at least twice and confirm the determinism hash matches.
+- run the same headless command at least twice,
+- compare the complete JSON,
+- confirm the hash matches,
+- repeat important named scenarios.
 
-Do not claim a command passed unless it was actually run successfully.
+Do not claim a command passed unless it actually ran successfully.
 
-If an environment limitation prevents a command from running, report:
+Report exact environmental limitations and unverified items.
 
-- The exact command
-- The exact limitation
-- What was still validated
-- What remains unverified
+### Windows PowerShell command shims
 
-### Windows PowerShell Command Shims
-
-When commands run under Windows PowerShell, invoke Node.js package-manager commands through their Windows command shims:
+Under Windows PowerShell, use:
 
 ```text
 npm.cmd
 npx.cmd
 ```
 
-For example:
+from the first package-manager command.
+
+Examples:
 
 ```powershell
 npm.cmd ci
@@ -378,94 +708,100 @@ npm.cmd test
 npx.cmd playwright install chromium
 ```
 
-Do not invoke bare `npm` or `npx` from PowerShell. PowerShell may resolve them to `npm.ps1` or `npx.ps1`, which can be blocked by the machine execution policy.
+Do not first attempt bare `npm` or `npx`.
 
-Do not change the PowerShell execution policy, registry, user profile, or machine configuration to work around this restriction.
+Do not change:
+
+- PowerShell execution policy,
+- registry,
+- user profile,
+- machine policy
+
+to work around `npm.ps1` or `npx.ps1`.
 
 Platform rule:
 
-* On Windows PowerShell, use `npm.cmd` and `npx.cmd`.
-* On macOS, Linux, or non-PowerShell shells, use `npm` and `npx` normally.
-* Once the environment is identified as Windows PowerShell, use the `.cmd` form from the first package-manager command rather than attempting the `.ps1` launcher and retrying after failure.
+- Windows PowerShell: `npm.cmd`, `npx.cmd`
+- Other shells: `npm`, `npx`
 
-When reporting commands, record the command that was actually executed, including the `.cmd` suffix.
-
----
-
-## Coding Style
-
-- Use TypeScript strict mode.
-- Avoid implicit `any`.
-- Prefer explicit domain types.
-- Prefer small modules with clear ownership.
-- Avoid broad singleton state.
-- Avoid global mutable state.
-- Avoid dependency-injection frameworks.
-- Avoid an ECS framework unless the existing architecture has deliberately adopted one.
-- Avoid premature optimization.
-- Avoid speculative abstraction.
-- Prefer pure functions for scoring and state transitions.
-- Keep public APIs narrow.
-- Use comments for invariants and non-obvious reasoning, not to narrate obvious code.
-- Preserve cross-platform compatibility.
-- Prefer Node scripts over shell-specific scripts.
-- Do not commit generated output, build artifacts, browser profiles, or temporary files.
-
-Use descriptive names tied to the game domain rather than generic names such as `Manager`, `Helper`, or `Util`.
+Report the command actually executed, including `.cmd`.
 
 ---
 
 ## Determinism
 
-Determinism is a core requirement, not an optional optimization.
+Determinism is a core requirement.
 
-When adding randomness:
+When adding decisions:
 
-- Pass an explicit RNG or seed-derived stream.
-- Never use `Math.random()` in simulation code.
-- Define iteration order where object or map ordering could matter.
-- Avoid wall-clock time in simulation decisions.
-- Avoid floating-point comparisons that depend on platform-specific accumulation where practical.
-- Keep serialization ordering stable when it contributes to hashes.
-- Include relevant state in deterministic hashes.
-- Add a regression test.
+- define input state,
+- define candidate order,
+- define tie-breaking,
+- define rounding,
+- define RNG consumption order if RNG is necessary.
 
-If changing a determinism hash intentionally, explain why in the change summary.
+Never:
+
+- use `Math.random()` in simulation,
+- use wall-clock time,
+- depend on render frequency,
+- depend on incidental object iteration,
+- depend on renderer object order,
+- consume RNG for rejected/no-op operations without documenting it.
+
+Prefer:
+
+- sorted arrays,
+- stable entity IDs,
+- integer costs,
+- fixed logical windows,
+- explicit comparators,
+- deterministic serialization.
+
+If a hash changes intentionally, explain which authoritative state or transition changed.
+
+---
+
+## Coding Style
+
+- TypeScript strict mode
+- no implicit `any`
+- explicit domain types
+- small modules with clear ownership
+- narrow public APIs
+- pure functions for scoring and transitions where practical
+- no broad singleton state
+- no global mutable state
+- no dependency-injection framework
+- no ECS unless deliberately adopted
+- no speculative generic framework
+- no premature optimization
+- comments for invariants and non-obvious reasoning
+- descriptive domain names
+- Node scripts over shell-specific scripts
+- no generated artifacts committed
+
+Avoid generic names such as `Manager`, `Helper`, or `Util`.
 
 ---
 
 ## Performance
 
-Optimize only after measuring, but preserve scalability in design.
+Measure before optimizing, but preserve scalable structures.
 
 Prefer:
 
-- Data-oriented iteration for large homogeneous agent sets where justified
-- Spatial indexing for local queries
-- Staggered AI updates when behavior permits
-- Aggregation for distant or off-screen activity
-- Instanced rendering
-- Reusable allocations in hot paths
-- Headless benchmarks for simulation changes
+- bounded renderer mesh counts,
+- instances/thin instances,
+- stable spatial occupancy views,
+- data-oriented loops where justified,
+- reusable allocations in hot paths,
+- staggered AI updates,
+- headless scenarios and benchmarks.
 
 Do not compromise correctness or determinism for speculative performance.
 
-When optimizing, add or update a benchmark and verify behavior remains identical.
-
----
-
-## Documentation
-
-Update documentation when behavior, commands, architecture, or project structure changes.
-
-Use:
-
-- `docs/design.md` for player-facing mechanics, progression, balance goals, and game rules.
-- `docs/architecture.md` for dependency boundaries, loops, state ownership, rendering synchronization, and technical decisions.
-- `README.md` for setup, common commands, project overview, and current capabilities.
-- `AGENTS.md` for coding-agent instructions.
-
-Do not duplicate large sections across all documents. Link to the authoritative document.
+A finer logical grid must not imply one render object per cell.
 
 ---
 
@@ -473,74 +809,81 @@ Do not duplicate large sections across all documents. Link to the authoritative 
 
 For each task:
 
-1. Inspect the relevant files and existing tests.
-2. Read the applicable sections of `docs/design.md` and `docs/architecture.md`.
+1. Inspect current files, branch, and tests.
+2. Read relevant design and architecture sections.
 3. Identify the smallest coherent implementation.
-4. Preserve package boundaries.
-5. Implement the change.
-6. Add or update tests.
-7. Run focused validation.
-8. Run broader validation appropriate to the change.
-9. Inspect `git diff`.
-10. Remove generated or accidental files.
-11. Report what changed and what was verified.
+4. State authoritative data and ordering.
+5. Preserve package boundaries.
+6. Implement.
+7. Add focused tests.
+8. Add/update invariants and balance scenarios.
+9. Run focused validation.
+10. Run the full relevant suite.
+11. Repeat deterministic scenarios.
+12. Inspect `git diff` and `git status`.
+13. Remove generated/accidental files.
+14. Report exact results.
 
-Do not stop after writing a plan when implementation was requested.
+Do not stop at a plan when implementation was requested.
 
-Do not ask for confirmation when a reasonable implementation choice can be made from existing design and architecture documents.
+Do not ask for confirmation when a reasonable decision can be made from current code and docs.
 
 ---
 
 ## Git Practices
 
-- Keep changes scoped to the task.
+- Keep changes scoped.
 - Do not rewrite unrelated code.
 - Do not modify global Git configuration.
 - Do not force-push.
 - Do not commit secrets.
-- Do not commit generated build directories.
-- Do not silently update dependencies unless required by the task.
-- Explain intentional lockfile changes.
-- Keep `git status` clean except for intentional changes.
+- Do not commit generated output.
+- Do not silently update dependencies.
+- Explain lockfile changes.
+- Keep status clean except intentional changes.
 
-When a repository ownership warning prevents Git commands, use a repository-local or one-command safe-directory override rather than changing global Git configuration.
+For repository ownership warnings, use a repository-local or one-command safe-directory override rather than global configuration.
 
 ---
 
 ## Scope Discipline
 
-Do not implement future systems merely because the architecture anticipates them.
+Unless explicitly requested, defer:
 
-Unless explicitly requested, avoid adding:
+- multiplayer
+- backend services
+- cloud saves
+- continuous crowd physics
+- transit before walking traffic works
+- detailed business finance
+- complex voxel meshing
+- Capacitor/desktop wrappers
+- large UI frameworks
+- external art pipelines
+- audio
+- prestige before the base loop
+- advanced redevelopment
+- worker threads before measurement
 
-- Multiplayer
-- Backend services
-- Cloud saves
-- Detailed traffic physics
-- Citizen collision avoidance
-- Complex voxel meshing
-- Capacitor packaging
-- Desktop wrappers
-- Large UI frameworks
-- External art pipelines
-- Audio systems
-- Detailed economy simulation
-- Prestige before the base loop is proven
-
-Build vertical slices that demonstrate working behavior and remain testable.
+Build tested vertical slices.
 
 ---
 
 ## Completion Report
 
-At the end of an implementation task, report:
+Report:
 
-- What changed
-- Important architectural decisions
-- Tests added or updated
-- Commands run
-- Validation results
-- Remaining limitations
-- The next logical task, when useful
+- what changed,
+- architectural decisions,
+- ordering/tie-breaking,
+- files changed,
+- tests added,
+- scenarios added,
+- commands run,
+- exact results,
+- repeated-run comparison,
+- intentional hash changes,
+- remaining limitations,
+- one next logical task.
 
-Keep the report factual. Do not state that something works unless it was tested or directly inspected.
+Keep the report factual.

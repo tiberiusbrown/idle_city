@@ -39,6 +39,20 @@ describe('balance runner', () => {
     }
   });
 
+  it('schedules Living and Working seed commands and reports rejections', () => {
+    for (const scenario of ['living-seed', 'working-seed'] as const) {
+      const first = runBalance({ seed: 2026, ticks: 120, scenario });
+      const second = runBalance({ seed: 2026, ticks: 120, scenario });
+      expect(first).toEqual(second);
+      expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+      expect(first.commandResults).toHaveLength(2);
+      expect(first.commandResults[0]?.result.accepted).toBe(true);
+      expect(first.commandResults[1]?.result.accepted).toBe(false);
+      expect(first.commandResults[1]?.result.reason).toMatch(/occupied|locked/);
+      expect(first.determinismHash).toBe(second.determinismHash);
+    }
+  });
+
   it('reports greater access pressure for long commutes than a compact city', () => {
     const longCommute = runBalance({ seed: 7, ticks: 120, scenario: 'long-commute' });
     const compact = runBalance({ seed: 7, ticks: 120, scenario: 'compact' });

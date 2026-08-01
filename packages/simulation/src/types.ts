@@ -3,6 +3,7 @@ import type { GridPosition } from '@idle-city/shared';
 export type BuildingType = 'home' | 'workplace';
 export type CitizenActivity = 'home' | 'commuting-to-work' | 'work' | 'commuting-home';
 export type DemandKind = 'living' | 'working' | 'services';
+export type DistrictSeedKind = 'living' | 'working' | 'services';
 
 export interface Building {
   readonly id: string;
@@ -22,6 +23,33 @@ export interface CitizenSnapshot {
   readonly route: readonly GridPosition[];
   readonly routeIndex: number;
 }
+
+export interface DistrictSeed {
+  readonly id: string;
+  readonly kind: DistrictSeedKind;
+  readonly position: GridPosition;
+}
+
+export interface PlaceDistrictSeedCommand {
+  readonly kind: DistrictSeedKind;
+  readonly position: GridPosition;
+}
+
+export type CommandRejectionReason =
+  'invalid-kind' | 'out-of-bounds' | 'occupied' | 'locked' | 'insufficient-data';
+
+export interface AcceptedCommandResult {
+  readonly accepted: true;
+  readonly seed: DistrictSeed;
+  readonly cost: number;
+}
+
+export interface RejectedCommandResult {
+  readonly accepted: false;
+  readonly reason: CommandRejectionReason;
+}
+
+export type CommandResult = AcceptedCommandResult | RejectedCommandResult;
 
 /**
  * Normalized city indicators. A value of 1 is healthy and 0 is the worst
@@ -59,6 +87,7 @@ export interface SimulationConfig {
   readonly activityDurationTicks?: number;
   readonly housingCapacity?: number;
   readonly workplaceCapacity?: number;
+  readonly startingData?: number;
 }
 
 export interface SimulationSnapshot {
@@ -74,12 +103,14 @@ export interface SimulationSnapshot {
   readonly averageTripDurationTicks: number;
   readonly metrics: CityMetrics;
   readonly demand: CityDemand;
+  readonly seeds: readonly DistrictSeed[];
   readonly buildings: readonly Building[];
   readonly citizens: readonly CitizenSnapshot[];
 }
 
 export interface Simulation {
   step(): void;
+  placeDistrictSeed(command: PlaceDistrictSeedCommand): CommandResult;
   getSnapshot(): SimulationSnapshot;
   getDeterminismHash(): string;
 }

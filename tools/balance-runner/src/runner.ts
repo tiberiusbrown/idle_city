@@ -1,7 +1,10 @@
 import {
+  DISTRICT_SEED_COSTS,
   createSimulation,
   type CityMetrics,
+  type CommandResult,
   type DemandTotals,
+  type PlaceDistrictSeedCommand,
   type SimulationConfig,
   type SimulationSnapshot,
 } from '@idle-city/simulation';
@@ -11,15 +14,45 @@ export const balanceScenarioNames = [
   'long-commute',
   'capacity-pressure',
   'compact',
+  'living-seed',
+  'working-seed',
 ] as const;
 
 export type BalanceScenarioName = (typeof balanceScenarioNames)[number];
 
-const scenarioConfigurations: Record<BalanceScenarioName, SimulationConfig> = {
-  baseline: {},
-  'long-commute': { width: 24, height: 24 },
-  'capacity-pressure': { housingCapacity: 4, workplaceCapacity: 4 },
-  compact: { width: 5, height: 5 },
+export interface ScheduledDistrictSeedCommand {
+  /** The simulation tick at which this command is applied; tick 0 is pre-step. */
+  readonly tick: number;
+  readonly command: PlaceDistrictSeedCommand;
+}
+
+interface BalanceScenarioDefinition {
+  readonly config: SimulationConfig;
+  readonly commands: readonly ScheduledDistrictSeedCommand[];
+}
+
+const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition> = {
+  baseline: { config: {}, commands: [] },
+  'long-commute': { config: { width: 24, height: 24 }, commands: [] },
+  'capacity-pressure': {
+    config: { housingCapacity: 4, workplaceCapacity: 4 },
+    commands: [],
+  },
+  compact: { config: { width: 5, height: 5 }, commands: [] },
+  'living-seed': {
+    config: { startingData: DISTRICT_SEED_COSTS.living },
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 3, y: 3 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 3, y: 3 } } },
+    ],
+  },
+  'working-seed': {
+    config: { startingData: DISTRICT_SEED_COSTS.working },
+    commands: [
+      { tick: 0, command: { kind: 'working', position: { x: 8, y: 6 } } },
+      { tick: 1, command: { kind: 'services', position: { x: 3, y: 3 } } },
+    ],
+  },
 };
 
 export function isBalanceScenarioName(value: string): value is BalanceScenarioName {
@@ -27,7 +60,16 @@ export function isBalanceScenarioName(value: string): value is BalanceScenarioNa
 }
 
 export function getBalanceScenarioConfig(scenario: BalanceScenarioName): SimulationConfig {
-  return { ...scenarioConfigurations[scenario] };
+  return { ...scenarioDefinitions[scenario].config };
+}
+
+export function getBalanceScenarioCommands(
+  scenario: BalanceScenarioName,
+): readonly ScheduledDistrictSeedCommand[] {
+  return scenarioDefinitions[scenario].commands.map(({ tick, command }) => ({
+    tick,
+    command: { ...command, position: { ...command.position } },
+  }));
 }
 
 export interface BalanceOptions {
@@ -35,6 +77,13 @@ export interface BalanceOptions {
   readonly ticks: number;
   readonly citizenCount?: number;
   readonly scenario?: BalanceScenarioName;
+  readonly commands?: readonly ScheduledDistrictSeedCommand[];
+}
+
+export interface BalanceCommandResult {
+  readonly tick: number;
+  readonly command: PlaceDistrictSeedCommand;
+  readonly result: CommandResult;
 }
 
 export interface BalanceSummary {
@@ -49,12 +98,20 @@ export interface BalanceSummary {
   readonly averageTripDurationTicks: number;
   readonly metrics: CityMetrics;
   readonly demandTotals: DemandTotals;
+  readonly commandResults: readonly BalanceCommandResult[];
   readonly invariantFailures: readonly string[];
   readonly determinismHash: string;
 }
 
 function inBounds(x: number, y: number, width: number, height: number): boolean {
-  return x >= 0 && y >= 0 && x < width && y < height;
+  return (
+    Number.isSafeInteger(x) &&
+    Number.isSafeInteger(y) &&
+    x >= 0 &&
+    y >= 0 &&
+    x < width &&
+    y < height
+  );
 }
 
 function adjacent(
@@ -78,6 +135,23 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     }
     if (!Number.isFinite(building.capacity) || building.capacity < 0) {
       fail(`building ${building.id} has invalid capacity`);
+    }
+  }
+
+  const seedIds = new Set<string>();
+  const seedCells = new Set<string>();
+  for (const seed of snapshot.seeds) {
+    if (seedIds.has(seed.id)) fail(`duplicate district seed id ${seed.id}`);
+    seedIds.add(seed.id);
+    if (!inBounds(seed.position.x, seed.position.y, snapshot.width, snapshot.height)) {
+      fail(`district seed ${seed.id} is out of bounds`);
+    }
+    const cellKey = `${String(seed.position.x)},${String(seed.position.y)}`;
+    if (seedCells.has(cellKey)) fail(`duplicate district seed cell ${cellKey}`);
+    seedCells.add(cellKey);
+    const seedKind: unknown = seed.kind;
+    if (seedKind !== 'living' && seedKind !== 'working' && seedKind !== 'services') {
+      fail(`district seed ${seed.id} has an unsupported kind`);
     }
   }
 
@@ -153,17 +227,46 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     throw new Error('ticks must be a non-negative safe integer.');
   const scenario = options.scenario ?? 'baseline';
   const scenarioConfig = getBalanceScenarioConfig(scenario);
+  const scheduledCommands = [
+    ...getBalanceScenarioCommands(scenario),
+    ...(options.commands ?? []),
+  ].map((scheduled, index) => ({ ...scheduled, order: index }));
+  for (const scheduled of scheduledCommands) {
+    if (!Number.isSafeInteger(scheduled.tick) || scheduled.tick < 0) {
+      throw new Error(
+        `Command schedule tick must be a non-negative safe integer; received ${String(scheduled.tick)}.`,
+      );
+    }
+  }
+  scheduledCommands.sort((left, right) => left.tick - right.tick || left.order - right.order);
   const simulation = createSimulation({
     ...scenarioConfig,
     seed: options.seed,
     ...(options.citizenCount === undefined ? {} : { citizenCount: options.citizenCount }),
   });
   const invariantFailures = new Set<string>();
+  const commandResults: BalanceCommandResult[] = [];
+  let nextScheduledCommand = 0;
+  const applyScheduledCommands = (): void => {
+    const currentTick = simulation.getSnapshot().tick;
+    while (nextScheduledCommand < scheduledCommands.length) {
+      const scheduled = scheduledCommands[nextScheduledCommand];
+      if (scheduled === undefined || scheduled.tick > currentTick) return;
+      const command: PlaceDistrictSeedCommand = {
+        kind: scheduled.command.kind,
+        position: { ...scheduled.command.position },
+      };
+      const result = simulation.placeDistrictSeed(command);
+      commandResults.push({ tick: currentTick, command, result });
+      nextScheduledCommand += 1;
+    }
+  };
   const recordInvariantFailures = (label: string, snapshot: SimulationSnapshot): void => {
     for (const failure of collectInvariantFailures(snapshot)) {
       invariantFailures.add(`${label}: ${failure}`);
     }
   };
+  applyScheduledCommands();
   recordInvariantFailures('initial', simulation.getSnapshot());
   for (let tick = 0; tick < options.ticks; tick += 1) {
     try {
@@ -173,6 +276,7 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
       invariantFailures.add(`tick ${String(tick + 1)}: ${message}`);
       break;
     }
+    applyScheduledCommands();
     recordInvariantFailures(`tick ${String(tick + 1)}`, simulation.getSnapshot());
   }
   const snapshot = simulation.getSnapshot();
@@ -188,6 +292,7 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     averageTripDurationTicks: snapshot.averageTripDurationTicks,
     metrics: snapshot.metrics,
     demandTotals: snapshot.demand.totals,
+    commandResults,
     invariantFailures: [...invariantFailures],
     determinismHash: simulation.getDeterminismHash(),
   };

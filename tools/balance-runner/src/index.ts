@@ -1,4 +1,9 @@
-import { isBalanceScenarioName, runBalance, type BalanceScenarioName } from './runner';
+import {
+  balanceScenarioNames,
+  isBalanceScenarioName,
+  runBalance,
+  type BalanceScenarioName,
+} from './runner';
 
 function integerArgument(name: string, fallback: number): number {
   const index = process.argv.indexOf(`--${name}`);
@@ -15,9 +20,7 @@ function scenarioArgument(): BalanceScenarioName {
   if (index === -1) return 'baseline';
   const raw = process.argv[index + 1];
   if (raw === undefined || !isBalanceScenarioName(raw)) {
-    throw new Error(
-      '--scenario requires one of baseline, long-commute, capacity-pressure, or compact.',
-    );
+    throw new Error(`--scenario requires one of ${balanceScenarioNames.join(', ')}.`);
   }
   return raw;
 }

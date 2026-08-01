@@ -55,7 +55,7 @@ npm run sim:run -- --seed 1234 --ticks 1000
 npm run sim:run -- --scenario long-commute --seed 1234 --ticks 1000
 ```
 
-The command prints one JSON object containing the scenario, seed, executed ticks, citizen count, completed trips and work activities, Data, demand totals, the three normalized city indicators, invariant failures, and a stable final-state hash. Named scenarios are `baseline`, `long-commute`, `capacity-pressure`, and `compact`; omitting `--scenario` preserves the baseline command. Repeating identical inputs must produce byte-identical JSON and the same hash.
+The command prints one JSON object containing the scenario, seed, executed ticks, citizen count, completed trips and work activities, Data, demand totals, the three normalized city indicators, scheduled command results, invariant failures, and a stable final-state hash. Named scenarios are `baseline`, `long-commute`, `capacity-pressure`, `compact`, `living-seed`, and `working-seed`; the seed scenarios schedule accepted and rejected placement commands. Omitting `--scenario` preserves the baseline command. Repeating identical inputs must produce byte-identical JSON and the same hash.
 
 ## Determinism and timing
 
@@ -63,8 +63,8 @@ All random decisions use an explicit `SeededRandom` instance. Never use `Math.ra
 
 ## Current limitations
 
-The slice uses a fully walkable rectangular grid, two static buildings, a simple alternating home/work schedule, direct grid paths, a deterministic spatial demand model, and deterministic Data plus Space/Access/Activity indicators. There are no Data purchases, saving, district placement, developer AI, traffic, collision avoidance, backend, audio, or wrapper packaging yet.
+The slice uses a fully walkable rectangular grid, two static buildings, a simple alternating home/work schedule, direct grid paths, deterministic district seed commands and demand influence, and deterministic Data plus Space/Access/Activity indicators. There are no browser seed controls, saving, developer AI, construction, traffic, collision avoidance, backend, audio, or wrapper packaging yet.
 
 ## Recommended next steps
 
-The next useful feature is district seed commands that influence the existing demand fields, followed by deterministic autonomous-developer decisions. Later work can add compact save-file versioning, worker-thread simulation, richer voxel batching, and Capacitor packaging without changing the authoritative-state boundary.
+The next useful feature is deterministic autonomous developer projects that consume the district-seed demand field. Later work can add compact save-file versioning, worker-thread simulation, richer voxel batching, and Capacitor packaging without changing the authoritative-state boundary.

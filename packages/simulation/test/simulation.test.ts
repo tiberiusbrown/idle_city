@@ -108,7 +108,12 @@ describe('simulation', () => {
 
   it('does not expose a rendering or frame-time input', () => {
     const simulation = createSimulation({ seed: 5 });
-    expect(Object.keys(simulation).sort()).toEqual(['getDeterminismHash', 'getSnapshot', 'step']);
+    expect(Object.keys(simulation).sort()).toEqual([
+      'getDeterminismHash',
+      'getSnapshot',
+      'placeDistrictSeed',
+      'step',
+    ]);
     for (let tick = 0; tick < 50; tick += 1) simulation.step();
     const expected = simulation.getDeterminismHash();
     const independentlyStepped = createSimulation({ seed: 5 });

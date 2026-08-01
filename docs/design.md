@@ -56,6 +56,8 @@ The three starting seed types are:
 - **Working** — encourages workplaces and job creation.
 - **Services** — encourages food, shopping, and basic leisure.
 
+The Step 2 simulation exposes all three kinds as domain values, but only Living and Working are currently unlocked. Services remains locked until service activities exist.
+
 Later upgrades may unlock additional specialized seeds:
 
 - Learning
@@ -339,7 +341,7 @@ The first simulation slice exposes each indicator as a deterministic normalized 
 
 The current slice generates Data when a citizen completes a work activity. Each completed activity contributes one activity unit multiplied by a bounded efficiency factor derived from the three indicators. A struggling city still receives at least half value, and generation is rounded to six decimal places so headless summaries remain compact and reproducible.
 
-The simulation also publishes a spatial demand field for the three starting activity kinds: Living, Working, and Services. Each grid cell contains normalized demand, and the snapshot includes aggregate totals. The initial field uses housing and workplace capacity shortage, local building saturation, travel pressure from Access, and nearby complementary uses. District seeds are not implemented yet; their future influence enters through a dedicated demand extension point.
+The simulation also publishes a spatial demand field for the three starting activity kinds: Living, Working, and Services. Each grid cell contains normalized demand, and the snapshot includes aggregate totals. The field uses housing and workplace capacity shortage, local building saturation, travel pressure from Access, nearby complementary uses, and accepted district-seed influence. A seed at Manhattan distance `d` from a cell contributes `max(0, 1 - d / max(1, width + height - 2))` to its matching demand kind. Contributions from matching seeds are summed, capped at `1`, and rounded to six decimal places before they are added to the cell's base demand. Demand cells remain in row-major `(y, x)` order.
 
 ## 6.2 Tap-to-Explain
 
@@ -409,7 +411,7 @@ Available:
 
 - Living seed
 - Working seed
-- Services seed
+- Services seed (locked until service activities exist)
 - Small buildings
 - Walking
 - Basic citizen schedules
@@ -513,7 +515,9 @@ data_per_tick =
 
 The efficiency factor should be bounded so a temporarily inefficient city still progresses.
 
-The simulation snapshot also reports accumulated Data, Data generated during the most recent tick, completed work activities, and average trip duration. These values are authoritative simulation state and are reused by the HUD and balance runner.
+The simulation snapshot also reports accumulated Data, Data generated during the most recent tick, completed work activities, average trip duration, and detached district seeds. These values are authoritative simulation state and are reused by the HUD and balance runner.
+
+The authoritative Step 2 seed costs are 10 Data for Living, 12 Data for Working, and 20 Data for Services. Living and Working are unlocked in this slice; Services remains locked until service activities exist. A placement command spends its cost once only after all validation succeeds.
 
 The city may internally simulate money, building costs, and business viability, but the player does not directly manage those systems.
 

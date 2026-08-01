@@ -13,10 +13,7 @@ export interface DemandCitizen {
   readonly workplaceBuildingId: string;
 }
 
-/**
- * A future district-seed system can provide a normalized additive influence
- * without changing the demand calculation or its cell ordering.
- */
+/** A normalized additive influence supplied by authoritative district seeds. */
 export type DemandSeedInfluence = (position: GridPosition, kind: DemandKind) => number;
 
 export interface DemandCalculationInput {

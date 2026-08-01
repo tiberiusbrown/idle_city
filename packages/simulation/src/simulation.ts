@@ -1,12 +1,18 @@
 import { positionsEqual, stableHash, type GridPosition } from '@idle-city/shared';
+import { getDistrictSeedCost, isDistrictSeedKindUnlocked } from './balance-rules';
 import { calculateCityDemand } from './demand';
+import { calculateDistrictSeedInfluence } from './district-seeds';
 import { findGridPath } from './pathfinding';
 import { SeededRandom } from './random';
 import type {
+  CommandResult,
   Building,
   CitizenActivity,
   CitizenSnapshot,
   CityMetrics,
+  DistrictSeed,
+  DistrictSeedKind,
+  PlaceDistrictSeedCommand,
   Simulation,
   SimulationConfig,
   SimulationSnapshot,
@@ -31,6 +37,7 @@ const defaults = {
   seed: 1,
   citizenCount: 10,
   activityDurationTicks: 3,
+  startingData: 0,
 } as const;
 
 function positiveInteger(name: string, value: number, minimum = 1): number {
@@ -45,6 +52,13 @@ function positiveInteger(name: string, value: number, minimum = 1): number {
 function nonNegativeInteger(name: string, value: number): number {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${name} must be a non-negative safe integer; received ${String(value)}.`);
+  }
+  return value;
+}
+
+function nonNegativeNumber(name: string, value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a finite non-negative number; received ${String(value)}.`);
   }
   return value;
 }
@@ -87,6 +101,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     'workplaceCapacity',
     config.workplaceCapacity ?? citizenCount,
   );
+  const startingData = roundData(
+    nonNegativeNumber('startingData', config.startingData ?? defaults.startingData),
+  );
   const random = new SeededRandom(seed);
   const homeBuilding: Building = {
     id: 'home-1',
@@ -117,8 +134,21 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   let completedTrips = 0;
   let completedActivities = 0;
   let totalTripDurationTicks = 0;
-  let data = 0;
+  let data = startingData;
   let dataGeneratedThisTick = 0;
+  const seeds: DistrictSeed[] = [];
+  let nextSeedId = 1;
+
+  const isDistrictSeedKind = (value: unknown): value is DistrictSeedKind =>
+    value === 'living' || value === 'working' || value === 'services';
+
+  const isInBounds = (position: GridPosition): boolean =>
+    Number.isSafeInteger(position.x) &&
+    Number.isSafeInteger(position.y) &&
+    position.x >= 0 &&
+    position.y >= 0 &&
+    position.x < width &&
+    position.y < height;
 
   const buildingById = (id: string): Building => {
     const building = buildings.find((candidate) => candidate.id === id);
@@ -240,7 +270,19 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       dataGeneratedThisTick,
       averageTripDurationTicks,
       metrics,
-      demand: calculateCityDemand({ width, height, buildings, citizens, metrics }),
+      demand: calculateCityDemand({
+        width,
+        height,
+        buildings,
+        citizens,
+        metrics,
+        seedInfluence: (position, kind) =>
+          calculateDistrictSeedInfluence({ width, height, seeds, position, kind }),
+      }),
+      seeds: seeds.map((districtSeed) => ({
+        ...districtSeed,
+        position: { ...districtSeed.position },
+      })),
       buildings: buildings.map((building) => ({ ...building, position: { ...building.position } })),
       citizens: citizens.map((citizen): CitizenSnapshot => ({
         id: citizen.id,
@@ -268,6 +310,45 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         dataGeneratedThisTick = roundData(activitiesCompletedThisTick * dataEfficiency(metrics));
         data = roundData(data + dataGeneratedThisTick);
       }
+    },
+    placeDistrictSeed(command: PlaceDistrictSeedCommand): CommandResult {
+      const requestedPosition = command.position;
+      if (
+        !Number.isSafeInteger(requestedPosition.x) ||
+        !Number.isSafeInteger(requestedPosition.y) ||
+        !isInBounds(requestedPosition)
+      ) {
+        return { accepted: false, reason: 'out-of-bounds' };
+      }
+
+      if (seeds.some((districtSeed) => positionsEqual(districtSeed.position, requestedPosition))) {
+        return { accepted: false, reason: 'occupied' };
+      }
+
+      const requestedKind = command.kind;
+      if (!isDistrictSeedKind(requestedKind)) {
+        return { accepted: false, reason: 'invalid-kind' };
+      }
+      if (!isDistrictSeedKindUnlocked(requestedKind)) {
+        return { accepted: false, reason: 'locked' };
+      }
+
+      const cost = getDistrictSeedCost(requestedKind);
+      if (data < cost) return { accepted: false, reason: 'insufficient-data' };
+
+      const districtSeed: DistrictSeed = {
+        id: `district-seed-${String(nextSeedId)}`,
+        kind: requestedKind,
+        position: { x: requestedPosition.x, y: requestedPosition.y },
+      };
+      seeds.push(districtSeed);
+      nextSeedId += 1;
+      data = roundData(data - cost);
+      return {
+        accepted: true,
+        seed: { ...districtSeed, position: { ...districtSeed.position } },
+        cost,
+      };
     },
     getSnapshot: snapshot,
     getDeterminismHash(): string {
