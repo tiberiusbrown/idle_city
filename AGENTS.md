@@ -360,6 +360,36 @@ If an environment limitation prevents a command from running, report:
 - What was still validated
 - What remains unverified
 
+### Windows PowerShell Command Shims
+
+When commands run under Windows PowerShell, invoke Node.js package-manager commands through their Windows command shims:
+
+```text
+npm.cmd
+npx.cmd
+```
+
+For example:
+
+```powershell
+npm.cmd ci
+npm.cmd run validate
+npm.cmd test
+npx.cmd playwright install chromium
+```
+
+Do not invoke bare `npm` or `npx` from PowerShell. PowerShell may resolve them to `npm.ps1` or `npx.ps1`, which can be blocked by the machine execution policy.
+
+Do not change the PowerShell execution policy, registry, user profile, or machine configuration to work around this restriction.
+
+Platform rule:
+
+* On Windows PowerShell, use `npm.cmd` and `npx.cmd`.
+* On macOS, Linux, or non-PowerShell shells, use `npm` and `npx` normally.
+* Once the environment is identified as Windows PowerShell, use the `.cmd` form from the first package-manager command rather than attempting the `.ps1` launcher and retrying after failure.
+
+When reporting commands, record the command that was actually executed, including the `.cmd` suffix.
+
 ---
 
 ## Coding Style
