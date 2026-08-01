@@ -39,17 +39,25 @@ describe('balance runner', () => {
     }
   });
 
-  it('schedules Living and Working seed commands and reports rejections', () => {
-    for (const scenario of ['living-seed', 'working-seed'] as const) {
+  it('schedules seed commands and reports final seed state plus rejections', () => {
+    for (const scenario of ['living-seed', 'working-seed', 'rejected-command'] as const) {
       const first = runBalance({ seed: 2026, ticks: 120, scenario });
       const second = runBalance({ seed: 2026, ticks: 120, scenario });
       expect(first).toEqual(second);
       expect(JSON.stringify(first)).toBe(JSON.stringify(second));
-      expect(first.commandResults).toHaveLength(2);
-      expect(first.commandResults[0]?.result.accepted).toBe(true);
-      expect(first.commandResults[1]?.result.accepted).toBe(false);
-      expect(first.commandResults[1]?.result.reason).toMatch(/occupied|locked/);
+      expect(first.seeds).toEqual(second.seeds);
       expect(first.determinismHash).toBe(second.determinismHash);
+      if (scenario === 'rejected-command') {
+        expect(first.seeds).toEqual([]);
+        expect(first.commandResults).toHaveLength(3);
+        expect(first.commandResults.every(({ result }) => !result.accepted)).toBe(true);
+      } else {
+        expect(first.seeds).toHaveLength(1);
+        expect(first.commandResults).toHaveLength(2);
+        expect(first.commandResults[0]?.result.accepted).toBe(true);
+        expect(first.commandResults[1]?.result.accepted).toBe(false);
+        expect(first.commandResults[1]?.result.reason).toMatch(/occupied|locked/);
+      }
     }
   });
 

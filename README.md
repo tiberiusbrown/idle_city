@@ -55,7 +55,7 @@ npm run sim:run -- --seed 1234 --ticks 1000
 npm run sim:run -- --scenario long-commute --seed 1234 --ticks 1000
 ```
 
-The command prints one JSON object containing the scenario, seed, executed ticks, citizen count, completed trips and work activities, Data, demand totals, the three normalized city indicators, scheduled command results, invariant failures, and a stable final-state hash. Named scenarios are `baseline`, `long-commute`, `capacity-pressure`, `compact`, `living-seed`, and `working-seed`; the seed scenarios schedule accepted and rejected placement commands. Omitting `--scenario` preserves the baseline command. Repeating identical inputs must produce byte-identical JSON and the same hash.
+The command prints one JSON object containing the scenario, seed, executed ticks, citizen count, completed trips and work activities, Data, demand totals, the three normalized city indicators, final seed state, scheduled command results, invariant failures, and a stable final-state hash. Named scenarios are `baseline`, `long-commute`, `capacity-pressure`, `compact`, `living-seed`, `working-seed`, and `rejected-command`; the seed scenarios schedule accepted and rejected placement commands. Omitting `--scenario` preserves the baseline command. Repeating identical inputs must produce byte-identical JSON and the same hash.
 
 ## Determinism and timing
 
@@ -67,4 +67,4 @@ The slice uses a fully walkable rectangular grid, two static buildings, a simple
 
 ## Recommended next steps
 
-The next useful feature is deterministic autonomous developer projects that consume the district-seed demand field. Later work can add compact save-file versioning, worker-thread simulation, richer voxel batching, and Capacitor packaging without changing the authoritative-state boundary.
+The next useful feature is the fine-grid building and project footprint model, including stable occupied-cell derivation and buildability rules. Developer project selection should follow that foundation. Later work can add compact save-file versioning, worker-thread simulation, richer voxel batching, and Capacitor packaging without changing the authoritative-state boundary.

@@ -73,6 +73,22 @@ describe('authoritative district seed commands', () => {
     ).toMatchObject({ accepted: true, seed: { id: 'district-seed-2' } });
   });
 
+  it('accepts a working seed and charges its centralized cost once', () => {
+    const simulation = createSimulation({ startingData: DISTRICT_SEED_COSTS.working + 1 });
+    const before = simulation.getSnapshot();
+
+    expect(simulation.placeDistrictSeed({ kind: 'working', position: { x: 4, y: 4 } })).toEqual({
+      accepted: true,
+      seed: {
+        id: 'district-seed-1',
+        kind: 'working',
+        position: { x: 4, y: 4 },
+      },
+      cost: DISTRICT_SEED_COSTS.working,
+    });
+    expect(simulation.getSnapshot().data).toBe(before.data - DISTRICT_SEED_COSTS.working);
+  });
+
   it('rejects insufficient Data without changing the random state', () => {
     const simulation = createSimulation();
     expectMutationFreeRejection(
@@ -182,6 +198,7 @@ describe('authoritative district seed commands', () => {
       left.step();
       right.step();
       expect(left.getSnapshot()).toEqual(right.getSnapshot());
+      expect(JSON.stringify(left.getSnapshot())).toBe(JSON.stringify(right.getSnapshot()));
       expect(left.getDeterminismHash()).toBe(right.getDeterminismHash());
     }
   });

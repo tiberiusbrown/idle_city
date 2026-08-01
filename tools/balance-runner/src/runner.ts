@@ -4,6 +4,7 @@ import {
   type CityMetrics,
   type CommandResult,
   type DemandTotals,
+  type DistrictSeed,
   type PlaceDistrictSeedCommand,
   type SimulationConfig,
   type SimulationSnapshot,
@@ -16,6 +17,7 @@ export const balanceScenarioNames = [
   'compact',
   'living-seed',
   'working-seed',
+  'rejected-command',
 ] as const;
 
 export type BalanceScenarioName = (typeof balanceScenarioNames)[number];
@@ -51,6 +53,14 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     commands: [
       { tick: 0, command: { kind: 'working', position: { x: 8, y: 6 } } },
       { tick: 1, command: { kind: 'services', position: { x: 3, y: 3 } } },
+    ],
+  },
+  'rejected-command': {
+    config: {},
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: -1, y: 0 } } },
+      { tick: 1, command: { kind: 'services', position: { x: 3, y: 3 } } },
+      { tick: 2, command: { kind: 'working', position: { x: 4, y: 4 } } },
     ],
   },
 };
@@ -98,6 +108,7 @@ export interface BalanceSummary {
   readonly averageTripDurationTicks: number;
   readonly metrics: CityMetrics;
   readonly demandTotals: DemandTotals;
+  readonly seeds: readonly DistrictSeed[];
   readonly commandResults: readonly BalanceCommandResult[];
   readonly invariantFailures: readonly string[];
   readonly determinismHash: string;
@@ -292,6 +303,7 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     averageTripDurationTicks: snapshot.averageTripDurationTicks,
     metrics: snapshot.metrics,
     demandTotals: snapshot.demand.totals,
+    seeds: snapshot.seeds,
     commandResults,
     invariantFailures: [...invariantFailures],
     determinismHash: simulation.getDeterminismHash(),
