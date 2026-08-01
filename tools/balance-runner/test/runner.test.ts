@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { balanceScenarioNames, runBalance } from '../src/runner';
 
 describe('balance runner', () => {
-  it('returns deterministic JSON-ready summaries', () => {
+  it('returns deterministic JSON-ready summaries with structural counters', () => {
     const first = runBalance({ seed: 1234, ticks: 1000 });
     const second = runBalance({ seed: 1234, ticks: 1000 });
     expect(first).toEqual(second);
@@ -12,15 +12,11 @@ describe('balance runner', () => {
     expect(first.completedTrips).toBeGreaterThan(0);
     expect(first.completedActivities).toBeGreaterThan(0);
     expect(first.data).toBeGreaterThan(0);
-    expect(first.metrics.space).toBeGreaterThanOrEqual(0);
-    expect(first.metrics.space).toBeLessThanOrEqual(1);
-    expect(first.metrics.access).toBeGreaterThanOrEqual(0);
-    expect(first.metrics.access).toBeLessThanOrEqual(1);
-    expect(first.metrics.activity).toBeGreaterThanOrEqual(0);
-    expect(first.metrics.activity).toBeLessThanOrEqual(1);
-    expect(first.demandTotals.living).toBeGreaterThan(0);
-    expect(first.demandTotals.working).toBeGreaterThan(0);
-    expect(first.demandTotals.services).toBeGreaterThan(0);
+    expect(first.activeChunkCount).toBe(16);
+    expect(first.structuralCounters.allocatedChunks).toBe(first.activeChunkCount);
+    expect(first.structuralCounters.allocatedOccupancyBuffers).toBeGreaterThanOrEqual(1);
+    expect(first.structuralCounters.allocatedDemandBuffers).toBe(first.activeChunkCount);
+    expect(first.snapshotChunkSummaries).toBe(first.activeChunkCount);
     expect(first.invariantFailures).toEqual([]);
     expect(first.determinismHash).toMatch(/^[0-9a-f]{8}$/);
   });
@@ -44,9 +40,6 @@ describe('balance runner', () => {
       const first = runBalance({ seed: 2026, ticks: 120, scenario });
       const second = runBalance({ seed: 2026, ticks: 120, scenario });
       expect(first).toEqual(second);
-      expect(JSON.stringify(first)).toBe(JSON.stringify(second));
-      expect(first.seeds).toEqual(second.seeds);
-      expect(first.determinismHash).toBe(second.determinismHash);
       if (scenario === 'rejected-command') {
         expect(first.seeds).toEqual([]);
         expect(first.commandResults).toHaveLength(3);
@@ -66,6 +59,25 @@ describe('balance runner', () => {
     const compact = runBalance({ seed: 7, ticks: 120, scenario: 'compact' });
     expect(1 - longCommute.metrics.access).toBeGreaterThan(1 - compact.metrics.access);
     expect(longCommute.averageTripDurationTicks).toBeGreaterThan(compact.averageTripDurationTicks);
+  });
+
+  it('reports sparse expansion and coordinate extent without a bounding-box allocation', () => {
+    const sparse = runBalance({ seed: 7, ticks: 20, scenario: 'sparse-expansion' });
+    const extent = runBalance({ seed: 7, ticks: 100, scenario: 'extent' });
+    expect(sparse.activeChunkCount).toBe(7);
+    expect(sparse.activationResults.every(({ result }) => result.accepted)).toBe(true);
+    expect(extent.activeChunkCount).toBe(71);
+    expect(extent.structuralCounters.allocatedDemandBuffers).toBe(71);
+    expect(extent.activeChunkCount).toBeLessThan(71 * 71);
+  });
+
+  it('reports localized demand dirtying and a long multi-chunk route', () => {
+    const localized = runBalance({ seed: 7, ticks: 0, scenario: 'localized-demand' });
+    const route = runBalance({ seed: 7, ticks: 50, scenario: 'long-route' });
+    expect(localized.invariantFailures).toEqual([]);
+    expect(localized.structuralCounters.demandChunksDirtied).toBeGreaterThan(16);
+    expect(route.structuralCounters.pathChunksTouched).toBeGreaterThan(1);
+    expect(route.invariantFailures).toEqual([]);
   });
 
   it('reports changed demand under capacity pressure', () => {

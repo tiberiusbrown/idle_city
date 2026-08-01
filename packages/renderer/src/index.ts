@@ -1,1 +1,7 @@
-export { createCityScene, type CityScene } from './city-scene';
+export {
+  createCityScene,
+  logicalToWorld,
+  type CityScene,
+  type CitySceneOptions,
+  type CitySceneStructuralCounters,
+} from './city-scene';

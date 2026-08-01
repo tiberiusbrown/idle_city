@@ -1,4 +1,4 @@
-import type { GridPosition } from '@idle-city/shared';
+import type { ChunkCoordinate, GridPosition, GridRect } from '@idle-city/shared';
 
 export type BuildingType = 'home' | 'workplace';
 export type CitizenActivity = 'home' | 'commuting-to-work' | 'work' | 'commuting-home';
@@ -7,8 +7,9 @@ export type DistrictSeedKind = 'living' | 'working' | 'services';
 
 export interface Building {
   readonly id: string;
-  readonly position: GridPosition;
   readonly type: BuildingType;
+  readonly footprint: GridRect;
+  readonly entrance: GridPosition;
   readonly capacity: number;
 }
 
@@ -36,7 +37,7 @@ export interface PlaceDistrictSeedCommand {
 }
 
 export type CommandRejectionReason =
-  'invalid-kind' | 'out-of-bounds' | 'occupied' | 'locked' | 'insufficient-data';
+  'invalid-kind' | 'out-of-bounds' | 'inactive-chunk' | 'occupied' | 'locked' | 'insufficient-data';
 
 export interface AcceptedCommandResult {
   readonly accepted: true;
@@ -75,11 +76,91 @@ export interface DemandTotals {
 }
 
 export interface CityDemand {
+  readonly totals: DemandTotals;
+  readonly chunks: readonly DemandChunkSummary[];
+}
+
+export interface DemandChunkSummary {
+  readonly chunk: ChunkCoordinate;
+  readonly key: string;
+  readonly revision: number;
+  readonly cellCount: number;
+  readonly totals: DemandTotals;
+}
+
+export interface DemandChunkSnapshot extends DemandChunkSummary {
+  readonly cells: readonly DemandCell[];
+}
+
+export type DemandRegionQuery = GridRect;
+
+export interface DemandRegionSnapshot {
+  readonly rect: GridRect;
+  readonly cells: readonly DemandCell[];
+  readonly inactiveCellCount: number;
+}
+
+export interface ChunkRegion {
+  readonly minX: number;
+  readonly minY: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface ActiveChunkSnapshot {
+  readonly chunk: ChunkCoordinate;
+  readonly key: string;
+  readonly occupancyRevision: number;
+  readonly demandRevision: number;
+  readonly occupancyBufferAllocated: boolean;
+}
+
+export interface SimulationStructuralCounters {
+  readonly activeChunks: number;
+  readonly allocatedChunks: number;
+  readonly allocatedOccupancyBuffers: number;
+  readonly allocatedDemandBuffers: number;
+  readonly demandChunksDirtied: number;
+  readonly demandChunksEvaluated: number;
+  readonly pathNodesExpanded: number;
+  readonly pathChunksTouched: number;
+  readonly snapshotChunkSummaries: number;
+}
+
+export type ActivateChunkCommand = ChunkCoordinate;
+
+export interface AcceptedChunkActivationResult {
+  readonly accepted: true;
+  readonly chunk: ChunkCoordinate;
+  readonly activeChunkCount: number;
+}
+
+export type ChunkActivationRejectionReason =
+  'invalid-chunk' | 'already-active' | 'not-adjacent' | 'active-chunk-limit';
+
+export interface RejectedChunkActivationResult {
+  readonly accepted: false;
+  readonly reason: ChunkActivationRejectionReason;
+}
+
+export type ChunkActivationResult = AcceptedChunkActivationResult | RejectedChunkActivationResult;
+
+export interface LegacyCityDemand {
   readonly cells: readonly DemandCell[];
   readonly totals: DemandTotals;
 }
 
 export interface SimulationConfig {
+  readonly chunkSize?: number;
+  readonly initialChunkRegion?: ChunkRegion;
+  readonly initialActiveRegion?: ChunkRegion;
+  readonly activeChunkLimit?: number;
+  readonly demandQueryMaxCells?: number;
+  readonly demandInfluenceRadius?: number;
+  readonly pathSearchBudget?: number;
+  readonly homePosition?: GridPosition;
+  readonly workplacePosition?: GridPosition;
+  /** Deprecated scenario-span aliases retained for headless balance fixtures. */
   readonly width?: number;
   readonly height?: number;
   readonly seed?: number;
@@ -91,8 +172,9 @@ export interface SimulationConfig {
 }
 
 export interface SimulationSnapshot {
-  readonly width: number;
-  readonly height: number;
+  readonly chunkSize: number;
+  readonly activeChunkCount: number;
+  readonly activeChunks: readonly ActiveChunkSnapshot[];
   readonly seed: number;
   readonly tick: number;
   readonly randomState: number;
@@ -103,6 +185,7 @@ export interface SimulationSnapshot {
   readonly averageTripDurationTicks: number;
   readonly metrics: CityMetrics;
   readonly demand: CityDemand;
+  readonly structural: SimulationStructuralCounters;
   readonly seeds: readonly DistrictSeed[];
   readonly buildings: readonly Building[];
   readonly citizens: readonly CitizenSnapshot[];
@@ -111,6 +194,9 @@ export interface SimulationSnapshot {
 export interface Simulation {
   step(): void;
   placeDistrictSeed(command: PlaceDistrictSeedCommand): CommandResult;
+  activateChunk(command: ActivateChunkCommand): ChunkActivationResult;
+  getDemandChunk(chunk: ChunkCoordinate): DemandChunkSnapshot | undefined;
+  queryDemandRegion(region: DemandRegionQuery): DemandRegionSnapshot;
   getSnapshot(): SimulationSnapshot;
   getDeterminismHash(): string;
 }

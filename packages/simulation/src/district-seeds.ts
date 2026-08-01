@@ -12,8 +12,9 @@ function roundInfluence(value: number): number {
 }
 
 export interface DistrictSeedInfluenceInput {
-  readonly width: number;
-  readonly height: number;
+  readonly width?: number;
+  readonly height?: number;
+  readonly radius?: number;
   readonly seeds: readonly DistrictSeed[];
   readonly position: GridPosition;
   readonly kind: DistrictSeedKind;
@@ -26,7 +27,13 @@ export interface DistrictSeedInfluenceInput {
  * simulation's grid movement and the cap keeps influence normalized.
  */
 export function calculateDistrictSeedInfluence(input: DistrictSeedInfluenceInput): number {
-  const radius = Math.max(1, input.width + input.height - 2);
+  const radius = Math.max(
+    1,
+    input.radius ??
+      (input.width === undefined || input.height === undefined
+        ? 1
+        : input.width + input.height - 2),
+  );
   let total = 0;
   for (const seed of input.seeds) {
     if (seed.kind !== input.kind) continue;

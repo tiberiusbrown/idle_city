@@ -3,6 +3,18 @@ export interface GridPosition {
   readonly y: number;
 }
 
+export interface GridRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface ChunkCoordinate {
+  readonly x: number;
+  readonly y: number;
+}
+
 export function positionsEqual(left: GridPosition, right: GridPosition): boolean {
   return left.x === right.x && left.y === right.y;
 }

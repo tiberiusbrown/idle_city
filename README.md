@@ -1,6 +1,6 @@
 # Idle City
 
-Idle City is a browser-first, installable 3D incremental city simulation. This repository contains a deliberately small vertical slice: citizens deterministically commute between voxel homes and workplaces while a Babylon.js client renders interpolated snapshots.
+Idle City is a browser-first, installable 3D incremental city simulation. This repository contains a deliberately small vertical slice: citizens deterministically commute between multi-cell voxel homes and workplaces while a Babylon.js client renders interpolated snapshots from a lazy, signed-world chunk model.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ shared <- simulation <- renderer <- game
 ```
 
 - `packages/shared` contains platform-neutral primitives and stable hashing.
-- `packages/simulation` owns authoritative state, pathfinding, schedules, and seeded randomness. It has no Babylon.js, DOM, or browser dependencies.
+- `packages/simulation` owns authoritative state, lazy chunk storage, footprints, entrances, chunk-aware A*, schedules, and seeded randomness. It has no Babylon.js, DOM, or browser dependencies.
 - `packages/renderer` translates immutable simulation snapshots into Babylon.js scene state.
 - `apps/game` owns the fixed-step browser loop, controls, PWA shell, and DOM overlay.
 - `tools/balance-runner` steps the same simulation directly under Node and emits JSON.
@@ -55,16 +55,16 @@ npm run sim:run -- --seed 1234 --ticks 1000
 npm run sim:run -- --scenario long-commute --seed 1234 --ticks 1000
 ```
 
-The command prints one JSON object containing the scenario, seed, executed ticks, citizen count, completed trips and work activities, Data, demand totals, the three normalized city indicators, final seed state, scheduled command results, invariant failures, and a stable final-state hash. Named scenarios are `baseline`, `long-commute`, `capacity-pressure`, `compact`, `living-seed`, `working-seed`, and `rejected-command`; the seed scenarios schedule accepted and rejected placement commands. Omitting `--scenario` preserves the baseline command. Repeating identical inputs must produce byte-identical JSON and the same hash.
+The command prints one JSON object containing the scenario, seed, executed ticks, citizen count, completed trips and work activities, Data, demand totals, the three normalized city indicators, active/allocated chunk counters, demand dirty/evaluation counts, path instrumentation, scheduled command results, invariant failures, and a stable final-state hash. Named scenarios also cover `sparse-expansion`, `extent`, `localized-demand`, and `long-route`. Omitting `--scenario` preserves the baseline command. Repeating identical inputs must produce byte-identical JSON and the same hash.
 
 ## Determinism and timing
 
-All random decisions use an explicit `SeededRandom` instance. Never use `Math.random()` in the simulation package. Each call to `simulation.step()` advances exactly one tick and citizens move by no more than one grid cell. The browser runs these steps at 5 Hz while Babylon renders independently. Render positions are interpolated from each citizen's previous and current logical positions; interpolation never feeds back into simulation state.
+All random decisions use an explicit `SeededRandom` instance. Never use `Math.random()` in the simulation package. Each call to `simulation.step()` advances exactly one tick and citizens move by no more than one logical cell. The world is a signed coordinate space with only explicitly active chunks allocated; negative coordinates use floor-based chunk conversion. The browser runs steps at 5 Hz while Babylon renders independently. Render positions are interpolated from each citizen's previous and current logical positions; interpolation never feeds back into simulation state.
 
 ## Current limitations
 
-The slice uses a fully walkable rectangular grid, two static buildings, a simple alternating home/work schedule, direct grid paths, deterministic district seed commands and demand influence, and deterministic Data plus Space/Access/Activity indicators. There are no browser seed controls, saving, developer AI, construction, traffic, collision avoidance, backend, audio, or wrapper packaging yet.
+The slice uses a finite active-chunk set, two static multi-cell buildings, exterior entrances, a simple alternating home/work schedule, deterministic A* routes, deterministic district seed commands and chunked demand influence, and deterministic Data plus Space/Access/Activity indicators. There are no browser seed controls, automatic expansion policy, developer AI, construction, traffic, collision avoidance, backend, audio, or wrapper packaging yet.
 
 ## Recommended next steps
 
-The next useful feature is the fine-grid building and project footprint model, including stable occupied-cell derivation and buildability rules. Developer project selection should follow that foundation. Later work can add compact save-file versioning, worker-thread simulation, richer voxel batching, and Capacitor packaging without changing the authoritative-state boundary.
+The next useful feature is footprint-aware developer construction over active chunks, including deterministic candidate placement and project reservations. Later work can add compact save-file versioning, worker-thread simulation, richer voxel batching, and Capacitor packaging without changing the authoritative-state boundary.

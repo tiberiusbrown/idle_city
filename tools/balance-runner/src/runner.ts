@@ -1,13 +1,21 @@
 import {
-  DISTRICT_SEED_COSTS,
+  chunkCoordinateForPosition,
+  chunkKey,
+  compareChunks,
   createSimulation,
+  DISTRICT_SEED_COSTS,
+  footprintCells,
+  isExteriorEntrance,
+  type ActivateChunkCommand,
   type CityMetrics,
+  type ChunkActivationResult,
   type CommandResult,
   type DemandTotals,
   type DistrictSeed,
   type PlaceDistrictSeedCommand,
   type SimulationConfig,
   type SimulationSnapshot,
+  type SimulationStructuralCounters,
 } from '@idle-city/simulation';
 
 export const balanceScenarioNames = [
@@ -18,6 +26,10 @@ export const balanceScenarioNames = [
   'living-seed',
   'working-seed',
   'rejected-command',
+  'sparse-expansion',
+  'extent',
+  'localized-demand',
+  'long-route',
 ] as const;
 
 export type BalanceScenarioName = (typeof balanceScenarioNames)[number];
@@ -28,25 +40,62 @@ export interface ScheduledDistrictSeedCommand {
   readonly command: PlaceDistrictSeedCommand;
 }
 
+export interface ScheduledChunkActivationCommand {
+  /** The simulation tick at which this activation is applied; tick 0 is pre-step. */
+  readonly tick: number;
+  readonly command: ActivateChunkCommand;
+}
+
 interface BalanceScenarioDefinition {
   readonly config: SimulationConfig;
   readonly commands: readonly ScheduledDistrictSeedCommand[];
+  readonly activations: readonly ScheduledChunkActivationCommand[];
+}
+
+function linearActivations(
+  count: number,
+  axis: 'x' | 'y' = 'x',
+): readonly ScheduledChunkActivationCommand[] {
+  return Array.from({ length: count }, (_, index) => ({
+    tick: index,
+    command: axis === 'x' ? { x: index + 1, y: 0 } : { x: 0, y: index + 1 },
+  }));
 }
 
 const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition> = {
-  baseline: { config: {}, commands: [] },
-  'long-commute': { config: { width: 24, height: 24 }, commands: [] },
+  baseline: { config: {}, commands: [], activations: [] },
+  'long-commute': {
+    config: {
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 6, height: 6 },
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 70, y: 70 },
+    },
+    commands: [],
+    activations: [],
+  },
   'capacity-pressure': {
     config: { housingCapacity: 4, workplaceCapacity: 4 },
     commands: [],
+    activations: [],
   },
-  compact: { config: { width: 5, height: 5 }, commands: [] },
+  compact: {
+    config: {
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 10, y: 10 },
+    },
+    commands: [],
+    activations: [],
+  },
   'living-seed': {
     config: { startingData: DISTRICT_SEED_COSTS.living },
     commands: [
       { tick: 0, command: { kind: 'living', position: { x: 3, y: 3 } } },
       { tick: 1, command: { kind: 'working', position: { x: 3, y: 3 } } },
     ],
+    activations: [],
   },
   'working-seed': {
     config: { startingData: DISTRICT_SEED_COSTS.working },
@@ -54,6 +103,7 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
       { tick: 0, command: { kind: 'working', position: { x: 8, y: 6 } } },
       { tick: 1, command: { kind: 'services', position: { x: 3, y: 3 } } },
     ],
+    activations: [],
   },
   'rejected-command': {
     config: {},
@@ -62,6 +112,45 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
       { tick: 1, command: { kind: 'services', position: { x: 3, y: 3 } } },
       { tick: 2, command: { kind: 'working', position: { x: 4, y: 4 } } },
     ],
+    activations: [],
+  },
+  'sparse-expansion': {
+    config: {
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 1, height: 1 },
+      activeChunkLimit: 32,
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 10, y: 10 },
+    },
+    commands: [],
+    activations: linearActivations(6),
+  },
+  extent: {
+    config: {
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 1, height: 1 },
+      activeChunkLimit: 128,
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 10, y: 10 },
+    },
+    commands: [],
+    activations: linearActivations(70),
+  },
+  'localized-demand': {
+    config: { startingData: DISTRICT_SEED_COSTS.living },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 4, y: 4 } } }],
+    activations: [],
+  },
+  'long-route': {
+    config: {
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 8, height: 2 },
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 100, y: 8 },
+      pathSearchBudget: 50_000,
+    },
+    commands: [],
+    activations: [],
   },
 };
 
@@ -82,18 +171,34 @@ export function getBalanceScenarioCommands(
   }));
 }
 
+export function getBalanceScenarioActivations(
+  scenario: BalanceScenarioName,
+): readonly ScheduledChunkActivationCommand[] {
+  return scenarioDefinitions[scenario].activations.map(({ tick, command }) => ({
+    tick,
+    command: { ...command },
+  }));
+}
+
 export interface BalanceOptions {
   readonly seed: number;
   readonly ticks: number;
   readonly citizenCount?: number;
   readonly scenario?: BalanceScenarioName;
   readonly commands?: readonly ScheduledDistrictSeedCommand[];
+  readonly activations?: readonly ScheduledChunkActivationCommand[];
 }
 
 export interface BalanceCommandResult {
   readonly tick: number;
   readonly command: PlaceDistrictSeedCommand;
   readonly result: CommandResult;
+}
+
+export interface BalanceActivationResult {
+  readonly tick: number;
+  readonly command: ActivateChunkCommand;
+  readonly result: ChunkActivationResult;
 }
 
 export interface BalanceSummary {
@@ -109,20 +214,21 @@ export interface BalanceSummary {
   readonly metrics: CityMetrics;
   readonly demandTotals: DemandTotals;
   readonly seeds: readonly DistrictSeed[];
+  readonly activeChunkCount: number;
+  readonly structuralCounters: SimulationStructuralCounters;
+  readonly snapshotChunkSummaries: number;
   readonly commandResults: readonly BalanceCommandResult[];
+  readonly activationResults: readonly BalanceActivationResult[];
   readonly invariantFailures: readonly string[];
   readonly determinismHash: string;
 }
 
-function inBounds(x: number, y: number, width: number, height: number): boolean {
-  return (
-    Number.isSafeInteger(x) &&
-    Number.isSafeInteger(y) &&
-    x >= 0 &&
-    y >= 0 &&
-    x < width &&
-    y < height
-  );
+function active(
+  snapshot: SimulationSnapshot,
+  position: { readonly x: number; readonly y: number },
+): boolean {
+  const coordinate = chunkCoordinateForPosition(position, snapshot.chunkSize);
+  return snapshot.activeChunks.some((chunk) => chunk.key === chunkKey(coordinate));
 }
 
 function adjacent(
@@ -137,58 +243,84 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
   const fail = (message: string): void => {
     failures.push(message);
   };
+  const activeKeys = new Set<string>();
+  let previousChunk: { readonly x: number; readonly y: number } | undefined;
+  for (const chunk of snapshot.activeChunks) {
+    if (activeKeys.has(chunk.key)) fail(`duplicate active chunk ${chunk.key}`);
+    activeKeys.add(chunk.key);
+    if (chunk.key !== chunkKey(chunk.chunk)) fail(`active chunk key mismatch ${chunk.key}`);
+    if (previousChunk !== undefined && compareChunks(chunk.chunk, previousChunk) < 0) {
+      fail('active chunks are not stably ordered');
+    }
+    previousChunk = chunk.chunk;
+  }
+  if (snapshot.activeChunkCount !== activeKeys.size) fail('active chunk count mismatch');
+  if (snapshot.structural.activeChunks !== activeKeys.size)
+    fail('structural active chunk count mismatch');
+  if (snapshot.structural.allocatedChunks !== activeKeys.size)
+    fail('allocated chunk count mismatch');
+
   const buildingIds = new Set<string>();
+  const occupiedCells = new Set<string>();
+  const capacityByType = new Map<'home' | 'workplace', number>([
+    ['home', 0],
+    ['workplace', 0],
+  ]);
   for (const building of snapshot.buildings) {
     if (buildingIds.has(building.id)) fail(`duplicate building id ${building.id}`);
     buildingIds.add(building.id);
-    if (!inBounds(building.position.x, building.position.y, snapshot.width, snapshot.height)) {
-      fail(`building ${building.id} is out of bounds`);
+    const typeCapacity = capacityByType.get(building.type);
+    if (typeCapacity === undefined) fail(`unsupported building type ${building.type}`);
+    else capacityByType.set(building.type, typeCapacity + building.capacity);
+    if (!isExteriorEntrance(building.entrance, building.footprint)) {
+      fail(`building ${building.id} entrance is not exterior`);
     }
-    if (!Number.isFinite(building.capacity) || building.capacity < 0) {
-      fail(`building ${building.id} has invalid capacity`);
+    for (const cell of footprintCells(building.footprint)) {
+      if (!active(snapshot, cell)) fail(`building ${building.id} leaves active chunks`);
+      const cellKey = `${String(cell.x)},${String(cell.y)}`;
+      if (occupiedCells.has(cellKey)) fail(`building footprints overlap at ${cellKey}`);
+      occupiedCells.add(cellKey);
     }
+    if (!active(snapshot, building.entrance)) fail(`building ${building.id} entrance is inactive`);
   }
 
-  const seedIds = new Set<string>();
-  const seedCells = new Set<string>();
-  for (const seed of snapshot.seeds) {
-    if (seedIds.has(seed.id)) fail(`duplicate district seed id ${seed.id}`);
-    seedIds.add(seed.id);
-    if (!inBounds(seed.position.x, seed.position.y, snapshot.width, snapshot.height)) {
-      fail(`district seed ${seed.id} is out of bounds`);
+  const demandKeys = new Set<string>();
+  for (const chunk of snapshot.demand.chunks) {
+    demandKeys.add(chunk.key);
+    if (!activeKeys.has(chunk.key)) fail(`demand summary is inactive ${chunk.key}`);
+    if (chunk.cellCount !== snapshot.chunkSize * snapshot.chunkSize) {
+      fail(`demand summary cell count is invalid for ${chunk.key}`);
     }
-    const cellKey = `${String(seed.position.x)},${String(seed.position.y)}`;
-    if (seedCells.has(cellKey)) fail(`duplicate district seed cell ${cellKey}`);
-    seedCells.add(cellKey);
-    const seedKind: unknown = seed.kind;
-    if (seedKind !== 'living' && seedKind !== 'working' && seedKind !== 'services') {
-      fail(`district seed ${seed.id} has an unsupported kind`);
+    for (const value of Object.values(chunk.totals)) {
+      if (!Number.isFinite(value) || value < 0) fail(`demand total is invalid for ${chunk.key}`);
     }
+  }
+  if (demandKeys.size !== activeKeys.size) fail('demand summaries do not cover active chunks');
+  for (const value of Object.values(snapshot.demand.totals)) {
+    if (!Number.isFinite(value) || value < 0) fail('global demand total is invalid');
   }
 
-  if (snapshot.demand.cells.length !== snapshot.width * snapshot.height) {
-    fail('demand cell count does not cover the grid');
-  }
-  snapshot.demand.cells.forEach((cell, index) => {
-    const expectedX = index % snapshot.width;
-    const expectedY = Math.floor(index / snapshot.width);
-    if (cell.position.x !== expectedX || cell.position.y !== expectedY) {
-      fail('demand cells are not in row-major order');
+  for (const citizen of snapshot.citizens) {
+    if (!active(snapshot, citizen.position)) fail(`citizen ${citizen.id} is inactive`);
+    if (occupiedCells.has(`${String(citizen.position.x)},${String(citizen.position.y)}`)) {
+      fail(`citizen ${citizen.id} occupies a building interior`);
     }
-    for (const [kind, value] of Object.entries({
-      living: cell.living,
-      working: cell.working,
-      services: cell.services,
-    })) {
-      if (!Number.isFinite(value) || value < 0 || value > 1) {
-        fail(`${kind} demand is not finite and bounded`);
+    if (!buildingIds.has(citizen.homeBuildingId)) fail(`citizen ${citizen.id} has no home`);
+    if (!buildingIds.has(citizen.workplaceBuildingId))
+      fail(`citizen ${citizen.id} has no workplace`);
+    for (let index = 0; index < citizen.route.length; index += 1) {
+      const position = citizen.route[index];
+      if (position === undefined) continue;
+      if (!active(snapshot, position)) fail(`citizen ${citizen.id} route leaves active chunks`);
+      if (occupiedCells.has(`${String(position.x)},${String(position.y)}`)) {
+        fail(`citizen ${citizen.id} route enters a building interior`);
+      }
+      const previous = citizen.route[index - 1];
+      if (previous !== undefined && !adjacent(previous, position)) {
+        fail(`citizen ${citizen.id} route is non-adjacent`);
       }
     }
-  });
-  for (const [kind, value] of Object.entries(snapshot.demand.totals)) {
-    if (!Number.isFinite(value) || value < 0) fail(`${kind} demand total is invalid`);
   }
-
   for (const [name, value] of Object.entries(snapshot.metrics)) {
     if (!Number.isFinite(value) || value < 0 || value > 1) fail(`${name} metric is invalid`);
   }
@@ -202,54 +334,32 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
   if (snapshot.completedTrips < 0 || snapshot.completedActivities < 0) {
     fail('completed counters are negative');
   }
-
-  for (const citizen of snapshot.citizens) {
-    if (!inBounds(citizen.position.x, citizen.position.y, snapshot.width, snapshot.height)) {
-      fail(`citizen ${citizen.id} is out of bounds`);
-    }
-    if (!buildingIds.has(citizen.homeBuildingId)) {
-      fail(`citizen ${citizen.id} has a missing home`);
-    }
-    if (!buildingIds.has(citizen.workplaceBuildingId)) {
-      fail(`citizen ${citizen.id} has a missing workplace`);
-    }
-    if (citizen.route.length === 0) {
-      if (citizen.routeIndex !== 0) fail(`citizen ${citizen.id} has an invalid empty route index`);
-    } else if (citizen.routeIndex < 0 || citizen.routeIndex >= citizen.route.length) {
-      fail(`citizen ${citizen.id} has an invalid route index`);
-    }
-    for (let index = 0; index < citizen.route.length; index += 1) {
-      const position = citizen.route[index];
-      if (position === undefined) continue;
-      if (!inBounds(position.x, position.y, snapshot.width, snapshot.height)) {
-        fail(`citizen ${citizen.id} route leaves the grid`);
-      }
-      const previous = citizen.route[index - 1];
-      if (previous !== undefined && !adjacent(previous, position)) {
-        fail(`citizen ${citizen.id} route is non-adjacent`);
-      }
-    }
-  }
   return failures;
 }
 
 export function runBalance(options: BalanceOptions): BalanceSummary {
-  if (!Number.isSafeInteger(options.ticks) || options.ticks < 0)
+  if (!Number.isSafeInteger(options.ticks) || options.ticks < 0) {
     throw new Error('ticks must be a non-negative safe integer.');
+  }
   const scenario = options.scenario ?? 'baseline';
   const scenarioConfig = getBalanceScenarioConfig(scenario);
   const scheduledCommands = [
     ...getBalanceScenarioCommands(scenario),
     ...(options.commands ?? []),
   ].map((scheduled, index) => ({ ...scheduled, order: index }));
-  for (const scheduled of scheduledCommands) {
+  const scheduledActivations = [
+    ...getBalanceScenarioActivations(scenario),
+    ...(options.activations ?? []),
+  ].map((scheduled, index) => ({ ...scheduled, order: index }));
+  for (const scheduled of [...scheduledCommands, ...scheduledActivations]) {
     if (!Number.isSafeInteger(scheduled.tick) || scheduled.tick < 0) {
       throw new Error(
-        `Command schedule tick must be a non-negative safe integer; received ${String(scheduled.tick)}.`,
+        `Schedule tick must be a non-negative safe integer; received ${String(scheduled.tick)}.`,
       );
     }
   }
   scheduledCommands.sort((left, right) => left.tick - right.tick || left.order - right.order);
+  scheduledActivations.sort((left, right) => left.tick - right.tick || left.order - right.order);
   const simulation = createSimulation({
     ...scenarioConfig,
     seed: options.seed,
@@ -257,27 +367,39 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
   });
   const invariantFailures = new Set<string>();
   const commandResults: BalanceCommandResult[] = [];
+  const activationResults: BalanceActivationResult[] = [];
   let nextScheduledCommand = 0;
-  const applyScheduledCommands = (): void => {
+  let nextScheduledActivation = 0;
+  const applyScheduled = (): void => {
     const currentTick = simulation.getSnapshot().tick;
+    while (nextScheduledActivation < scheduledActivations.length) {
+      const scheduled = scheduledActivations[nextScheduledActivation];
+      if (scheduled === undefined || scheduled.tick > currentTick) break;
+      const command = { ...scheduled.command };
+      activationResults.push({
+        tick: currentTick,
+        command,
+        result: simulation.activateChunk(command),
+      });
+      nextScheduledActivation += 1;
+    }
     while (nextScheduledCommand < scheduledCommands.length) {
       const scheduled = scheduledCommands[nextScheduledCommand];
-      if (scheduled === undefined || scheduled.tick > currentTick) return;
-      const command: PlaceDistrictSeedCommand = {
-        kind: scheduled.command.kind,
-        position: { ...scheduled.command.position },
-      };
-      const result = simulation.placeDistrictSeed(command);
-      commandResults.push({ tick: currentTick, command, result });
+      if (scheduled === undefined || scheduled.tick > currentTick) break;
+      const command = { ...scheduled.command, position: { ...scheduled.command.position } };
+      commandResults.push({
+        tick: currentTick,
+        command,
+        result: simulation.placeDistrictSeed(command),
+      });
       nextScheduledCommand += 1;
     }
   };
   const recordInvariantFailures = (label: string, snapshot: SimulationSnapshot): void => {
-    for (const failure of collectInvariantFailures(snapshot)) {
+    for (const failure of collectInvariantFailures(snapshot))
       invariantFailures.add(`${label}: ${failure}`);
-    }
   };
-  applyScheduledCommands();
+  applyScheduled();
   recordInvariantFailures('initial', simulation.getSnapshot());
   for (let tick = 0; tick < options.ticks; tick += 1) {
     try {
@@ -287,7 +409,7 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
       invariantFailures.add(`tick ${String(tick + 1)}: ${message}`);
       break;
     }
-    applyScheduledCommands();
+    applyScheduled();
     recordInvariantFailures(`tick ${String(tick + 1)}`, simulation.getSnapshot());
   }
   const snapshot = simulation.getSnapshot();
@@ -304,7 +426,11 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     metrics: snapshot.metrics,
     demandTotals: snapshot.demand.totals,
     seeds: snapshot.seeds,
+    activeChunkCount: snapshot.activeChunkCount,
+    structuralCounters: snapshot.structural,
+    snapshotChunkSummaries: snapshot.structural.snapshotChunkSummaries,
     commandResults,
+    activationResults,
     invariantFailures: [...invariantFailures],
     determinismHash: simulation.getDeterminismHash(),
   };

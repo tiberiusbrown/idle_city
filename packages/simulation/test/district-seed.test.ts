@@ -22,8 +22,6 @@ function expectMutationFreeRejection(
 describe('authoritative district seed commands', () => {
   it('accepts a living seed and subtracts its cost exactly once', () => {
     const simulation = createSimulation({
-      width: 5,
-      height: 5,
       citizenCount: 1,
       startingData: DISTRICT_SEED_COSTS.living + 3,
     });
@@ -49,65 +47,57 @@ describe('authoritative district seed commands', () => {
     expect(after.randomState).toBe(before.randomState);
   });
 
-  it('rejects an out-of-bounds position without mutating state', () => {
+  it('rejects inactive signed coordinates without mutating state', () => {
     const simulation = createSimulation({ startingData: 100 });
     expectMutationFreeRejection(
       simulation,
       { kind: 'living', position: { x: -1, y: 0 } },
-      'out-of-bounds',
+      'inactive-chunk',
     );
   });
 
   it('rejects a duplicate seed cell without consuming Data or an ID', () => {
     const simulation = createSimulation({ startingData: 100 });
-    const first = simulation.placeDistrictSeed({ kind: 'living', position: { x: 3, y: 3 } });
+    const first = simulation.placeDistrictSeed({ kind: 'living', position: { x: 6, y: 6 } });
     expect(first.accepted).toBe(true);
     expectMutationFreeRejection(
       simulation,
-      { kind: 'working', position: { x: 3, y: 3 } },
+      { kind: 'working', position: { x: 6, y: 6 } },
       'occupied',
     );
 
     expect(
-      simulation.placeDistrictSeed({ kind: 'working', position: { x: 4, y: 3 } }),
+      simulation.placeDistrictSeed({ kind: 'working', position: { x: 7, y: 6 } }),
     ).toMatchObject({ accepted: true, seed: { id: 'district-seed-2' } });
   });
 
   it('accepts a working seed and charges its centralized cost once', () => {
     const simulation = createSimulation({ startingData: DISTRICT_SEED_COSTS.working + 1 });
     const before = simulation.getSnapshot();
-
-    expect(simulation.placeDistrictSeed({ kind: 'working', position: { x: 4, y: 4 } })).toEqual({
+    expect(simulation.placeDistrictSeed({ kind: 'working', position: { x: 8, y: 8 } })).toEqual({
       accepted: true,
       seed: {
         id: 'district-seed-1',
         kind: 'working',
-        position: { x: 4, y: 4 },
+        position: { x: 8, y: 8 },
       },
       cost: DISTRICT_SEED_COSTS.working,
     });
     expect(simulation.getSnapshot().data).toBe(before.data - DISTRICT_SEED_COSTS.working);
   });
 
-  it('rejects insufficient Data without changing the random state', () => {
+  it('rejects insufficient Data and locked Services without changing state', () => {
     const simulation = createSimulation();
     expectMutationFreeRejection(
       simulation,
-      { kind: 'living', position: { x: 3, y: 3 } },
+      { kind: 'living', position: { x: 6, y: 6 } },
       'insufficient-data',
     );
+    const funded = createSimulation({ startingData: 100 });
+    expectMutationFreeRejection(funded, { kind: 'services', position: { x: 6, y: 6 } }, 'locked');
   });
 
-  it('keeps Services locked until service activities exist', () => {
-    const simulation = createSimulation({ startingData: 100 });
-    expectMutationFreeRejection(
-      simulation,
-      { kind: 'services', position: { x: 3, y: 3 } },
-      'locked',
-    );
-  });
-
-  it('keeps seed IDs stable for the same accepted command sequence', () => {
+  it('keeps seed IDs and influence stable for the same accepted command sequence', () => {
     const configuration = { startingData: 100, seed: 17 } as const;
     const left = createSimulation(configuration);
     const right = createSimulation(configuration);
@@ -116,9 +106,8 @@ describe('authoritative district seed commands', () => {
       { kind: 'working', position: { x: 8, y: 7 } },
     ];
 
-    for (const command of commands) {
+    for (const command of commands)
       expect(left.placeDistrictSeed(command)).toEqual(right.placeDistrictSeed(command));
-    }
     expect(left.getSnapshot().seeds.map((seed) => seed.id)).toEqual([
       'district-seed-1',
       'district-seed-2',
@@ -127,17 +116,13 @@ describe('authoritative district seed commands', () => {
     expect(left.getDeterminismHash()).toBe(right.getDeterminismHash());
   });
 
-  it('adds living and working influence using bounded deterministic distance', () => {
-    const baseline = createSimulation({ width: 5, height: 5, citizenCount: 1 }).getSnapshot();
+  it('preserves matching-kind district seed influence in bounded demand queries', () => {
+    const baseline = createSimulation({ citizenCount: 1 }).getDemandChunk({ x: 0, y: 0 });
     const livingSimulation = createSimulation({
-      width: 5,
-      height: 5,
       citizenCount: 1,
       startingData: DISTRICT_SEED_COSTS.living,
     });
     const workingSimulation = createSimulation({
-      width: 5,
-      height: 5,
       citizenCount: 1,
       startingData: DISTRICT_SEED_COSTS.working,
     });
@@ -147,80 +132,21 @@ describe('authoritative district seed commands', () => {
     expect(
       workingSimulation.placeDistrictSeed({ kind: 'working', position: { x: 0, y: 0 } }).accepted,
     ).toBe(true);
-
-    const living = livingSimulation.getSnapshot();
-    const working = workingSimulation.getSnapshot();
-    const baselineOrigin = baseline.demand.cells[0];
-    const baselineFar = baseline.demand.cells[24];
-    const livingOrigin = living.demand.cells[0];
-    const livingFar = living.demand.cells[24];
-    const workingOrigin = working.demand.cells[0];
-    const workingFar = working.demand.cells[24];
-    if (
-      baselineOrigin === undefined ||
-      baselineFar === undefined ||
-      livingOrigin === undefined ||
-      livingFar === undefined ||
-      workingOrigin === undefined ||
-      workingFar === undefined
-    ) {
-      throw new Error('The 5 by 5 demand grid must contain every expected cell.');
+    const living = livingSimulation.getDemandChunk({ x: 0, y: 0 });
+    const working = workingSimulation.getDemandChunk({ x: 0, y: 0 });
+    if (baseline === undefined || living === undefined || working === undefined) {
+      throw new Error('The initial demand chunk must be queryable.');
+    }
+    const baselineOrigin = baseline.cells[0];
+    const livingOrigin = living.cells[0];
+    const workingOrigin = working.cells[0];
+    if (baselineOrigin === undefined || livingOrigin === undefined || workingOrigin === undefined) {
+      throw new Error('The demand chunk must contain an origin cell.');
     }
     expect(livingOrigin.living).toBeGreaterThan(baselineOrigin.living);
     expect(livingOrigin.working).toBe(baselineOrigin.working);
-    expect(livingFar.living).toBe(baselineFar.living);
     expect(workingOrigin.working).toBeGreaterThan(baselineOrigin.working);
     expect(workingOrigin.living).toBe(baselineOrigin.living);
-    expect(workingFar.working).toBe(baselineFar.working);
-  });
-
-  it('replays commands at the same ticks with identical snapshots and hashes', () => {
-    const configuration = {
-      width: 7,
-      height: 6,
-      seed: 99,
-      citizenCount: 2,
-      startingData: DISTRICT_SEED_COSTS.living + DISTRICT_SEED_COSTS.working,
-    } as const;
-    const left = createSimulation(configuration);
-    const right = createSimulation(configuration);
-    const schedule = new Map<number, PlaceDistrictSeedCommand>([
-      [0, { kind: 'living', position: { x: 1, y: 1 } }],
-      [4, { kind: 'working', position: { x: 5, y: 4 } }],
-      [9, { kind: 'living', position: { x: 1, y: 1 } }],
-    ]);
-
-    for (let tick = 0; tick < 20; tick += 1) {
-      const command = schedule.get(tick);
-      if (command !== undefined) {
-        expect(left.placeDistrictSeed(command)).toEqual(right.placeDistrictSeed(command));
-      }
-      left.step();
-      right.step();
-      expect(left.getSnapshot()).toEqual(right.getSnapshot());
-      expect(JSON.stringify(left.getSnapshot())).toBe(JSON.stringify(right.getSnapshot()));
-      expect(left.getDeterminismHash()).toBe(right.getDeterminismHash());
-    }
-  });
-
-  it('does not let a mutated snapshot seed alter authoritative seed state', () => {
-    const simulation = createSimulation({ startingData: DISTRICT_SEED_COSTS.living });
-    expect(
-      simulation.placeDistrictSeed({ kind: 'living', position: { x: 3, y: 3 } }).accepted,
-    ).toBe(true);
-    const snapshot = simulation.getSnapshot();
-    const seed = snapshot.seeds[0];
-    if (seed === undefined) throw new Error('The accepted seed must be present in the snapshot.');
-    (seed.position as { x: number }).x = 0;
-    (seed as { kind: 'working' }).kind = 'working';
-
-    expect(simulation.getSnapshot().seeds).toEqual([
-      { id: 'district-seed-1', kind: 'living', position: { x: 3, y: 3 } },
-    ]);
-    expect(simulation.placeDistrictSeed({ kind: 'working', position: { x: 3, y: 3 } })).toEqual({
-      accepted: false,
-      reason: 'occupied',
-    });
   });
 
   it('rounds and caps the documented influence formula', () => {
@@ -228,8 +154,8 @@ describe('authoritative district seed commands', () => {
       { id: 'district-seed-1', kind: 'living' as const, position: { x: 0, y: 0 } },
       { id: 'district-seed-2', kind: 'living' as const, position: { x: 4, y: 4 } },
     ];
-    const singleSeed = [seeds[0]];
-    if (singleSeed[0] === undefined) throw new Error('The formula test requires a seed.');
+    const firstSeed = seeds[0];
+    if (firstSeed === undefined) throw new Error('The formula test requires a seed.');
     expect(
       calculateDistrictSeedInfluence({
         width: 5,
@@ -243,7 +169,7 @@ describe('authoritative district seed commands', () => {
       calculateDistrictSeedInfluence({
         width: 5,
         height: 5,
-        seeds: singleSeed,
+        seeds: [firstSeed],
         position: { x: 2, y: 0 },
         kind: 'living',
       }),

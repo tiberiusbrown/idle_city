@@ -2,32 +2,55 @@
 
 ## Authoritative simulation
 
-The simulation is a pure TypeScript state machine. It receives explicit configuration, owns its seeded random generator, advances only when `step()` is called, and returns detached serializable snapshots. It imports no Babylon.js code and touches no DOM or browser API. This lets Node tests and command-line balance runs execute the exact same rules as the game client.
+The simulation is a pure TypeScript state machine. It receives explicit configuration, owns its seeded random generator, advances only when `step()` is called, and returns detached serializable snapshots. It imports no Babylon.js code and touches no DOM or browser API. Node tests and the command-line balance runner execute the same rules as the game client.
 
-Rendering is intentionally downstream. Babylon meshes are projections of snapshot data and can be rebuilt or discarded at any time. Camera positions, materials, interpolation values, and mesh transforms are never authoritative and cannot influence a route or schedule.
+The world is a signed logical coordinate space. A `chunkSize` is centralized (32 by default), and only the configured initial region plus explicitly activated adjacent chunks exist. Inactive chunks are blocked. Chunk keys are derived from integer coordinates, and `Math.floor` conversion keeps negative positions stable at boundaries. There is no maximum-map bounding box or preallocated grid.
+
+## Chunk storage and footprints
+
+Active chunks are held in stable coordinate order. Walkability uses a lazy `Uint8Array` occupancy buffer per chunk: an active chunk without a buffer is entirely walkable, and a buffer is allocated only when a footprint blocks a cell. Occupancy revisions increment only when a cell changes. This gives near-constant-time lookups without an object per logical cell.
+
+Buildings own one authoritative world-coordinate rectangle. Homes are exactly `3 × 3`; workplaces are `5 × 5`. Occupied cells are derived in row-major order. Footprints may cross chunk boundaries and their capacity is independent of area. Exterior entrance candidates are deduplicated and sorted in row-major order; the first active, walkable, locally reachable candidate is selected. Citizens spawn and route at entrances, never in building interiors.
 
 ## Fixed steps and interpolation
 
 The client measures elapsed wall-clock time and accumulates it. Every accumulated 200 milliseconds advances one logical tick (5 Hz at normal speed). Long frames can advance multiple steps; short frames advance none. Pausing sets the time scale to zero, while fast mode multiplies accumulated logical time.
 
-Each simulation step copies a citizen's current grid position into `previousPosition` before applying at most one adjacent route move. At render time, the client computes `alpha = accumulator / stepDuration`. The renderer linearly interpolates between the two grid positions. Since alpha is passed only to rendering and never to `step()`, 30 Hz and 144 Hz displays produce identical logical results.
+Each simulation step copies a citizen's current logical position into `previousPosition` before applying at most one adjacent route move. At render time, the client linearly interpolates between the two logical positions using a centralized logical-cell scale. Interpolation and camera state never feed back into simulation state, including when a citizen crosses a chunk boundary or has negative coordinates.
 
-## Deterministic randomness and paths
+## Deterministic paths and expansion
 
-`SeededRandom` uses a small integer-state PRNG with explicitly serializable state. A seed is part of simulation configuration; random values are requested only through the owned generator. Pathfinding uses breadth-first search with a fixed neighbor order, so equally short routes resolve consistently on every supported platform. Stable key ordering and an FNV-1a hash provide compact deterministic regression summaries.
+Pathfinding uses deterministic A* with a Manhattan heuristic, integer movement cost, fixed neighbor order, coordinate/sequence tie-breaking, and an explicit node-expansion budget. The grid seam accepts active-chunk storage and a walkability callback; `findGridPathDetailed` exposes found/no-path/budget-exhausted status plus expanded-node and touched-chunk counts. Current citizen positions are not permanent obstacles. The path API keeps a chunk-level seam available for future hierarchical routing without introducing a portal framework now.
 
-## City indicators and Data
+Chunk activation is a narrow authoritative transition. It validates safe integer coordinates, rejects duplicates, requires orthogonal adjacency to an active chunk, and enforces the configured active-chunk limit. Rejected activation is mutation-free. Accepted activation creates one chunk and dirties the new chunk plus active orthogonal neighbors. Expansion is explicit and deterministic; no player-facing control or automatic policy is included in this step.
 
-The simulation derives normalized `space`, `access`, and `activity` indicators directly from its buildings, routes, and citizen states. Space measures capacity coverage, access measures trip duration against the grid's longest direct trip, and activity measures the currently productive citizen share. The snapshot also carries completed work activities, average trip duration, accumulated Data, and the Data generated by the latest fixed step. Data is awarded only when work completes and uses a bounded efficiency factor from the indicators, so rendering and wall-clock timing cannot affect the resource.
+## City indicators, Data, and demand
 
-The snapshot also exposes a derived `CityDemand` and detached district seeds. Its cells cover the grid in row-major `(y, x)` order and contain bounded `living`, `working`, and `services` values, with separately reported aggregate totals. Demand combines capacity shortage, local building saturation, access pressure, nearby complementary uses, and the normalized influence of accepted seeds. A seed's matching-kind influence is the capped sum of Manhattan-distance falloffs, rounded to six decimal places. The pure demand calculation receives that influence through its existing callback extension point.
+The simulation derives normalized `space`, `access`, and `activity` indicators directly from buildings, entrance-to-entrance routes, and citizen states. Data is awarded when a citizen completes work and uses bounded efficiency from those indicators. All numeric rounding is deterministic.
 
-## Growth features
+Demand is stored internally by active chunk in lazy typed buffers. The ordinary snapshot exposes only global totals and stable per-chunk summaries containing chunk coordinates, revision, cell count, and totals; it deliberately does not contain a full `cells` array or inactive/bounding-box cells. `getDemandChunk` and bounded `queryDemandRegion` are explicit detached detail queries. Demand revisions increment only for evaluated dirty chunks.
 
-District seeds enter through the explicit `placeDistrictSeed(command)` simulation command. Validation checks grid bounds, seed-cell occupancy, unlock state, and Data before allocating a stable ID or changing state. Rejected commands leave the snapshot, random state, Data, seed collection, and ID counter unchanged. Seeds create demand signals, not renderer objects. Autonomous developers remain a later deterministic simulation system that inspects demand, consumes a seeded random stream in a documented order, and emits building state.
+Demand dirtying rules are explicit:
 
-Keep economy, developer, zoning, and citizen systems as small modules under `packages/simulation`. UI intent becomes validated commands; events or snapshots flow back out. Versioned snapshot serialization can later support local saves without coupling persistence to Babylon or the browser shell.
+- Initial active chunks are dirtied once.
+- A district seed dirties active chunks whose cells can fall within the configured seed-influence radius.
+- A newly activated chunk dirties itself and active orthogonal neighbors because local spatial references can change at the boundary.
+- A change to global metrics dirties all active chunks because the base demand formula depends on access/activity state.
 
-## Large balance runs
+Demand uses footprint distance as its spatial reference and preserves district-seed influence through a bounded Manhattan falloff. `getSnapshot()` evaluates only dirty chunks; it does not recompute all active chunks.
 
-The balance runner imports only simulation and shared packages. It can create many independent simulations with derived seeds, advance thousands of ticks in tight Node loops, validate invariants, and aggregate hashes or metrics without a canvas. Future benchmark commands should preserve this property and may use Node worker threads, with one complete simulation per worker to avoid shared mutable state.
+## Rendering projection
+
+Babylon is downstream of snapshots. Logical-to-world conversion is centralized and uses the same cell scale for positive and negative coordinates. The renderer owns one ground resource per visible active chunk, never one resource per cell and never a resource for the maximum possible world. Visible chunks can be explicitly selected or derived around the camera target. Ground resources reconcile by stable chunk key and occupancy revision; unchanged updates do not duplicate meshes. Buildings use their footprint dimensions, while citizen interpolation uses detached logical positions.
+
+Renderer structural counters expose visible/rendered chunks, chunk rebuilds, and mesh count for bounded-resource tests. No general building or citizen reconciliation is introduced in this step.
+
+## Snapshots and balance runner
+
+Snapshots scale with active chunk metadata and active entities, not coordinate extent. They contain no inactive chunks, empty bounding-box cells, or ordinary full demand fields. Detailed demand payloads are bounded and opt-in.
+
+The headless balance runner reports active/allocated chunks, optional occupancy and demand buffers, demand dirty/evaluation counts, path nodes expanded, path chunks touched, snapshot chunk summaries, invariant failures, and a determinism hash. Structural scenarios exercise sparse outward activation, coordinate extent beyond `1000 × 1000` without filling the box, localized demand dirtying, and long multi-chunk routes.
+
+## Deferred systems
+
+This step intentionally does not add developer AI, construction, population growth, movement reservations, congestion costs, roads, transit, chunk removal, player-facing expansion controls, polygon footprints, or detailed voxel meshing. The next implementation should add footprint-aware deterministic developer construction and project reservations over active chunks.
