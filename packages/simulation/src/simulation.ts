@@ -5,6 +5,7 @@ import type {
   Building,
   CitizenActivity,
   CitizenSnapshot,
+  CityMetrics,
   Simulation,
   SimulationConfig,
   SimulationSnapshot,
@@ -20,6 +21,7 @@ interface CitizenState {
   activityTicksRemaining: number;
   route: GridPosition[];
   routeIndex: number;
+  tripStartedTick: number | null;
 }
 
 const defaults = {
@@ -37,6 +39,24 @@ function positiveInteger(name: string, value: number, minimum = 1): number {
     );
   }
   return value;
+}
+
+function clampUnit(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function manhattanDistance(left: GridPosition, right: GridPosition): number {
+  return Math.abs(left.x - right.x) + Math.abs(left.y - right.y);
+}
+
+function roundData(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+function dataEfficiency(metrics: CityMetrics): number {
+  // Keep a struggling city progressing while rewarding healthy space, access,
+  // and productive activity. The result is always in the bounded range 0.5..1.
+  return 0.5 + (metrics.space + metrics.access + metrics.activity) / 6;
 }
 
 export function createSimulation(config: SimulationConfig = {}): Simulation {
@@ -75,14 +95,74 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     activityTicksRemaining: 1 + random.nextInteger(activityDurationTicks),
     route: [],
     routeIndex: 0,
+    tripStartedTick: null,
   }));
   let tick = 0;
   let completedTrips = 0;
+  let completedActivities = 0;
+  let totalTripDurationTicks = 0;
+  let data = 0;
+  let dataGeneratedThisTick = 0;
 
   const buildingById = (id: string): Building => {
     const building = buildings.find((candidate) => candidate.id === id);
     if (building === undefined) throw new Error(`Citizen references missing building ${id}.`);
     return building;
+  };
+
+  const calculateMetrics = (): {
+    readonly metrics: CityMetrics;
+    readonly averageTripDurationTicks: number;
+  } => {
+    const population = citizens.length;
+    const housingCapacity = buildings
+      .filter((building) => building.type === 'home')
+      .reduce((total, building) => total + building.capacity, 0);
+    const workplaceCapacity = buildings
+      .filter((building) => building.type === 'workplace')
+      .reduce((total, building) => total + building.capacity, 0);
+    const space =
+      population === 0
+        ? 1
+        : clampUnit(Math.min(housingCapacity / population, workplaceCapacity / population));
+
+    const plannedTripDistances = citizens.map((citizen) =>
+      manhattanDistance(
+        buildingById(citizen.homeBuildingId).position,
+        buildingById(citizen.workplaceBuildingId).position,
+      ),
+    );
+    const plannedAverageTripDuration =
+      plannedTripDistances.length === 0
+        ? 0
+        : plannedTripDistances.reduce((total, distance) => total + distance, 0) /
+          plannedTripDistances.length;
+    const averageTripDurationTicks =
+      completedTrips === 0 ? plannedAverageTripDuration : totalTripDurationTicks / completedTrips;
+    const longestGridTrip = Math.max(1, width + height - 2);
+    const access = clampUnit(1 - averageTripDurationTicks / longestGridTrip);
+
+    const productiveCitizens = citizens.filter((citizen) => citizen.activity === 'work').length;
+    const activity = population === 0 ? 1 : productiveCitizens / population;
+    return {
+      metrics: { space, access, activity },
+      averageTripDurationTicks,
+    };
+  };
+
+  const completeTrip = (citizen: CitizenState, destinationId: string): void => {
+    const destination = buildingById(destinationId);
+    if (!positionsEqual(citizen.position, destination.position)) {
+      throw new Error(`Citizen ${citizen.id} did not reach the expected destination.`);
+    }
+    if (citizen.tripStartedTick === null) {
+      throw new Error(`Citizen ${citizen.id} completed a trip without a start tick.`);
+    }
+    totalTripDurationTicks += tick - citizen.tripStartedTick;
+    citizen.activity = citizen.activity === 'commuting-to-work' ? 'work' : 'home';
+    citizen.activityTicksRemaining = activityDurationTicks;
+    citizen.tripStartedTick = null;
+    completedTrips += 1;
   };
 
   const startTrip = (
@@ -94,6 +174,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     citizen.activity = activity;
     citizen.route = findGridPath({ width, height }, citizen.position, destination.position);
     citizen.routeIndex = 0;
+    citizen.tripStartedTick = tick;
+    if (citizen.route.length === 1) completeTrip(citizen, destinationId);
   };
 
   const advanceCitizen = (citizen: CitizenState): void => {
@@ -104,6 +186,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         if (citizen.activity === 'home') {
           startTrip(citizen, 'commuting-to-work', citizen.workplaceBuildingId);
         } else {
+          completedActivities += 1;
           startTrip(citizen, 'commuting-home', citizen.homeBuildingId);
         }
       }
@@ -123,12 +206,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         citizen.activity === 'commuting-to-work'
           ? citizen.workplaceBuildingId
           : citizen.homeBuildingId;
-      if (!positionsEqual(citizen.position, buildingById(destinationId).position)) {
-        throw new Error(`Citizen ${citizen.id} did not reach the expected destination.`);
-      }
-      citizen.activity = citizen.activity === 'commuting-to-work' ? 'work' : 'home';
-      citizen.activityTicksRemaining = activityDurationTicks;
-      completedTrips += 1;
+      completeTrip(citizen, destinationId);
     }
   };
 
@@ -139,19 +217,36 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     tick,
     randomState: random.getState(),
     completedTrips,
+    completedActivities,
+    data,
+    dataGeneratedThisTick,
+    ...calculateMetrics(),
     buildings: buildings.map((building) => ({ ...building, position: { ...building.position } })),
     citizens: citizens.map((citizen): CitizenSnapshot => ({
-      ...citizen,
+      id: citizen.id,
       position: { ...citizen.position },
       previousPosition: { ...citizen.previousPosition },
+      homeBuildingId: citizen.homeBuildingId,
+      workplaceBuildingId: citizen.workplaceBuildingId,
+      activity: citizen.activity,
+      activityTicksRemaining: citizen.activityTicksRemaining,
       route: citizen.route.map((position) => ({ ...position })),
+      routeIndex: citizen.routeIndex,
     })),
   });
 
   return {
     step(): void {
+      const activitiesBefore = completedActivities;
       tick += 1;
       citizens.forEach(advanceCitizen);
+      const activitiesCompletedThisTick = completedActivities - activitiesBefore;
+      dataGeneratedThisTick = 0;
+      if (activitiesCompletedThisTick > 0) {
+        const { metrics } = calculateMetrics();
+        dataGeneratedThisTick = roundData(activitiesCompletedThisTick * dataEfficiency(metrics));
+        data = roundData(data + dataGeneratedThisTick);
+      }
     },
     getSnapshot: snapshot,
     getDeterminismHash(): string {

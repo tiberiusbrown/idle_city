@@ -7,6 +7,10 @@ import './style.css';
 const canvas = document.querySelector<HTMLCanvasElement>('#game-canvas');
 const tickElement = document.querySelector<HTMLElement>('[data-testid="tick"]');
 const citizenElement = document.querySelector<HTMLElement>('[data-testid="citizen-count"]');
+const dataElement = document.querySelector<HTMLElement>('[data-testid="data-metric"]');
+const spaceElement = document.querySelector<HTMLElement>('[data-testid="space-metric"]');
+const accessElement = document.querySelector<HTMLElement>('[data-testid="access-metric"]');
+const activityElement = document.querySelector<HTMLElement>('[data-testid="activity-metric"]');
 const statusElement = document.querySelector<HTMLElement>('[data-testid="status"]');
 const speedButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-speed]')];
 const resetButton = document.querySelector<HTMLButtonElement>('[data-action="reset"]');
@@ -14,6 +18,10 @@ if (
   canvas === null ||
   tickElement === null ||
   citizenElement === null ||
+  dataElement === null ||
+  spaceElement === null ||
+  accessElement === null ||
+  activityElement === null ||
   statusElement === null ||
   resetButton === null
 ) {
@@ -21,6 +29,10 @@ if (
 }
 const tickDisplay = tickElement;
 const citizenDisplay = citizenElement;
+const dataDisplay = dataElement;
+const spaceDisplay = spaceElement;
+const accessDisplay = accessElement;
+const activityDisplay = activityElement;
 const statusDisplay = statusElement;
 
 const configuration = { width: 12, height: 10, seed: 1234, citizenCount: 10 } as const;
@@ -36,6 +48,12 @@ function renderHud(): void {
   const snapshot = simulation.getSnapshot();
   tickDisplay.textContent = String(snapshot.tick);
   citizenDisplay.textContent = String(snapshot.citizens.length);
+  dataDisplay.textContent = Number.isInteger(snapshot.data)
+    ? String(snapshot.data)
+    : snapshot.data.toFixed(1);
+  spaceDisplay.textContent = `${String(Math.round(snapshot.metrics.space * 100))}%`;
+  accessDisplay.textContent = `${String(Math.round(snapshot.metrics.access * 100))}%`;
+  activityDisplay.textContent = `${String(Math.round(snapshot.metrics.activity * 100))}%`;
 }
 
 function setSpeed(nextSpeed: number): void {

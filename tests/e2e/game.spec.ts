@@ -14,6 +14,10 @@ test('loads the voxel simulation without console errors', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Idle City' })).toBeVisible();
   await expect(page.getByTestId('status')).toContainText('normal speed');
   await expect(page.locator('#game-canvas')).toBeVisible();
+  await expect(page.getByTestId('data-metric')).toHaveText(/\d+(\.\d+)?/);
+  await expect(page.getByTestId('space-metric')).toHaveText(/\d+%/);
+  await expect(page.getByTestId('access-metric')).toHaveText(/\d+%/);
+  await expect(page.getByTestId('activity-metric')).toHaveText(/\d+%/);
   await expect.poll(() => tick(page)).toBeGreaterThan(0);
   expect(errors).toEqual([]);
 });

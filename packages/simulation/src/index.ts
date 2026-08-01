@@ -6,6 +6,7 @@ export type {
   BuildingType,
   CitizenActivity,
   CitizenSnapshot,
+  CityMetrics,
   Simulation,
   SimulationConfig,
   SimulationSnapshot,

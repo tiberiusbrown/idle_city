@@ -331,6 +331,14 @@ Visible signs:
 
 Detailed metrics may exist in inspection panels and development builds, but the main game should emphasize these three concepts.
 
+The first simulation slice exposes each indicator as a deterministic normalized value from `0` to `1`:
+
+- **Space** is the smaller of housing-capacity coverage and workplace-capacity coverage.
+- **Access** compares the average trip duration with the longest possible direct grid trip. Before a trip completes, the planned home-to-work distance is used.
+- **Activity** is the share of citizens currently working. Home time is scheduled rest, while commuting is travel rather than productive building use.
+
+The current slice generates Data when a citizen completes a work activity. Each completed activity contributes one activity unit multiplied by a bounded efficiency factor derived from the three indicators. A struggling city still receives at least half value, and generation is rounded to six decimal places so headless summaries remain compact and reproducible.
+
 ## 6.2 Tap-to-Explain
 
 Tapping an object opens a short explanation.
@@ -502,6 +510,8 @@ data_per_tick =
 ```
 
 The efficiency factor should be bounded so a temporarily inefficient city still progresses.
+
+The simulation snapshot also reports accumulated Data, Data generated during the most recent tick, completed work activities, and average trip duration. These values are authoritative simulation state and are reused by the HUD and balance runner.
 
 The city may internally simulate money, building costs, and business viability, but the player does not directly manage those systems.
 

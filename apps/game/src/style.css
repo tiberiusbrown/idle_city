@@ -77,7 +77,7 @@ h1 {
 }
 .metrics {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
   margin: 20px 0 14px;
 }
@@ -164,6 +164,7 @@ button.active {
     padding: 15px;
   }
   .metrics {
+    grid-template-columns: repeat(2, 1fr);
     margin: 14px 0 10px;
   }
   .hint {

@@ -45,6 +45,55 @@ describe('simulation', () => {
     expect(left.getSnapshot().citizens[0]?.position.x).toBe(originalX);
   });
 
+  it('reports bounded indicators and generates deterministic Data for completed work', () => {
+    const configuration = {
+      seed: 1,
+      width: 6,
+      height: 5,
+      citizenCount: 1,
+      activityDurationTicks: 1,
+    } as const;
+    const left = createSimulation(configuration);
+    const right = createSimulation(configuration);
+    const initial = left.getSnapshot();
+
+    expect(initial.data).toBe(0);
+    expect(initial.completedActivities).toBe(0);
+    expect(initial.averageTripDurationTicks).toBe(1);
+    expect(initial.metrics).toEqual({ space: 1, access: 8 / 9, activity: 0 });
+
+    let generatedData = false;
+    for (let tick = 0; tick < 20; tick += 1) {
+      const before = left.getSnapshot();
+      left.step();
+      right.step();
+      const after = left.getSnapshot();
+      expect(after).toEqual(right.getSnapshot());
+      expect(after.data).toBeGreaterThanOrEqual(before.data);
+      expect(after.data - before.data).toBeCloseTo(after.dataGeneratedThisTick, 6);
+      for (const value of Object.values(after.metrics)) {
+        expect(value).toBeGreaterThanOrEqual(0);
+        expect(value).toBeLessThanOrEqual(1);
+      }
+      generatedData ||= after.dataGeneratedThisTick > 0;
+    }
+
+    expect(generatedData).toBe(true);
+    expect(left.getSnapshot().completedActivities).toBeGreaterThan(0);
+    expect(left.getSnapshot().data).toBeGreaterThan(0);
+  });
+
+  it('handles co-located homes and workplaces without invalid routes', () => {
+    const simulation = createSimulation({
+      width: 5,
+      height: 5,
+      citizenCount: 1,
+      activityDurationTicks: 1,
+    });
+    for (let tick = 0; tick < 20; tick += 1) simulation.step();
+    expect(simulation.getSnapshot().completedTrips).toBeGreaterThan(0);
+  });
+
   it('does not expose a rendering or frame-time input', () => {
     const simulation = createSimulation({ seed: 5 });
     expect(Object.keys(simulation).sort()).toEqual(['getDeterminismHash', 'getSnapshot', 'step']);

@@ -22,6 +22,16 @@ export interface CitizenSnapshot {
   readonly routeIndex: number;
 }
 
+/**
+ * Normalized city indicators. A value of 1 is healthy and 0 is the worst
+ * state represented by the current simulation slice.
+ */
+export interface CityMetrics {
+  readonly space: number;
+  readonly access: number;
+  readonly activity: number;
+}
+
 export interface SimulationConfig {
   readonly width?: number;
   readonly height?: number;
@@ -37,6 +47,11 @@ export interface SimulationSnapshot {
   readonly tick: number;
   readonly randomState: number;
   readonly completedTrips: number;
+  readonly completedActivities: number;
+  readonly data: number;
+  readonly dataGeneratedThisTick: number;
+  readonly averageTripDurationTicks: number;
+  readonly metrics: CityMetrics;
   readonly buildings: readonly Building[];
   readonly citizens: readonly CitizenSnapshot[];
 }

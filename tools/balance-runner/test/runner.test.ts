@@ -8,6 +8,14 @@ describe('balance runner', () => {
     expect(first).toEqual(second);
     expect(first.citizenCount).toBe(10);
     expect(first.completedTrips).toBeGreaterThan(0);
+    expect(first.completedActivities).toBeGreaterThan(0);
+    expect(first.data).toBeGreaterThan(0);
+    expect(first.metrics.space).toBeGreaterThanOrEqual(0);
+    expect(first.metrics.space).toBeLessThanOrEqual(1);
+    expect(first.metrics.access).toBeGreaterThanOrEqual(0);
+    expect(first.metrics.access).toBeLessThanOrEqual(1);
+    expect(first.metrics.activity).toBeGreaterThanOrEqual(0);
+    expect(first.metrics.activity).toBeLessThanOrEqual(1);
     expect(first.determinismHash).toMatch(/^[0-9a-f]{8}$/);
   });
 });

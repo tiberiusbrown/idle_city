@@ -54,7 +54,7 @@ Run thousands of logical ticks without a browser or graphics stack:
 npm run sim:run -- --seed 1234 --ticks 1000
 ```
 
-The command prints one JSON object containing the seed, executed ticks, citizen count, completed trips, and a stable final-state hash. Repeating identical inputs must produce the same hash.
+The command prints one JSON object containing the seed, executed ticks, citizen count, completed trips and work activities, Data, the three normalized city indicators, and a stable final-state hash. Repeating identical inputs must produce the same summary and hash.
 
 ## Determinism and timing
 
@@ -62,7 +62,7 @@ All random decisions use an explicit `SeededRandom` instance. Never use `Math.ra
 
 ## Current limitations
 
-The slice uses a fully walkable rectangular grid, two static buildings, a simple alternating home/work schedule, and direct grid paths. There is no economy, saving, district placement, developer AI, traffic, collision avoidance, backend, audio, or wrapper packaging yet.
+The slice uses a fully walkable rectangular grid, two static buildings, a simple alternating home/work schedule, direct grid paths, and deterministic Data plus Space/Access/Activity indicators. There are no Data purchases, saving, district placement, developer AI, traffic, collision avoidance, backend, audio, or wrapper packaging yet.
 
 ## Recommended next steps
 
