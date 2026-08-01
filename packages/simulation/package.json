@@ -1,0 +1,11 @@
+{
+  "name": "@idle-city/simulation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@idle-city/shared": "*"
+  }
+}

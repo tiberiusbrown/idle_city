@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "types": ["node", "vite/client", "vite-plugin-pwa/client"]
+  },
+  "include": ["apps/**/*.ts", "packages/**/*.ts", "tools/**/*.ts", "tests/**/*.ts", "*.config.ts"]
+}

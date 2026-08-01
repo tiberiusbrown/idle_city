@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#07101f" />
+    <meta name="description" content="A deterministic voxel city simulation" />
+    <link rel="icon" href="/icon-192.png" />
+    <title>Idle City</title>
+  </head>
+  <body>
+    <main id="app">
+      <canvas id="game-canvas" aria-label="Idle City 3D simulation"></canvas>
+      <section class="hud" aria-label="Simulation controls">
+        <header>
+          <div>
+            <p class="eyebrow">NETWORK 01 / LIVE MODEL</p>
+            <h1>Idle City</h1>
+          </div>
+          <span class="signal" aria-hidden="true"></span>
+        </header>
+        <div class="metrics">
+          <div><span>Tick</span><strong data-testid="tick">0</strong></div>
+          <div><span>Citizens</span><strong data-testid="citizen-count">0</strong></div>
+        </div>
+        <div class="controls">
+          <button type="button" data-speed="pause" aria-label="Pause simulation">Pause</button>
+          <button type="button" data-speed="normal" aria-label="Run at normal speed" class="active">
+            Normal
+          </button>
+          <button type="button" data-speed="fast" aria-label="Run at fast speed">Fast</button>
+          <button type="button" data-action="reset" aria-label="Reset simulation">Reset</button>
+        </div>
+        <p class="status">
+          <span></span><span data-testid="status">Simulation running at normal speed</span>
+        </p>
+      </section>
+      <aside class="hint">Drag to orbit <span>·</span> Pinch or scroll to zoom</aside>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "packages/simulation" },
+    { "path": "packages/renderer" },
+    { "path": "tools/balance-runner" },
+    { "path": "apps/game" }
+  ]
+}
