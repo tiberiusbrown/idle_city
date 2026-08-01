@@ -1,4 +1,5 @@
 import { positionsEqual, stableHash, type GridPosition } from '@idle-city/shared';
+import { calculateCityDemand } from './demand';
 import { findGridPath } from './pathfinding';
 import { SeededRandom } from './random';
 import type {
@@ -41,6 +42,13 @@ function positiveInteger(name: string, value: number, minimum = 1): number {
   return value;
 }
 
+function nonNegativeInteger(name: string, value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative safe integer; received ${String(value)}.`);
+  }
+  return value;
+}
+
 function clampUnit(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
@@ -71,18 +79,26 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     'activityDurationTicks',
     config.activityDurationTicks ?? defaults.activityDurationTicks,
   );
+  const housingCapacity = nonNegativeInteger(
+    'housingCapacity',
+    config.housingCapacity ?? citizenCount,
+  );
+  const workplaceCapacity = nonNegativeInteger(
+    'workplaceCapacity',
+    config.workplaceCapacity ?? citizenCount,
+  );
   const random = new SeededRandom(seed);
   const homeBuilding: Building = {
     id: 'home-1',
     type: 'home',
     position: { x: 2, y: 2 },
-    capacity: citizenCount,
+    capacity: housingCapacity,
   };
   const workplaceBuilding: Building = {
     id: 'workplace-1',
     type: 'workplace',
     position: { x: width - 3, y: height - 3 },
-    capacity: citizenCount,
+    capacity: workplaceCapacity,
   };
   const buildings: Building[] = [homeBuilding, workplaceBuilding];
   const citizens: CitizenState[] = Array.from({ length: citizenCount }, (_, index) => ({
@@ -210,30 +226,35 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     }
   };
 
-  const snapshot = (): SimulationSnapshot => ({
-    width,
-    height,
-    seed,
-    tick,
-    randomState: random.getState(),
-    completedTrips,
-    completedActivities,
-    data,
-    dataGeneratedThisTick,
-    ...calculateMetrics(),
-    buildings: buildings.map((building) => ({ ...building, position: { ...building.position } })),
-    citizens: citizens.map((citizen): CitizenSnapshot => ({
-      id: citizen.id,
-      position: { ...citizen.position },
-      previousPosition: { ...citizen.previousPosition },
-      homeBuildingId: citizen.homeBuildingId,
-      workplaceBuildingId: citizen.workplaceBuildingId,
-      activity: citizen.activity,
-      activityTicksRemaining: citizen.activityTicksRemaining,
-      route: citizen.route.map((position) => ({ ...position })),
-      routeIndex: citizen.routeIndex,
-    })),
-  });
+  const snapshot = (): SimulationSnapshot => {
+    const { metrics, averageTripDurationTicks } = calculateMetrics();
+    return {
+      width,
+      height,
+      seed,
+      tick,
+      randomState: random.getState(),
+      completedTrips,
+      completedActivities,
+      data,
+      dataGeneratedThisTick,
+      averageTripDurationTicks,
+      metrics,
+      demand: calculateCityDemand({ width, height, buildings, citizens, metrics }),
+      buildings: buildings.map((building) => ({ ...building, position: { ...building.position } })),
+      citizens: citizens.map((citizen): CitizenSnapshot => ({
+        id: citizen.id,
+        position: { ...citizen.position },
+        previousPosition: { ...citizen.previousPosition },
+        homeBuildingId: citizen.homeBuildingId,
+        workplaceBuildingId: citizen.workplaceBuildingId,
+        activity: citizen.activity,
+        activityTicksRemaining: citizen.activityTicksRemaining,
+        route: citizen.route.map((position) => ({ ...position })),
+        routeIndex: citizen.routeIndex,
+      })),
+    };
+  };
 
   return {
     step(): void {

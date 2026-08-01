@@ -43,6 +43,18 @@ describe('simulation', () => {
     const originalX = firstCitizen.position.x;
     (firstCitizen.position as { x: number }).x = 999;
     expect(left.getSnapshot().citizens[0]?.position.x).toBe(originalX);
+    const firstDemandCell = snapshot.demand.cells[0];
+    if (firstDemandCell === undefined) throw new Error('The demand grid must not be empty.');
+    const originalDemandX = firstDemandCell.position.x;
+    const originalLivingDemand = firstDemandCell.living;
+    const originalTotal = snapshot.demand.totals.living;
+    (firstDemandCell.position as { x: number }).x = 999;
+    (firstDemandCell as { living: number }).living = 999;
+    (snapshot.demand.totals as { living: number }).living = 999;
+    const detachedSnapshot = left.getSnapshot();
+    expect(detachedSnapshot.demand.cells[0]?.position.x).toBe(originalDemandX);
+    expect(detachedSnapshot.demand.cells[0]?.living).toBe(originalLivingDemand);
+    expect(detachedSnapshot.demand.totals.living).toBe(originalTotal);
   });
 
   it('reports bounded indicators and generates deterministic Data for completed work', () => {

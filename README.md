@@ -52,9 +52,10 @@ Run thousands of logical ticks without a browser or graphics stack:
 
 ```bash
 npm run sim:run -- --seed 1234 --ticks 1000
+npm run sim:run -- --scenario long-commute --seed 1234 --ticks 1000
 ```
 
-The command prints one JSON object containing the seed, executed ticks, citizen count, completed trips and work activities, Data, the three normalized city indicators, and a stable final-state hash. Repeating identical inputs must produce the same summary and hash.
+The command prints one JSON object containing the scenario, seed, executed ticks, citizen count, completed trips and work activities, Data, demand totals, the three normalized city indicators, invariant failures, and a stable final-state hash. Named scenarios are `baseline`, `long-commute`, `capacity-pressure`, and `compact`; omitting `--scenario` preserves the baseline command. Repeating identical inputs must produce byte-identical JSON and the same hash.
 
 ## Determinism and timing
 
@@ -62,8 +63,8 @@ All random decisions use an explicit `SeededRandom` instance. Never use `Math.ra
 
 ## Current limitations
 
-The slice uses a fully walkable rectangular grid, two static buildings, a simple alternating home/work schedule, direct grid paths, and deterministic Data plus Space/Access/Activity indicators. There are no Data purchases, saving, district placement, developer AI, traffic, collision avoidance, backend, audio, or wrapper packaging yet.
+The slice uses a fully walkable rectangular grid, two static buildings, a simple alternating home/work schedule, direct grid paths, a deterministic spatial demand model, and deterministic Data plus Space/Access/Activity indicators. There are no Data purchases, saving, district placement, developer AI, traffic, collision avoidance, backend, audio, or wrapper packaging yet.
 
 ## Recommended next steps
 
-The next useful feature is a demand model expressed entirely in `packages/simulation`, followed by district seed commands and deterministic autonomous-developer decisions. Add balance-runner scenarios and invariants before exposing those commands in the UI. Later work can add compact save-file versioning, worker-thread simulation, richer voxel batching, and Capacitor packaging without changing the authoritative-state boundary.
+The next useful feature is district seed commands that influence the existing demand fields, followed by deterministic autonomous-developer decisions. Later work can add compact save-file versioning, worker-thread simulation, richer voxel batching, and Capacitor packaging without changing the authoritative-state boundary.

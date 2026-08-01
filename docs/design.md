@@ -339,6 +339,8 @@ The first simulation slice exposes each indicator as a deterministic normalized 
 
 The current slice generates Data when a citizen completes a work activity. Each completed activity contributes one activity unit multiplied by a bounded efficiency factor derived from the three indicators. A struggling city still receives at least half value, and generation is rounded to six decimal places so headless summaries remain compact and reproducible.
 
+The simulation also publishes a spatial demand field for the three starting activity kinds: Living, Working, and Services. Each grid cell contains normalized demand, and the snapshot includes aggregate totals. The initial field uses housing and workplace capacity shortage, local building saturation, travel pressure from Access, and nearby complementary uses. District seeds are not implemented yet; their future influence enters through a dedicated demand extension point.
+
 ## 6.2 Tap-to-Explain
 
 Tapping an object opens a short explanation.
