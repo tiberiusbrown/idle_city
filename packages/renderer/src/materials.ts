@@ -21,6 +21,8 @@ export interface CityMaterials {
   readonly influenceLiving: PBRMaterial;
   readonly influenceWorking: PBRMaterial;
   readonly influenceServices: PBRMaterial;
+  readonly placementValid: PBRMaterial;
+  readonly placementInvalid: PBRMaterial;
 }
 
 function createMaterial(
@@ -92,6 +94,20 @@ export function createCityMaterials(scene: Scene): CityMaterials {
       services,
       0.25,
       0.2,
+    ),
+    placementValid: createMaterial(
+      scene,
+      'placement-valid-material',
+      new Color3(0.26, 0.95, 0.66),
+      0.6,
+      0.5,
+    ),
+    placementInvalid: createMaterial(
+      scene,
+      'placement-invalid-material',
+      new Color3(0.98, 0.3, 0.32),
+      0.6,
+      0.5,
     ),
   };
 }

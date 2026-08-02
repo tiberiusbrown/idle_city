@@ -1,4 +1,5 @@
-import type { ChunkCoordinate } from '@idle-city/shared';
+import type { ChunkCoordinate, GridPosition } from '@idle-city/shared';
+import '@babylonjs/core/Culling/ray';
 import { ArcRotateCamera } from '@babylonjs/core/Cameras/arcRotateCamera';
 import type { AbstractEngine } from '@babylonjs/core/Engines/abstractEngine';
 import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
@@ -14,11 +15,17 @@ import { DEFAULT_LOGICAL_CELL_WORLD_SCALE } from './coordinates';
 import { createCityMaterials } from './materials';
 import { createSeedLayer } from './seeds';
 import { createConstructionLayer } from './construction';
+import { logicalCellToChunk, pointerToCanvasPosition, worldToLogicalCell } from './coordinates';
+import { createPlacementPreviewLayer, type PlacementPreview } from './placement-preview';
 
 export {
   DEFAULT_LOGICAL_CELL_WORLD_SCALE,
   footprintToWorldCenter,
+  logicalCellToChunk,
   logicalToWorld,
+  pointerToCanvasPosition,
+  worldToChunk,
+  worldToLogicalCell,
 } from './coordinates';
 
 export interface CitySceneOptions {
@@ -36,9 +43,16 @@ export interface CitySceneStructuralCounters {
   readonly meshCount: number;
 }
 
+export interface PickedLogicalCell {
+  readonly position: GridPosition;
+  readonly chunk: ChunkCoordinate;
+}
+
 export interface CityScene {
   readonly scene: Scene;
   update(snapshot: SimulationSnapshot, interpolation: number): void;
+  pickLogicalCell(clientX: number, clientY: number): PickedLogicalCell | undefined;
+  setPlacementPreview(preview: PlacementPreview | undefined): void;
   setVisibleChunks(chunks: readonly ChunkCoordinate[]): void;
   getStructuralCounters(): CitySceneStructuralCounters;
   dispose(): void;
@@ -94,10 +108,13 @@ export function createCityScene(
     options.seedInfluenceRadius ?? Math.max(1, initial.chunkSize * 2),
     materials,
   );
+  const placementPreview = createPlacementPreviewLayer(scene, cellWorldScale, materials);
+  let chunkSize = initial.chunkSize;
   let disposed = false;
 
   const update = (snapshot: SimulationSnapshot, interpolation: number): void => {
     if (disposed) throw new Error('Cannot update a disposed city scene.');
+    chunkSize = snapshot.chunkSize;
     ground.reconcile(snapshot);
     buildings.reconcile(snapshot.buildings);
     construction.reconcile(snapshot.constructionProjects);
@@ -110,6 +127,22 @@ export function createCityScene(
   return {
     scene,
     update,
+    pickLogicalCell(clientX: number, clientY: number): PickedLogicalCell | undefined {
+      if (disposed) throw new Error('Cannot pick on a disposed city scene.');
+      const canvas = engine.getRenderingCanvas();
+      if (canvas === null) return undefined;
+      const pointer = pointerToCanvasPosition({ clientX, clientY }, canvas);
+      const pick = scene.pick(pointer.x, pointer.y, (mesh) =>
+        mesh.name.startsWith('ground-chunk-'),
+      );
+      if (!pick.hit || pick.pickedPoint === null) return undefined;
+      const position = worldToLogicalCell(pick.pickedPoint, cellWorldScale);
+      return { position, chunk: logicalCellToChunk(position, chunkSize) };
+    },
+    setPlacementPreview(preview: PlacementPreview | undefined): void {
+      if (disposed) throw new Error('Cannot update a disposed city scene.');
+      placementPreview.setPreview(preview);
+    },
     setVisibleChunks(chunks: readonly ChunkCoordinate[]): void {
       if (disposed) throw new Error('Cannot change visibility on a disposed city scene.');
       ground.setVisibleChunks(chunks);
@@ -128,6 +161,7 @@ export function createCityScene(
       buildings.dispose();
       construction.dispose();
       seeds.dispose();
+      placementPreview.dispose();
       ground.dispose();
       camera.detachControl();
       scene.dispose();

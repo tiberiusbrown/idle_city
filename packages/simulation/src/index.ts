@@ -91,6 +91,7 @@ export type {
   DevelopmentReasonCode,
   DistrictSeed,
   DistrictSeedKind,
+  DistrictSeedPlacementPreview,
   LegacyCityDemand,
   PlaceDistrictSeedCommand,
   RejectedCommandResult,

@@ -28,6 +28,14 @@
           <div><span>Activity</span><strong data-testid="activity-metric">0%</strong></div>
         </div>
         <div class="controls">
+          <button
+            type="button"
+            data-action="build"
+            aria-label="Open Build menu"
+            aria-expanded="false"
+          >
+            Build
+          </button>
           <button type="button" data-speed="pause" aria-label="Pause simulation">Pause</button>
           <button type="button" data-speed="normal" aria-label="Run at normal speed" class="active">
             Normal
@@ -38,6 +46,57 @@
         <p class="status">
           <span></span><span data-testid="status">Simulation running at normal speed</span>
         </p>
+        <p class="entity-summary" aria-label="City entities">
+          <span data-testid="seed-count">0 seeds</span>
+          <span data-testid="building-count">2 buildings</span>
+          <span data-testid="project-count">0 projects</span>
+        </p>
+        <section class="build-panel" data-testid="build-panel" aria-labelledby="build-title" hidden>
+          <div class="panel-heading">
+            <h2 id="build-title">Build</h2>
+            <span class="panel-kicker">District seeds</span>
+          </div>
+          <p class="panel-copy">Choose a district, then tap or click a visible active cell.</p>
+          <div class="build-options" aria-label="District seed choices">
+            <button
+              type="button"
+              data-build-kind="living"
+              aria-label="Choose Living district seed"
+              aria-pressed="false"
+            >
+              <span>Living</span><small data-testid="living-cost">Data cost</small>
+            </button>
+            <button
+              type="button"
+              data-build-kind="working"
+              aria-label="Choose Working district seed"
+              aria-pressed="false"
+            >
+              <span>Working</span><small data-testid="working-cost">Data cost</small>
+            </button>
+          </div>
+          <p
+            class="placement-status"
+            data-testid="placement-status"
+            role="status"
+            aria-live="polite"
+          >
+            Choose Living or Working to enter placement mode.
+          </p>
+          <p class="placement-cost" data-testid="placement-cost">
+            Select a district to see its cost.
+          </p>
+          <p class="build-data" data-testid="build-data">Data available: 0</p>
+          <button
+            type="button"
+            class="cancel-button"
+            data-action="cancel-placement"
+            aria-label="Cancel placement"
+            hidden
+          >
+            Cancel placement
+          </button>
+        </section>
       </section>
       <aside class="hint">Drag to orbit <span>·</span> Pinch or scroll to zoom</aside>
     </main>

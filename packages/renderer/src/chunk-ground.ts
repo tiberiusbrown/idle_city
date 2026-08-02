@@ -65,7 +65,7 @@ export function createChunkGroundLayer(
     mesh.position = chunkToWorldCenter(summary.chunk, snapshot.chunkSize, options.cellWorldScale);
     mesh.material =
       (summary.chunk.x + summary.chunk.y) % 2 === 0 ? materials.ground : materials.alternateGround;
-    mesh.isPickable = false;
+    mesh.isPickable = true;
     chunkRebuilds += 1;
     return { key: summary.key, revision: summary.occupancyRevision, mesh };
   };

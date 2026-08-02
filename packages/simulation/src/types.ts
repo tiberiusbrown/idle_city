@@ -106,6 +106,19 @@ export interface PlaceDistrictSeedCommand {
 export type CommandRejectionReason =
   'invalid-kind' | 'out-of-bounds' | 'inactive-chunk' | 'occupied' | 'locked' | 'insufficient-data';
 
+export interface ValidDistrictSeedPlacementPreview {
+  readonly valid: true;
+  readonly cost: number;
+}
+
+export interface InvalidDistrictSeedPlacementPreview {
+  readonly valid: false;
+  readonly reason: CommandRejectionReason;
+}
+
+export type DistrictSeedPlacementPreview =
+  ValidDistrictSeedPlacementPreview | InvalidDistrictSeedPlacementPreview;
+
 export interface AcceptedCommandResult {
   readonly accepted: true;
   readonly seed: DistrictSeed;
@@ -291,6 +304,7 @@ export interface SimulationSnapshot {
 
 export interface Simulation {
   step(): void;
+  previewDistrictSeed(command: PlaceDistrictSeedCommand): DistrictSeedPlacementPreview;
   placeDistrictSeed(command: PlaceDistrictSeedCommand): CommandResult;
   activateChunk(command: ActivateChunkCommand): ChunkActivationResult;
   getDemandChunk(chunk: ChunkCoordinate): DemandChunkSnapshot | undefined;

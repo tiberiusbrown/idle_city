@@ -63,8 +63,8 @@ All random decisions use an explicit `SeededRandom` instance. Never use `Math.ra
 
 ## Current limitations
 
-The slice uses a finite active-chunk set, multi-cell buildings and construction projects, exterior entrances, deterministic population growth over compatible home/work capacity, entrance-distance assignment, a simple alternating home/work schedule, deterministic A* routes, deterministic district seed commands and chunked demand influence, deterministic developer scoring, staged survey/blueprint/foundation/frame/completion phases, deterministic Data plus Space/Access/Activity indicators, and dynamic stable-ID renderer reconciliation for buildings, citizens, projects, and seeds. There are no browser seed controls, automatic expansion policy, services, traffic, collision avoidance, backend, audio, or wrapper packaging yet.
+The slice uses a finite active-chunk set, multi-cell buildings and construction projects, exterior entrances, deterministic population growth over compatible home/work capacity, entrance-distance assignment, a simple alternating home/work schedule, deterministic A* routes, mouse/touch Living and Working district seed placement, chunked demand influence, deterministic developer scoring, staged survey/blueprint/foundation/frame/completion phases, deterministic Data plus Space/Access/Activity indicators, and dynamic stable-ID renderer reconciliation for buildings, citizens, projects, and seeds. There is no automatic expansion policy, services behavior, traffic measurement, collision avoidance, backend, audio, or wrapper packaging yet.
 
 ## Recommended next steps
 
-Later work can add compact save-file versioning, worker-thread simulation, richer voxel batching, browser seed controls, and Capacitor packaging without changing the authoritative-state boundary.
+The next focused slice is traffic measurement: deterministic bounded route-use history that can later support congestion-aware routing without changing the authoritative-state boundary.

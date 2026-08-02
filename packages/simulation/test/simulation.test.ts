@@ -126,6 +126,7 @@ describe('simulation', () => {
       'getDeterminismHash',
       'getSnapshot',
       'placeDistrictSeed',
+      'previewDistrictSeed',
       'queryDemandRegion',
       'step',
     ]);

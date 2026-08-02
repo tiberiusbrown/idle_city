@@ -73,6 +73,12 @@ Babylon is downstream of snapshots. Logical-to-world conversion is centralized a
 
 The city scene owns separate renderer layers for chunk ground, completed buildings, citizens, construction projects, and district seeds. Each layer keeps a renderer-only map keyed by the authoritative snapshot ID. A snapshot-only ID creates a visual, a shared ID updates the existing visual, and a renderer-only ID disposes its visual subtree. Entity IDs are never generated or written back by the renderer. Completed buildings use footprint-sized bodies, citizens interpolate detached previous/current positions at render scale, projects toggle phase-specific shared-material visuals, and seeds show a marker plus bounded influence diamond. Repeating an unchanged snapshot does not create new resources. Layer disposal clears its maps and child nodes; final scene disposal releases the shared materials and remaining Babylon resources.
 
+## Browser district placement
+
+The Build drawer exposes only the unlocked Living and Working seed kinds. The game shell reads the authoritative seed cost and sends a `PlaceDistrictSeedCommand`; it does not duplicate Data, occupancy, lock, or active-chunk rules. A non-mutating simulation preview uses the same validation path to drive plain-language valid/invalid feedback before submission. Accepted and rejected command results update an `aria-live` status, while the renderer immediately reconciles the detached snapshot and projects the seed.
+
+Pointer picking is renderer-owned. Babylon picks only visible active-chunk ground meshes, then centralized coordinate helpers convert the picked world position to a logical cell and signed chunk using floor-based conversion. The renderer owns one reusable valid/invalid placement preview mesh. Touch uses the same pointer event path, and cancellation clears the preview without touching simulation state.
+
 Renderer structural counters expose visible/rendered chunks, chunk rebuilds, and mesh count for bounded-resource tests. Ground continues to reconcile by stable chunk key and occupancy revision, while entity layers reconcile by authoritative entity ID.
 
 ## Snapshots and balance runner
@@ -83,4 +89,4 @@ The headless balance runner reports active/allocated chunks, optional occupancy 
 
 ## Deferred systems
 
-This step intentionally does not add movement reservations, congestion costs, roads, transit, chunk removal, player-facing expansion controls, polygon footprints, detailed voxel meshing, services, demolition, conversion, redevelopment, construction bots, or browser seed placement controls.
+This step intentionally does not add movement reservations, congestion costs, roads, transit, chunk removal, player-facing expansion controls, polygon footprints, detailed voxel meshing, services, demolition, conversion, redevelopment, construction bots, or traffic measurement.

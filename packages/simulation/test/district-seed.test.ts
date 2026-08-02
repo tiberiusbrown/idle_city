@@ -86,6 +86,31 @@ describe('authoritative district seed commands', () => {
     expect(simulation.getSnapshot().data).toBe(before.data - DISTRICT_SEED_COSTS.working);
   });
 
+  it('previews the same authoritative validation without mutating state', () => {
+    const simulation = createSimulation({ startingData: DISTRICT_SEED_COSTS.living });
+    const before = simulation.getSnapshot();
+    const hashBefore = simulation.getDeterminismHash();
+
+    expect(simulation.previewDistrictSeed({ kind: 'living', position: { x: 6, y: 6 } })).toEqual({
+      valid: true,
+      cost: DISTRICT_SEED_COSTS.living,
+    });
+    expect(simulation.getSnapshot()).toEqual(before);
+    expect(simulation.getDeterminismHash()).toBe(hashBefore);
+
+    expect(
+      simulation.placeDistrictSeed({ kind: 'living', position: { x: 6, y: 6 } }).accepted,
+    ).toBe(true);
+    expect(simulation.previewDistrictSeed({ kind: 'working', position: { x: 6, y: 6 } })).toEqual({
+      valid: false,
+      reason: 'occupied',
+    });
+    expect(simulation.previewDistrictSeed({ kind: 'services', position: { x: 7, y: 6 } })).toEqual({
+      valid: false,
+      reason: 'locked',
+    });
+  });
+
   it('rejects insufficient Data and locked Services without changing state', () => {
     const simulation = createSimulation();
     expectMutationFreeRejection(

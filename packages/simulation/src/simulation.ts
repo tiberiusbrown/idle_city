@@ -47,6 +47,7 @@ import type {
   CityMetrics,
   ConstructionPhase,
   ConstructionProject,
+  CommandRejectionReason,
   CommandResult,
   DemandCell,
   DemandChunkSnapshot,
@@ -56,6 +57,7 @@ import type {
   DevelopmentCandidate,
   DistrictSeed,
   DistrictSeedKind,
+  DistrictSeedPlacementPreview,
   PlaceDistrictSeedCommand,
   Simulation,
   SimulationConfig,
@@ -102,6 +104,18 @@ interface ConstructionProjectState {
   readonly spatialFactor: number;
   readonly expectedAccessImprovement: number;
 }
+
+type DistrictSeedPlacementValidation =
+  | {
+      readonly accepted: true;
+      readonly kind: DistrictSeedKind;
+      readonly position: GridPosition;
+      readonly cost: number;
+    }
+  | {
+      readonly accepted: false;
+      readonly reason: CommandRejectionReason;
+    };
 
 const defaults = {
   chunkSize: DEFAULT_CHUNK_SIZE,
@@ -451,6 +465,36 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
 
   const isDistrictSeedKind = (value: unknown): value is DistrictSeedKind =>
     value === 'living' || value === 'working' || value === 'services';
+
+  const validateDistrictSeedPlacement = (
+    command: PlaceDistrictSeedCommand,
+  ): DistrictSeedPlacementValidation => {
+    const requestedPosition = command.position;
+    if (!Number.isSafeInteger(requestedPosition.x) || !Number.isSafeInteger(requestedPosition.y)) {
+      return { accepted: false, reason: 'out-of-bounds' };
+    }
+    if (!spatial.isPositionActive(requestedPosition)) {
+      return { accepted: false, reason: 'inactive-chunk' };
+    }
+    if (seeds.some((districtSeed) => positionsEqual(districtSeed.position, requestedPosition))) {
+      return { accepted: false, reason: 'occupied' };
+    }
+    const requestedKind: unknown = command.kind;
+    if (!isDistrictSeedKind(requestedKind)) {
+      return { accepted: false, reason: 'invalid-kind' };
+    }
+    if (!isDistrictSeedKindUnlocked(requestedKind)) {
+      return { accepted: false, reason: 'locked' };
+    }
+    const cost = getDistrictSeedCost(requestedKind);
+    if (data < cost) return { accepted: false, reason: 'insufficient-data' };
+    return {
+      accepted: true,
+      kind: requestedKind,
+      position: copyPosition(requestedPosition),
+      cost,
+    };
+  };
 
   const buildingById = (id: string): Building => {
     const building = buildingsById.get(id);
@@ -1384,43 +1428,29 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (tick % developmentEvaluationIntervalTicks === 0) evaluateDevelopers();
       assertPopulationInvariants();
     },
+    previewDistrictSeed(command: PlaceDistrictSeedCommand): DistrictSeedPlacementPreview {
+      const validation = validateDistrictSeedPlacement(command);
+      return validation.accepted
+        ? { valid: true, cost: validation.cost }
+        : { valid: false, reason: validation.reason };
+    },
     placeDistrictSeed(command: PlaceDistrictSeedCommand): CommandResult {
-      const requestedPosition = command.position;
-      if (
-        !Number.isSafeInteger(requestedPosition.x) ||
-        !Number.isSafeInteger(requestedPosition.y)
-      ) {
-        return { accepted: false, reason: 'out-of-bounds' };
-      }
-      if (!spatial.isPositionActive(requestedPosition)) {
-        return { accepted: false, reason: 'inactive-chunk' };
-      }
-      if (seeds.some((districtSeed) => positionsEqual(districtSeed.position, requestedPosition))) {
-        return { accepted: false, reason: 'occupied' };
-      }
-      const requestedKind = command.kind;
-      if (!isDistrictSeedKind(requestedKind)) {
-        return { accepted: false, reason: 'invalid-kind' };
-      }
-      if (!isDistrictSeedKindUnlocked(requestedKind)) {
-        return { accepted: false, reason: 'locked' };
-      }
-      const cost = getDistrictSeedCost(requestedKind);
-      if (data < cost) return { accepted: false, reason: 'insufficient-data' };
+      const validation = validateDistrictSeedPlacement(command);
+      if (!validation.accepted) return validation;
       const districtSeed: DistrictSeed = {
         id: `district-seed-${String(nextSeedId)}`,
-        kind: requestedKind,
-        position: copyPosition(requestedPosition),
+        kind: validation.kind,
+        position: copyPosition(validation.position),
       };
       seeds.push(districtSeed);
       nextSeedId += 1;
-      data = roundData(data - cost);
+      data = roundData(data - validation.cost);
       developmentStateVersion += 1;
-      markDemandAroundPosition(requestedPosition);
+      markDemandAroundPosition(validation.position);
       return {
         accepted: true,
         seed: { ...districtSeed, position: copyPosition(districtSeed.position) },
-        cost,
+        cost: validation.cost,
       };
     },
     activateChunk(command: ActivateChunkCommand): ChunkActivationResult {

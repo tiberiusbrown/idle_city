@@ -108,6 +108,27 @@ describe('visible chunk city scene', () => {
     engine.dispose();
   });
 
+  it('reuses one valid or invalid placement preview mesh', () => {
+    const engine = new NullEngine();
+    const snapshot = createSimulation().getSnapshot();
+    const city = createCityScene(engine, snapshot, { visibleChunks: [{ x: 0, y: 0 }] });
+    city.setPlacementPreview({ position: { x: 6, y: 6 }, valid: true });
+    const preview = city.scene.getMeshByName('placement-preview');
+    if (preview === null) throw new Error('The placement preview was not rendered.');
+    expect(preview.isVisible).toBe(true);
+    expect(preview.material?.name).toBe('placement-valid-material');
+    const meshCount = city.scene.meshes.length;
+
+    city.setPlacementPreview({ position: { x: 7, y: 6 }, valid: false });
+    expect(city.scene.meshes.length).toBe(meshCount);
+    expect(preview.material?.name).toBe('placement-invalid-material');
+    expect(preview.position.x).toBeCloseTo((7 + 0.5) * 0.25);
+    city.setPlacementPreview(undefined);
+    expect(preview.isVisible).toBe(false);
+    city.dispose();
+    engine.dispose();
+  });
+
   it('renders construction phases, removes projects, and shows the replacement building', () => {
     const engine = new NullEngine();
     const simulation = createSimulation({
