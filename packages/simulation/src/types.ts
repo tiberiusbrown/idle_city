@@ -27,6 +27,17 @@ export interface Building {
   readonly capacity: number;
 }
 
+/** Detached authoritative occupancy for one completed building. */
+export interface BuildingOccupancy {
+  readonly buildingId: string;
+  readonly buildingType: BuildingType;
+  readonly occupied: number;
+  /** Alias retained in the snapshot so consumers can use occupancy terminology directly. */
+  readonly occupancy: number;
+  readonly capacity: number;
+  readonly available: number;
+}
+
 /**
  * A valid, ranked development option from the most recent fixed-cadence
  * evaluation. Candidates are derived data; only an accepted candidate becomes
@@ -226,10 +237,21 @@ export interface SimulationConfig {
   readonly width?: number;
   readonly height?: number;
   readonly seed?: number;
+  /** Number of citizens present when the simulation is created. Zero is valid. */
   readonly citizenCount?: number;
+  /** Alias for citizenCount used by population-focused scenarios. */
+  readonly initialPopulation?: number;
   readonly activityDurationTicks?: number;
   readonly housingCapacity?: number;
   readonly workplaceCapacity?: number;
+  /** Maximum number of citizens that may exist at once. */
+  readonly populationCap?: number;
+  /** Alias for populationCap retained for headless scenario readability. */
+  readonly maxPopulation?: number;
+  /** Fixed logical ticks between population growth attempts. */
+  readonly populationGrowthCadenceTicks?: number;
+  /** Alias for populationGrowthCadenceTicks. */
+  readonly populationGrowthIntervalTicks?: number;
   readonly startingData?: number;
   /** Logical ticks between deterministic developer evaluations. */
   readonly developmentEvaluationIntervalTicks?: number;
@@ -249,6 +271,8 @@ export interface SimulationSnapshot {
   readonly seed: number;
   readonly tick: number;
   readonly randomState: number;
+  readonly populationCap: number;
+  readonly populationGrowthCadenceTicks: number;
   readonly completedTrips: number;
   readonly completedActivities: number;
   readonly data: number;
@@ -259,6 +283,7 @@ export interface SimulationSnapshot {
   readonly structural: SimulationStructuralCounters;
   readonly seeds: readonly DistrictSeed[];
   readonly buildings: readonly Building[];
+  readonly occupancy: readonly BuildingOccupancy[];
   readonly citizens: readonly CitizenSnapshot[];
   readonly developmentCandidates: readonly DevelopmentCandidate[];
   readonly constructionProjects: readonly ConstructionProject[];

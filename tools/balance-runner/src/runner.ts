@@ -37,6 +37,12 @@ export const balanceScenarioNames = [
   'obstacle-constrained',
   'no-valid-footprint',
   'long-run-construction',
+  'housing-surplus',
+  'workplace-surplus',
+  'balanced-expansion',
+  'tie',
+  'capped-growth',
+  'long-run-city',
 ] as const;
 
 export type BalanceScenarioName = (typeof balanceScenarioNames)[number];
@@ -230,6 +236,83 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     ],
     activations: [],
   },
+  'housing-surplus': {
+    config: {
+      citizenCount: 1,
+      housingCapacity: 6,
+      workplaceCapacity: 1,
+      populationCap: 6,
+      populationGrowthCadenceTicks: 5,
+    },
+    commands: [],
+    activations: [],
+  },
+  'workplace-surplus': {
+    config: {
+      citizenCount: 1,
+      housingCapacity: 1,
+      workplaceCapacity: 6,
+      populationCap: 6,
+      populationGrowthCadenceTicks: 5,
+    },
+    commands: [],
+    activations: [],
+  },
+  'balanced-expansion': {
+    config: {
+      citizenCount: 1,
+      housingCapacity: 6,
+      workplaceCapacity: 6,
+      populationCap: 6,
+      populationGrowthCadenceTicks: 5,
+    },
+    commands: [],
+    activations: [],
+  },
+  tie: {
+    config: {
+      citizenCount: 0,
+      housingCapacity: 4,
+      workplaceCapacity: 4,
+      populationCap: 4,
+      populationGrowthCadenceTicks: 1,
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 10, y: 2 },
+    },
+    commands: [],
+    activations: [],
+  },
+  'capped-growth': {
+    config: {
+      citizenCount: 1,
+      housingCapacity: 8,
+      workplaceCapacity: 8,
+      populationCap: 3,
+      populationGrowthCadenceTicks: 5,
+    },
+    commands: [],
+    activations: [],
+  },
+  'long-run-city': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      citizenCount: 1,
+      housingCapacity: 4,
+      workplaceCapacity: 20,
+      populationCap: 20,
+      populationGrowthCadenceTicks: 5,
+      startingData: DISTRICT_SEED_COSTS.living + DISTRICT_SEED_COSTS.working,
+      developmentEvaluationIntervalTicks: 10,
+    },
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 4, y: 4 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 5, y: 4 } } },
+    ],
+    activations: [],
+  },
 };
 
 export function isBalanceScenarioName(value: string): value is BalanceScenarioName {
@@ -262,6 +345,9 @@ export interface BalanceOptions {
   readonly seed: number;
   readonly ticks: number;
   readonly citizenCount?: number;
+  readonly initialPopulation?: number;
+  readonly populationCap?: number;
+  readonly populationGrowthCadenceTicks?: number;
   readonly scenario?: BalanceScenarioName;
   readonly commands?: readonly ScheduledDistrictSeedCommand[];
   readonly activations?: readonly ScheduledChunkActivationCommand[];
@@ -284,6 +370,8 @@ export interface BalanceSummary {
   readonly seed: number;
   readonly ticks: number;
   readonly citizenCount: number;
+  readonly populationCap: number;
+  readonly populationGrowthCadenceTicks: number;
   readonly completedTrips: number;
   readonly completedActivities: number;
   readonly data: number;
@@ -352,12 +440,17 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     ['home', 0],
     ['workplace', 0],
   ]);
+  const homeOccupancy = new Map<string, number>();
+  const workplaceOccupancy = new Map<string, number>();
   for (const building of snapshot.buildings) {
     if (buildingIds.has(building.id)) fail(`duplicate building id ${building.id}`);
     buildingIds.add(building.id);
     const typeCapacity = capacityByType.get(building.type);
     if (typeCapacity === undefined) fail(`unsupported building type ${building.type}`);
     else capacityByType.set(building.type, typeCapacity + building.capacity);
+    if (!Number.isSafeInteger(building.capacity) || building.capacity < 0) {
+      fail(`building ${building.id} has invalid capacity`);
+    }
     if (!isExteriorEntrance(building.entrance, building.footprint)) {
       fail(`building ${building.id} entrance is not exterior`);
     }
@@ -369,6 +462,32 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     }
     if (!active(snapshot, building.entrance)) fail(`building ${building.id} entrance is inactive`);
   }
+
+  const occupancyIds = new Set<string>();
+  for (const entry of snapshot.occupancy) {
+    if (occupancyIds.has(entry.buildingId)) {
+      fail(`duplicate occupancy entry ${entry.buildingId}`);
+    }
+    occupancyIds.add(entry.buildingId);
+    const building = snapshot.buildings.find(({ id }) => id === entry.buildingId);
+    if (building === undefined) {
+      fail(`occupancy references missing building ${entry.buildingId}`);
+      continue;
+    }
+    if (entry.buildingType !== building.type) {
+      fail(`occupancy type mismatch for ${entry.buildingId}`);
+    }
+    if (
+      entry.occupied !== entry.occupancy ||
+      entry.capacity !== building.capacity ||
+      entry.occupied < 0 ||
+      entry.occupied > entry.capacity ||
+      entry.available !== entry.capacity - entry.occupied
+    ) {
+      fail(`occupancy is invalid for ${entry.buildingId}`);
+    }
+  }
+  if (occupancyIds.size !== buildingIds.size) fail('occupancy does not cover buildings');
 
   const projectIds = new Set<string>();
   for (const project of snapshot.constructionProjects) {
@@ -407,25 +526,65 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
       fail(`demand summary cell count is invalid for ${chunk.key}`);
     }
     for (const value of Object.values(chunk.totals)) {
-      if (!Number.isFinite(value) || value < 0) fail(`demand total is invalid for ${chunk.key}`);
+      if (!Number.isFinite(value) || value < 0 || value > snapshot.chunkSize * snapshot.chunkSize) {
+        fail(`demand total is invalid for ${chunk.key}`);
+      }
     }
   }
   if (demandKeys.size !== activeKeys.size) fail('demand summaries do not cover active chunks');
   for (const value of Object.values(snapshot.demand.totals)) {
-    if (!Number.isFinite(value) || value < 0) fail('global demand total is invalid');
+    if (
+      !Number.isFinite(value) ||
+      value < 0 ||
+      value > snapshot.activeChunkCount * snapshot.chunkSize * snapshot.chunkSize
+    ) {
+      fail('global demand total is invalid');
+    }
   }
 
+  const citizenIds = new Set<string>();
+  const validActivities = new Set(['home', 'commuting-to-work', 'work', 'commuting-home']);
   for (const citizen of snapshot.citizens) {
+    if (citizenIds.has(citizen.id)) fail(`duplicate citizen id ${citizen.id}`);
+    citizenIds.add(citizen.id);
     if (!active(snapshot, citizen.position)) fail(`citizen ${citizen.id} is inactive`);
+    if (!active(snapshot, citizen.previousPosition)) {
+      fail(`citizen ${citizen.id} previous position is inactive`);
+    }
     if (
       occupiedCells.has(`${String(citizen.position.x)},${String(citizen.position.y)}`) ||
       reservedCells.has(`${String(citizen.position.x)},${String(citizen.position.y)}`)
     ) {
       fail(`citizen ${citizen.id} occupies a building interior`);
     }
-    if (!buildingIds.has(citizen.homeBuildingId)) fail(`citizen ${citizen.id} has no home`);
-    if (!buildingIds.has(citizen.workplaceBuildingId))
-      fail(`citizen ${citizen.id} has no workplace`);
+    const home = snapshot.buildings.find(({ id }) => id === citizen.homeBuildingId);
+    const workplace = snapshot.buildings.find(({ id }) => id === citizen.workplaceBuildingId);
+    if (home === undefined) fail(`citizen ${citizen.id} has no home`);
+    else {
+      if (home.type !== 'home') fail(`citizen ${citizen.id} home has invalid type`);
+      homeOccupancy.set(home.id, (homeOccupancy.get(home.id) ?? 0) + 1);
+    }
+    if (workplace === undefined) fail(`citizen ${citizen.id} has no workplace`);
+    else {
+      if (workplace.type !== 'workplace') fail(`citizen ${citizen.id} workplace has invalid type`);
+      workplaceOccupancy.set(workplace.id, (workplaceOccupancy.get(workplace.id) ?? 0) + 1);
+    }
+    if (!validActivities.has(citizen.activity)) fail(`citizen ${citizen.id} has invalid activity`);
+    if (
+      !Number.isSafeInteger(citizen.activityTicksRemaining) ||
+      citizen.activityTicksRemaining < 0
+    ) {
+      fail(`citizen ${citizen.id} has invalid schedule state`);
+    }
+    if (
+      !Number.isSafeInteger(citizen.routeIndex) ||
+      citizen.routeIndex < 0 ||
+      (citizen.route.length === 0
+        ? citizen.routeIndex !== 0
+        : citizen.routeIndex >= citizen.route.length)
+    ) {
+      fail(`citizen ${citizen.id} route index is invalid`);
+    }
     for (let index = 0; index < citizen.route.length; index += 1) {
       const position = citizen.route[index];
       if (position === undefined) continue;
@@ -441,6 +600,18 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
         fail(`citizen ${citizen.id} route is non-adjacent`);
       }
     }
+  }
+  for (const building of snapshot.buildings) {
+    const occupied =
+      building.type === 'home'
+        ? (homeOccupancy.get(building.id) ?? 0)
+        : (workplaceOccupancy.get(building.id) ?? 0);
+    if (occupied > building.capacity) fail(`building ${building.id} exceeds capacity`);
+  }
+  if (!Number.isSafeInteger(snapshot.populationCap) || snapshot.populationCap < 0) {
+    fail('population cap is invalid');
+  } else if (snapshot.citizens.length > snapshot.populationCap) {
+    fail('population cap is exceeded');
   }
   for (const [name, value] of Object.entries(snapshot.metrics)) {
     if (!Number.isFinite(value) || value < 0 || value > 1) fail(`${name} metric is invalid`);
@@ -491,6 +662,13 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     ...scenarioConfig,
     seed: options.seed,
     ...(options.citizenCount === undefined ? {} : { citizenCount: options.citizenCount }),
+    ...(options.initialPopulation === undefined
+      ? {}
+      : { initialPopulation: options.initialPopulation }),
+    ...(options.populationCap === undefined ? {} : { populationCap: options.populationCap }),
+    ...(options.populationGrowthCadenceTicks === undefined
+      ? {}
+      : { populationGrowthCadenceTicks: options.populationGrowthCadenceTicks }),
   });
   const invariantFailures = new Set<string>();
   const commandResults: BalanceCommandResult[] = [];
@@ -545,6 +723,8 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     seed: options.seed,
     ticks: options.ticks,
     citizenCount: snapshot.citizens.length,
+    populationCap: snapshot.populationCap,
+    populationGrowthCadenceTicks: snapshot.populationGrowthCadenceTicks,
     completedTrips: snapshot.completedTrips,
     completedActivities: snapshot.completedActivities,
     data: snapshot.data,

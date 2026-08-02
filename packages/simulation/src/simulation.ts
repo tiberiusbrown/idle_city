@@ -32,11 +32,13 @@ import {
   selectExteriorEntrance,
 } from './footprints';
 import { findGridPathDetailed } from './pathfinding';
+import { findNearestCompatiblePair } from './population';
 import { SeededRandom } from './random';
 import type {
   ActivateChunkCommand,
   ActiveChunkSnapshot,
   Building,
+  BuildingOccupancy,
   BuildingType,
   ChunkActivationResult,
   ChunkRegion,
@@ -109,6 +111,8 @@ const defaults = {
   seed: 1,
   citizenCount: 10,
   activityDurationTicks: 3,
+  populationCap: 100,
+  populationGrowthCadenceTicks: 20,
   startingData: 0,
   developmentEvaluationIntervalTicks: 20,
   developmentMinimumScore: 0.2,
@@ -268,9 +272,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   for (const chunk of initialChunks) spatial.activate(chunk);
 
   const seed = config.seed ?? defaults.seed;
-  const citizenCount = positiveInteger(
+  const requestedCitizenCount = nonNegativeInteger(
     'citizenCount',
-    config.citizenCount ?? defaults.citizenCount,
+    config.initialPopulation ?? config.citizenCount ?? defaults.citizenCount,
   );
   const activityDurationTicks = positiveInteger(
     'activityDurationTicks',
@@ -278,11 +282,23 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   );
   const housingCapacity = nonNegativeInteger(
     'housingCapacity',
-    config.housingCapacity ?? citizenCount,
+    config.housingCapacity ?? requestedCitizenCount,
   );
   const workplaceCapacity = nonNegativeInteger(
     'workplaceCapacity',
-    config.workplaceCapacity ?? citizenCount,
+    config.workplaceCapacity ?? requestedCitizenCount,
+  );
+  const populationCap = nonNegativeInteger(
+    'populationCap',
+    config.populationCap ??
+      config.maxPopulation ??
+      Math.max(requestedCitizenCount, defaults.populationCap),
+  );
+  const populationGrowthCadenceTicks = positiveInteger(
+    'populationGrowthCadenceTicks',
+    config.populationGrowthCadenceTicks ??
+      config.populationGrowthIntervalTicks ??
+      defaults.populationGrowthCadenceTicks,
   );
   const startingData = roundData(
     nonNegativeNumber('startingData', config.startingData ?? defaults.startingData),
@@ -373,18 +389,28 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   );
   const buildings: Building[] = [homeBuilding, workplaceBuilding];
   const buildingsById = new Map(buildings.map((building) => [building.id, building]));
-  const citizens: CitizenState[] = Array.from({ length: citizenCount }, (_, index) => ({
-    id: `citizen-${String(index + 1)}`,
-    position: copyPosition(homeBuilding.entrance),
-    previousPosition: copyPosition(homeBuilding.entrance),
-    homeBuildingId: homeBuilding.id,
-    workplaceBuildingId: workplaceBuilding.id,
+  const initialPopulation = Math.min(
+    requestedCitizenCount,
+    populationCap,
+    homeBuilding.capacity,
+    workplaceBuilding.capacity,
+  );
+  const createCitizenState = (id: string, home: Building, workplace: Building): CitizenState => ({
+    id,
+    position: copyPosition(home.entrance),
+    previousPosition: copyPosition(home.entrance),
+    homeBuildingId: home.id,
+    workplaceBuildingId: workplace.id,
     activity: 'home',
     activityTicksRemaining: 1 + random.nextInteger(activityDurationTicks),
     route: [],
     routeIndex: 0,
     tripStartedTick: null,
-  }));
+  });
+  const citizens: CitizenState[] = Array.from({ length: initialPopulation }, (_, index) =>
+    createCitizenState(`citizen-${String(index + 1)}`, homeBuilding, workplaceBuilding),
+  );
+  let nextCitizenSequence = initialPopulation + 1;
 
   let tick = 0;
   let completedTrips = 0;
@@ -414,10 +440,14 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   let pathNodesExpanded = 0;
   let pathChunksTouched = 0;
   const demandChunks = new Map<string, DemandChunkState>();
-  const demandCitizens = citizens.map(({ homeBuildingId, workplaceBuildingId }) => ({
-    homeBuildingId,
-    workplaceBuildingId,
-  }));
+  const demandCitizens = (): readonly {
+    readonly homeBuildingId: string;
+    readonly workplaceBuildingId: string;
+  }[] =>
+    citizens.map(({ homeBuildingId, workplaceBuildingId }) => ({
+      homeBuildingId,
+      workplaceBuildingId,
+    }));
 
   const isDistrictSeedKind = (value: unknown): value is DistrictSeedKind =>
     value === 'living' || value === 'working' || value === 'services';
@@ -552,7 +582,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       chunk,
       chunkSize,
       buildings,
-      citizens: demandCitizens,
+      citizens: demandCitizens(),
       metrics,
       seedInfluenceRadius: demandInfluenceRadius,
       seedInfluence: (position, kind) =>
@@ -729,6 +759,106 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     return occupancy;
   };
 
+  const occupancySnapshot = (): readonly BuildingOccupancy[] => {
+    const occupancy = occupancyByBuilding();
+    return buildings.map((building) => {
+      const occupied = occupancy.get(building.id) ?? 0;
+      return {
+        buildingId: building.id,
+        buildingType: building.type,
+        occupied,
+        occupancy: occupied,
+        capacity: building.capacity,
+        available: building.capacity - occupied,
+      };
+    });
+  };
+
+  const assertPopulationInvariants = (): void => {
+    if (citizens.length > populationCap) {
+      throw new Error('Population exceeds the configured population cap.');
+    }
+    const citizenIds = new Set<string>();
+    const occupancy = occupancyByBuilding();
+    const blockedCells = new Set<string>();
+    for (const building of buildings) {
+      for (const cell of footprintCells(building.footprint)) blockedCells.add(coordinateKey(cell));
+    }
+    for (const project of constructionProjects) {
+      for (const cell of footprintCells(project.footprint)) blockedCells.add(coordinateKey(cell));
+    }
+    for (const building of buildings) {
+      const occupied = occupancy.get(building.id) ?? 0;
+      if (!Number.isFinite(building.capacity) || building.capacity < 0) {
+        throw new Error(`Building ${building.id} has invalid capacity.`);
+      }
+      if (occupied < 0 || occupied > building.capacity) {
+        throw new Error(`Building ${building.id} exceeds capacity.`);
+      }
+    }
+    const activities: readonly CitizenActivity[] = [
+      'home',
+      'commuting-to-work',
+      'work',
+      'commuting-home',
+    ];
+    for (const citizen of citizens) {
+      if (citizenIds.has(citizen.id)) throw new Error(`Duplicate citizen id ${citizen.id}.`);
+      citizenIds.add(citizen.id);
+      const home = buildingById(citizen.homeBuildingId);
+      const workplace = buildingById(citizen.workplaceBuildingId);
+      if (home.type !== 'home') throw new Error(`Citizen ${citizen.id} has an invalid home.`);
+      if (workplace.type !== 'workplace') {
+        throw new Error(`Citizen ${citizen.id} has an invalid workplace.`);
+      }
+      if (!activities.includes(citizen.activity)) {
+        throw new Error(`Citizen ${citizen.id} has an invalid activity.`);
+      }
+      if (
+        !Number.isSafeInteger(citizen.activityTicksRemaining) ||
+        citizen.activityTicksRemaining < 0
+      ) {
+        throw new Error(`Citizen ${citizen.id} has negative schedule state.`);
+      }
+      if (!spatial.isPositionActive(citizen.position) || !spatial.isWalkable(citizen.position)) {
+        throw new Error(`Citizen ${citizen.id} is outside active walkable space.`);
+      }
+      if (blockedCells.has(coordinateKey(citizen.position))) {
+        throw new Error(`Citizen ${citizen.id} occupies a blocked interior.`);
+      }
+      if (
+        !spatial.isPositionActive(citizen.previousPosition) ||
+        !spatial.isWalkable(citizen.previousPosition) ||
+        blockedCells.has(coordinateKey(citizen.previousPosition))
+      ) {
+        throw new Error(`Citizen ${citizen.id} has an invalid previous position.`);
+      }
+      if (!Number.isSafeInteger(citizen.routeIndex) || citizen.routeIndex < 0) {
+        throw new Error(`Citizen ${citizen.id} has an invalid route index.`);
+      }
+      if (citizen.route.length === 0 && citizen.routeIndex !== 0) {
+        throw new Error(`Citizen ${citizen.id} has an invalid empty route index.`);
+      }
+      if (citizen.route.length > 0 && citizen.routeIndex >= citizen.route.length) {
+        throw new Error(`Citizen ${citizen.id} route index is out of bounds.`);
+      }
+      for (let index = 0; index < citizen.route.length; index += 1) {
+        const position = citizen.route[index];
+        if (position === undefined) throw new Error(`Citizen ${citizen.id} route is sparse.`);
+        if (!spatial.isPositionActive(position) || !spatial.isWalkable(position)) {
+          throw new Error(`Citizen ${citizen.id} route leaves walkable space.`);
+        }
+        if (blockedCells.has(coordinateKey(position))) {
+          throw new Error(`Citizen ${citizen.id} route enters a blocked interior.`);
+        }
+        const previous = citizen.route[index - 1];
+        if (previous !== undefined && manhattanDistance(previous, position) !== 1) {
+          throw new Error(`Citizen ${citizen.id} route contains a non-adjacent move.`);
+        }
+      }
+    }
+  };
+
   const localSameUseSaturation = (
     position: GridPosition,
     buildingType: BuildingType,
@@ -805,6 +935,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     pathChunksTouched += result.chunksTouched;
     return result.status === 'found';
   };
+
+  const pairHasRoute = (home: Building, workplace: Building): boolean =>
+    pathExistsWithBlockedCells(home.entrance, workplace.entrance, new Set<string>());
 
   const canReserveCandidate = (candidate: DevelopmentCandidate): boolean => {
     const footprint = footprintCells(candidate.footprint);
@@ -906,6 +1039,25 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       project.phaseTicksRemaining = constructionPhaseDurations[nextPhase];
       project.phaseTicksElapsed = 0;
     }
+  };
+
+  const growPopulation = (): boolean => {
+    if (citizens.length >= populationCap) return false;
+    const assignment = findNearestCompatiblePair({
+      buildings,
+      occupancy: occupancyByBuilding(),
+      canUsePair: pairHasRoute,
+    });
+    if (assignment === undefined) return false;
+    citizens.push(
+      createCitizenState(
+        `citizen-${String(nextCitizenSequence)}`,
+        assignment.home,
+        assignment.workplace,
+      ),
+    );
+    nextCitizenSequence += 1;
+    return true;
   };
 
   const evaluateDevelopers = (): void => {
@@ -1114,6 +1266,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   };
 
   const snapshot = (): SimulationSnapshot => {
+    assertPopulationInvariants();
     const { metrics, averageTripDurationTicks } = calculateMetrics();
     const demand = demandSnapshot();
     const structural: SimulationStructuralCounters = {
@@ -1142,6 +1295,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       seed,
       tick,
       randomState: random.getState(),
+      populationCap,
+      populationGrowthCadenceTicks,
       completedTrips,
       completedActivities,
       data,
@@ -1166,6 +1321,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         footprint: { ...building.footprint },
         entrance: copyPosition(building.entrance),
       })),
+      occupancy: occupancySnapshot().map((building) => ({ ...building })),
       citizens: citizens.map((citizen): CitizenSnapshot => ({
         id: citizen.id,
         position: copyPosition(citizen.position),
@@ -1211,8 +1367,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       tick += 1;
       for (const citizen of citizens) advanceCitizen(citizen);
       advanceConstructionProjects();
+      const populationGrew = tick % populationGrowthCadenceTicks === 0 ? growPopulation() : false;
       const metricsAfter = calculateMetrics().metrics;
-      if (!sameMetrics(metricsBefore, metricsAfter)) {
+      if (populationGrew || !sameMetrics(metricsBefore, metricsAfter)) {
         markAllDemandChunksDirty();
         developmentStateVersion += 1;
       }
@@ -1225,6 +1382,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         data = roundData(data + dataGeneratedThisTick);
       }
       if (tick % developmentEvaluationIntervalTicks === 0) evaluateDevelopers();
+      assertPopulationInvariants();
     },
     placeDistrictSeed(command: PlaceDistrictSeedCommand): CommandResult {
       const requestedPosition = command.position;

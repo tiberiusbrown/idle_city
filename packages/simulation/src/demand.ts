@@ -182,6 +182,12 @@ function buildOccupancy(
     const building = buildingsById.get(buildingId);
     if (building === undefined)
       throw new Error(`Citizen references missing building ${buildingId}.`);
+    const expectedType = field === 'homeBuildingId' ? 'home' : 'workplace';
+    if (building.type !== expectedType) {
+      throw new Error(
+        `Citizen references ${building.type} building ${buildingId} as ${expectedType}.`,
+      );
+    }
     occupancy.set(building.id, (occupancy.get(building.id) ?? 0) + 1);
   }
   return occupancy;

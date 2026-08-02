@@ -55,10 +55,16 @@ export {
   type DevelopmentScoreResult,
 } from './developer';
 export { createSimulation } from './simulation';
+export {
+  findNearestCompatiblePair,
+  type PopulationAssignment,
+  type PopulationAssignmentInput,
+} from './population';
 export type { ChunkCoordinate, GridPosition, GridRect } from '@idle-city/shared';
 export type {
   AcceptedCommandResult,
   Building,
+  BuildingOccupancy,
   BuildingType,
   ChunkActivationRejectionReason,
   ChunkActivationResult,

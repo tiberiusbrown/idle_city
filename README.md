@@ -55,7 +55,7 @@ npm run sim:run -- --seed 1234 --ticks 1000
 npm run sim:run -- --scenario long-commute --seed 1234 --ticks 1000
 ```
 
-The command prints one JSON object containing the scenario, seed, executed ticks, citizen count, completed trips and work activities, Data, demand totals, the three normalized city indicators, active/allocated chunk counters, demand dirty/evaluation counts, construction counts, path instrumentation, scheduled command results, invariant failures, and a stable final-state hash. Named scenarios also cover `sparse-expansion`, `extent`, `localized-demand`, `long-route`, `living-led`, `working-led`, `equal-score`, `obstacle-constrained`, `no-valid-footprint`, and `long-run-construction`. Omitting `--scenario` preserves the baseline command. Repeating identical inputs must produce byte-identical JSON and the same hash.
+The command prints one JSON object containing the scenario, seed, executed ticks, citizen count and population cap, completed trips and work activities, Data, demand totals, the three normalized city indicators, active/allocated chunk counters, demand dirty/evaluation counts, construction counts, path instrumentation, scheduled command results, invariant failures, and a stable final-state hash. Named scenarios also cover `sparse-expansion`, `extent`, `localized-demand`, `long-route`, `living-led`, `working-led`, `equal-score`, `obstacle-constrained`, `no-valid-footprint`, `long-run-construction`, `housing-surplus`, `workplace-surplus`, `balanced-expansion`, `tie`, `capped-growth`, and `long-run-city`. Omitting `--scenario` preserves the baseline command. Repeating identical inputs must produce byte-identical JSON and the same hash.
 
 ## Determinism and timing
 
@@ -63,8 +63,8 @@ All random decisions use an explicit `SeededRandom` instance. Never use `Math.ra
 
 ## Current limitations
 
-The slice uses a finite active-chunk set, multi-cell buildings and construction projects, exterior entrances, a simple alternating home/work schedule, deterministic A* routes, deterministic district seed commands and chunked demand influence, deterministic developer scoring, staged survey/blueprint/foundation/frame/completion phases, and deterministic Data plus Space/Access/Activity indicators. There are no browser seed controls, automatic expansion policy, population growth, services, traffic, collision avoidance, backend, audio, or wrapper packaging yet.
+The slice uses a finite active-chunk set, multi-cell buildings and construction projects, exterior entrances, deterministic population growth over compatible home/work capacity, entrance-distance assignment, a simple alternating home/work schedule, deterministic A* routes, deterministic district seed commands and chunked demand influence, deterministic developer scoring, staged survey/blueprint/foundation/frame/completion phases, and deterministic Data plus Space/Access/Activity indicators. There are no browser seed controls, automatic expansion policy, services, traffic, collision avoidance, backend, audio, or wrapper packaging yet. Dynamic renderer reconciliation for newly constructed buildings and citizens remains the next renderer task.
 
 ## Recommended next steps
 
-The next useful feature is population growth with compatible home/work assignment over completed capacity. Later work can add compact save-file versioning, worker-thread simulation, richer voxel batching, and Capacitor packaging without changing the authoritative-state boundary.
+The next useful feature is dynamic renderer reconciliation by stable entity ID for newly constructed buildings and citizens. Later work can add compact save-file versioning, worker-thread simulation, richer voxel batching, and Capacitor packaging without changing the authoritative-state boundary.

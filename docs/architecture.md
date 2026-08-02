@@ -59,7 +59,13 @@ Candidates are ranked by higher score, higher seed influence, better expected ac
 
 The selected project's entire footprint is reserved at survey start by marking every occupied logical cell non-walkable. The reservation remains in place through completion, when those same cells become the completed building. Existing active routes that intersect a proposed reservation make that candidate ineligible; the home-to-work connection and the candidate entrance are also checked with the proposed cells blocked. This makes the point at which construction blocks travel explicit and prevents a project from invalidating a citizen route.
 
-Construction uses centralized fixed durations: survey 2 ticks, blueprint 3, foundation 4, frame 6, and completion 1. A project starts in survey with its full reservation, advances one phase tick per `step()`, and creates a matching `Building` only after completion ends. Project IDs are `construction-project-1`, `construction-project-2`, and so on; completed buildings continue the per-type stable sequence after the initial `home-1` and `workplace-1`. No population growth, services, demolition, conversion, redevelopment, or construction-bot behavior is included.
+Construction uses centralized fixed durations: survey 2 ticks, blueprint 3, foundation 4, frame 6, and completion 1. A project starts in survey with its full reservation, advances one phase tick per `step()`, and creates a matching `Building` only after completion ends. Project IDs are `construction-project-1`, `construction-project-2`, and so on; completed buildings continue the per-type stable sequence after the initial `home-1` and `workplace-1`.
+
+## Deterministic population growth
+
+Population growth is evaluated once every `populationGrowthCadenceTicks` logical ticks (20 by default) after construction advances. At most one citizen is added per cadence. Growth requires both a home and a workplace with remaining capacity and stops at `populationCap` (100 by default, or the configured cap). Initial citizens are clamped to the same constraints, so occupancy never exceeds capacity.
+
+The assignment candidate set is all compatible home/workplace pairs with free capacity and a reachable entrance-to-entrance path. Candidates are ranked by Manhattan distance between entrances, then home building ID, then workplace building ID. The selected citizen receives the next stable `citizen-N` ID, starts at the home entrance, and uses the existing home → commute → work → commute → home schedule. Population changes dirty every demand chunk because shortage, saturation, and derived metrics depend on current occupancy.
 
 ## Rendering projection
 
@@ -75,4 +81,4 @@ The headless balance runner reports active/allocated chunks, optional occupancy 
 
 ## Deferred systems
 
-This step intentionally does not add population growth, movement reservations, congestion costs, roads, transit, chunk removal, player-facing expansion controls, polygon footprints, detailed voxel meshing, services, demolition, conversion, redevelopment, or construction bots. The next implementation should add only population growth and compatible home/work assignment over completed building capacity.
+This step intentionally does not add movement reservations, congestion costs, roads, transit, chunk removal, player-facing expansion controls, polygon footprints, detailed voxel meshing, services, demolition, conversion, redevelopment, construction bots, or dynamic renderer entity reconciliation. The next implementation should reconcile renderer-only buildings and citizens by stable ID as snapshots add and remove entities.

@@ -80,12 +80,32 @@ describe('balance runner', () => {
     expect(route.invariantFailures).toEqual([]);
   });
 
-  it('reports changed demand under capacity pressure', () => {
-    const baseline = runBalance({ seed: 7, ticks: 0, scenario: 'baseline' });
-    const pressure = runBalance({ seed: 7, ticks: 0, scenario: 'capacity-pressure' });
-    expect(pressure.demandTotals.living).toBeGreaterThan(baseline.demandTotals.living);
-    expect(pressure.demandTotals.working).toBeGreaterThan(baseline.demandTotals.working);
-    expect(pressure.metrics.space).toBeLessThan(baseline.metrics.space);
+  it('reports occupancy-aware housing and workplace surplus scenarios', () => {
+    const housingSurplus = runBalance({ seed: 7, ticks: 30, scenario: 'housing-surplus' });
+    const workplaceSurplus = runBalance({ seed: 7, ticks: 30, scenario: 'workplace-surplus' });
+    expect(housingSurplus.invariantFailures).toEqual([]);
+    expect(workplaceSurplus.invariantFailures).toEqual([]);
+    expect(housingSurplus.citizenCount).toBe(1);
+    expect(workplaceSurplus.citizenCount).toBe(1);
+    expect(housingSurplus.demandTotals.living).toBeLessThan(workplaceSurplus.demandTotals.living);
+    expect(housingSurplus.demandTotals.working).toBeGreaterThan(
+      workplaceSurplus.demandTotals.working,
+    );
+  });
+
+  it('covers balanced, tied, capped, and long-run population scenarios', () => {
+    const balanced = runBalance({ seed: 7, ticks: 30, scenario: 'balanced-expansion' });
+    const tie = runBalance({ seed: 7, ticks: 30, scenario: 'tie' });
+    const capped = runBalance({ seed: 7, ticks: 30, scenario: 'capped-growth' });
+    const longRun = runBalance({ seed: 7, ticks: 120, scenario: 'long-run-city' });
+    expect(balanced.citizenCount).toBe(balanced.populationCap);
+    expect(capped.citizenCount).toBe(capped.populationCap);
+    expect(tie.completedTrips).toBeGreaterThan(0);
+    expect(longRun.completedActivities).toBeGreaterThan(0);
+    for (const summary of [balanced, tie, capped, longRun]) {
+      expect(summary.invariantFailures).toEqual([]);
+      expect(summary.determinismHash).toMatch(/^[0-9a-f]{8}$/);
+    }
   });
 
   it('covers deterministic Step 4 development scenarios', () => {
