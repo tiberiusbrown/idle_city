@@ -16,7 +16,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:e2e": "playwright test",
+    "test:e2e": "node tools/e2e/run.mjs",
     "sim:run": "npm run start --workspace=@idle-city/balance-runner --",
     "validate": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run sim:run -- --seed 1234 --ticks 1000 && npm run build"
   },
