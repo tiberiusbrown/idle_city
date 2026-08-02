@@ -122,6 +122,7 @@ describe('simulation', () => {
     });
     expect(Object.keys(simulation).sort()).toEqual([
       'activateChunk',
+      'getCurrentDistrictSeedCost',
       'getDemandChunk',
       'getDeterminismHash',
       'getSnapshot',

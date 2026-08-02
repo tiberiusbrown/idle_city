@@ -59,7 +59,7 @@ The command prints one JSON object containing the scenario, seed, executed ticks
 
 ## Determinism and timing
 
-All random decisions use an explicit `SeededRandom` instance. Never use `Math.random()` in the simulation package. Each call to `simulation.step()` advances exactly one tick and citizens move by no more than one logical cell. The world is a signed coordinate space with only explicitly active chunks allocated; negative coordinates use floor-based chunk conversion. The browser runs steps at 5 Hz while Babylon renders independently. Render positions are interpolated from each citizen's previous and current logical positions; interpolation never feeds back into simulation state.
+All random decisions use an explicit `SeededRandom` instance. Never use `Math.random()` in the simulation package. Each call to `simulation.step()` advances exactly one tick and citizens move by no more than one logical cell. The world is a signed coordinate space with only explicitly active chunks allocated; negative coordinates use floor-based chunk conversion. Demand refresh occurs during deterministic simulation transitions, and snapshots/queries are observation-pure. The browser runs steps at 5 Hz while Babylon renders independently. Render positions are interpolated from each citizen's previous and current logical positions; interpolation never feeds back into simulation state.
 
 ## Current limitations
 

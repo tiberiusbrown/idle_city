@@ -5,6 +5,33 @@ interface MapPoint {
   readonly y: number;
 }
 
+async function dispatchTouchPointer(
+  page: Page,
+  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel',
+  point: MapPoint,
+  pointerId: number,
+): Promise<void> {
+  await page.evaluate(
+    ({ type, point, pointerId }) => {
+      const canvas = document.querySelector<HTMLCanvasElement>('#game-canvas');
+      if (canvas === null) throw new Error('The game canvas is missing.');
+      canvas.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          clientX: point.x,
+          clientY: point.y,
+          pointerId,
+          pointerType: 'touch',
+          isPrimary: true,
+          button: 0,
+        }),
+      );
+    },
+    { type, point, pointerId },
+  );
+}
+
 async function metric(page: Page, testId: string): Promise<number> {
   const text = await page.getByTestId(testId).textContent();
   const value = text?.match(/\d+(?:\.\d+)?/)?.[0];
@@ -117,6 +144,7 @@ test('mouse placement previews, charges the exact cost, rejects duplicates and i
   const livingPoint = await placeWithMouse(page, 'Living');
   await expect(page.getByTestId('status')).toContainText('Living seed accepted');
   await expect(page.getByTestId('seed-count')).toHaveText('1 seed');
+  await expect(page.getByTestId('living-cost')).toHaveText('13 Data');
   expect(beforeLiving - (await metric(page, 'data-metric'))).toBe(10);
 
   await page.mouse.click(livingPoint.x, livingPoint.y);
@@ -127,6 +155,7 @@ test('mouse placement previews, charges the exact cost, rejects duplicates and i
   const workingPoint = await findValidMapPoint(page, 'Working');
   await page.mouse.click(workingPoint.x, workingPoint.y);
   await expect(page.getByTestId('status')).toContainText('Working seed accepted');
+  await expect(page.getByTestId('working-cost')).toHaveText('15 Data');
   expect(await metric(page, 'data-metric')).toBe(beforeLiving - 10 - 12);
 
   await page.getByRole('button', { name: 'Choose Living district seed' }).click();
@@ -139,6 +168,69 @@ test('mouse placement previews, charges the exact cost, rejects duplicates and i
   await expect(page.getByTestId('placement-status')).toContainText('Choose Living or Working');
   await expect(page.getByRole('button', { name: 'Cancel placement' })).toBeHidden();
   expect(errors).toEqual([]);
+});
+
+test('mouse drag never submits a district seed', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await openBuild(page);
+  await page.getByRole('button', { name: 'Choose Living district seed' }).click();
+  const point = await findValidMapPoint(page, 'Living');
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  await page.mouse.move(point.x + 24, point.y + 18);
+  await page.mouse.up();
+  await expect(page.getByTestId('seed-count')).toHaveText('0 seeds');
+  await expect(page.getByTestId('placement-status')).toContainText('Drag canceled');
+});
+
+test('pointercancel and an unmatched pointerup never submit a seed', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await openBuild(page);
+  await page.getByRole('button', { name: 'Choose Living district seed' }).click();
+  const point = await findValidMapPoint(page, 'Living');
+
+  await dispatchTouchPointer(page, 'pointerup', point, 701);
+  await expect(page.getByTestId('seed-count')).toHaveText('0 seeds');
+
+  await dispatchTouchPointer(page, 'pointerdown', point, 702);
+  await dispatchTouchPointer(page, 'pointercancel', point, 702);
+  await expect(page.getByTestId('seed-count')).toHaveText('0 seeds');
+  await expect(page.getByTestId('placement-status')).toContainText('Pointer canceled');
+});
+
+test('touch drag never submits a district seed', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await openBuild(page);
+  await page.getByRole('button', { name: 'Choose Working district seed' }).click();
+  const point = await findValidMapPoint(page, 'Working');
+  await dispatchTouchPointer(page, 'pointerdown', point, 703);
+  await dispatchTouchPointer(page, 'pointermove', { x: point.x + 20, y: point.y + 20 }, 703);
+  await dispatchTouchPointer(page, 'pointerup', { x: point.x + 20, y: point.y + 20 }, 703);
+  await expect(page.getByTestId('seed-count')).toHaveText('0 seeds');
+});
+
+test('cancel and reset clear an active pointer gesture and preview', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await openBuild(page);
+  await page.getByRole('button', { name: 'Choose Living district seed' }).click();
+  const point = await findValidMapPoint(page, 'Living');
+  await dispatchTouchPointer(page, 'pointerdown', point, 704);
+  await page.getByRole('button', { name: 'Cancel placement' }).click();
+  await dispatchTouchPointer(page, 'pointerup', point, 704);
+  await expect(page.getByTestId('seed-count')).toHaveText('0 seeds');
+  await expect(page.getByTestId('placement-status')).toContainText('Choose Living or Working');
+
+  await page.getByRole('button', { name: 'Choose Working district seed' }).click();
+  const resetPoint = await findValidMapPoint(page, 'Working');
+  await dispatchTouchPointer(page, 'pointerdown', resetPoint, 705);
+  await page.getByRole('button', { name: 'Reset simulation' }).click();
+  await dispatchTouchPointer(page, 'pointerup', resetPoint, 705);
+  await expect(page.getByTestId('seed-count')).toHaveText('0 seeds');
+  await expect(page.getByTestId('build-panel')).toBeHidden();
 });
 
 test('accepted seed renders autonomous construction and population growth, then reset clears it', async ({

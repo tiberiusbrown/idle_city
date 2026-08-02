@@ -34,6 +34,7 @@ export { SeededRandom } from './random';
 export { calculateCityDemand, calculateDemandChunk } from './demand';
 export {
   DISTRICT_SEED_COSTS,
+  DISTRICT_SEED_COST_GROWTH_FACTOR,
   getDistrictSeedCost,
   isDistrictSeedKindUnlocked,
 } from './balance-rules';

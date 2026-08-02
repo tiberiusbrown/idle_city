@@ -2,12 +2,13 @@ import { Engine } from '@babylonjs/core/Engines/engine';
 import { createCityScene, type PickedLogicalCell } from '@idle-city/renderer';
 import {
   createSimulation,
-  getDistrictSeedCost,
   type CommandRejectionReason,
   type DistrictSeedKind,
+  type SimulationSnapshot,
 } from '@idle-city/simulation';
 import { registerSW } from 'virtual:pwa-register';
 import './style.css';
+import { updateSimulationView } from './view-update';
 
 type PlaceableDistrictSeedKind = Extract<DistrictSeedKind, 'living' | 'working'>;
 
@@ -94,14 +95,23 @@ const configuration = {
   startingData: 24,
 } as const;
 let simulation = createSimulation(configuration);
+const initialSnapshot = simulation.getSnapshot();
 const engine = new Engine(gameCanvas, true, { preserveDrawingBuffer: false, stencil: true });
-const city = createCityScene(engine, simulation.getSnapshot());
+const city = createCityScene(engine, initialSnapshot);
 const stepMilliseconds = 200;
 let accumulator = 0;
 let previousTime = performance.now();
 let speed = 1;
 let buildOpen = false;
 let placementKind: PlaceableDistrictSeedKind | undefined;
+const dragThresholdCssPixels = 8;
+interface PrimaryPointerGesture {
+  readonly pointerId: number;
+  readonly startClientX: number;
+  readonly startClientY: number;
+  dragging: boolean;
+}
+let primaryPointerGesture: PrimaryPointerGesture | undefined;
 
 function isPlaceableDistrictSeedKind(
   value: string | undefined,
@@ -124,6 +134,32 @@ function setPlacementStatus(
   placementStatusDisplay.textContent = message;
   placementStatusDisplay.classList.toggle('valid', state === 'valid');
   placementStatusDisplay.classList.toggle('invalid', state === 'invalid');
+}
+
+function clearPrimaryPointerGesture(): void {
+  const pointerId = primaryPointerGesture?.pointerId;
+  primaryPointerGesture = undefined;
+  if (pointerId !== undefined && gameCanvas.hasPointerCapture(pointerId)) {
+    gameCanvas.releasePointerCapture(pointerId);
+  }
+}
+
+function pointerMovedBeyondDragThreshold(event: PointerEvent): boolean {
+  if (primaryPointerGesture === undefined) return false;
+  return (
+    Math.hypot(
+      event.clientX - primaryPointerGesture.startClientX,
+      event.clientY - primaryPointerGesture.startClientY,
+    ) >= dragThresholdCssPixels
+  );
+}
+
+function capturePrimaryPointer(pointerId: number): void {
+  try {
+    gameCanvas.setPointerCapture(pointerId);
+  } catch {
+    // Synthetic test events do not always have an active pointer to capture.
+  }
 }
 
 function rejectionMessage(reason: CommandRejectionReason): string {
@@ -157,6 +193,7 @@ function setSpeed(nextSpeed: number): void {
 }
 
 function clearPlacementSelection(): void {
+  clearPrimaryPointerGesture();
   placementKind = undefined;
   city.setPlacementPreview(undefined);
   buildKindButtons.forEach((button) => button.setAttribute('aria-pressed', 'false'));
@@ -177,9 +214,10 @@ function setBuildOpen(open: boolean): void {
 
 function beginPlacement(kind: PlaceableDistrictSeedKind): void {
   setBuildOpen(true);
+  clearPrimaryPointerGesture();
   city.setPlacementPreview(undefined);
   placementKind = kind;
-  const cost = getDistrictSeedCost(kind);
+  const cost = simulation.getCurrentDistrictSeedCost(kind);
   buildKindButtons.forEach((button) => {
     button.setAttribute('aria-pressed', String(button.dataset.buildKind === kind));
   });
@@ -222,7 +260,6 @@ function submitPlacement(clientX: number, clientY: number, event: PointerEvent):
   if (placementKind === undefined) return;
   if (event.pointerType === 'mouse' && event.button !== 0) return;
   event.preventDefault();
-  event.stopPropagation();
   const picked = city.pickLogicalCell(clientX, clientY);
   if (picked === undefined) {
     setPlacementStatus('Choose a cell in an active visible chunk.', 'invalid');
@@ -240,13 +277,17 @@ function submitPlacement(clientX: number, clientY: number, event: PointerEvent):
     statusDisplay.textContent = `${displayKind(placementKind)} seed rejected: ${rejectionMessage(result.reason)}`;
     setPlacementStatus(`${rejectionMessage(result.reason)} Cell ${coordinates}.`, 'invalid');
   }
-  city.update(simulation.getSnapshot(), 1);
-  renderHud();
+  const snapshot = simulation.getSnapshot();
+  updateSimulationView(
+    snapshot,
+    1,
+    (currentSnapshot, interpolation) => city.update(currentSnapshot, interpolation),
+    renderHud,
+  );
   updatePlacementAt(clientX, clientY);
 }
 
-function renderHud(): void {
-  const snapshot = simulation.getSnapshot();
+function renderHud(snapshot: SimulationSnapshot): void {
   tickDisplay.textContent = String(snapshot.tick);
   citizenDisplay.textContent = String(snapshot.citizens.length);
   dataDisplay.textContent = formatData(snapshot.data);
@@ -256,11 +297,11 @@ function renderHud(): void {
   seedCountDisplay.textContent = `${String(snapshot.seeds.length)} seed${snapshot.seeds.length === 1 ? '' : 's'}`;
   buildingCountDisplay.textContent = `${String(snapshot.buildings.length)} building${snapshot.buildings.length === 1 ? '' : 's'}`;
   projectCountDisplay.textContent = `${String(snapshot.constructionProjects.length)} project${snapshot.constructionProjects.length === 1 ? '' : 's'}`;
-  livingCostDisplay.textContent = `${String(getDistrictSeedCost('living'))} Data`;
-  workingCostDisplay.textContent = `${String(getDistrictSeedCost('working'))} Data`;
+  livingCostDisplay.textContent = `${String(simulation.getCurrentDistrictSeedCost('living'))} Data`;
+  workingCostDisplay.textContent = `${String(simulation.getCurrentDistrictSeedCost('working'))} Data`;
   buildDataDisplay.textContent = `Data available: ${formatData(snapshot.data)}`;
   if (placementKind !== undefined) {
-    placementCostDisplay.textContent = `Current cost: ${String(getDistrictSeedCost(placementKind))} Data`;
+    placementCostDisplay.textContent = `Current cost: ${String(simulation.getCurrentDistrictSeedCost(placementKind))} Data`;
   }
 }
 
@@ -295,21 +336,52 @@ cancelButton.addEventListener('click', () => {
 
 gameCanvas.addEventListener('pointermove', (event) => {
   if (placementKind === undefined) return;
+  if (primaryPointerGesture !== undefined && event.pointerId !== primaryPointerGesture.pointerId) {
+    return;
+  }
+  if (primaryPointerGesture !== undefined && pointerMovedBeyondDragThreshold(event)) {
+    primaryPointerGesture.dragging = true;
+  }
   updatePlacementAt(event.clientX, event.clientY);
 });
 gameCanvas.addEventListener('pointerleave', () => {
   if (placementKind === undefined) return;
+  if (primaryPointerGesture !== undefined) return;
   city.setPlacementPreview(undefined);
   setPlacementStatus('Move over an active visible chunk to preview placement.');
 });
 gameCanvas.addEventListener('pointerdown', (event) => {
-  if (placementKind === undefined) return;
-  event.preventDefault();
-  event.stopPropagation();
+  if (placementKind === undefined || primaryPointerGesture !== undefined) return;
+  if (!event.isPrimary) return;
+  if (event.pointerType === 'mouse' && event.button !== 0) return;
+  primaryPointerGesture = {
+    pointerId: event.pointerId,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    dragging: false,
+  };
+  capturePrimaryPointer(event.pointerId);
   updatePlacementAt(event.clientX, event.clientY);
 });
 gameCanvas.addEventListener('pointerup', (event) => {
+  if (placementKind === undefined || primaryPointerGesture?.pointerId !== event.pointerId) return;
+  const wasDrag = primaryPointerGesture.dragging || pointerMovedBeyondDragThreshold(event);
+  clearPrimaryPointerGesture();
+  if (wasDrag) {
+    setPlacementStatus('Drag canceled; no district seed was placed.', 'neutral');
+    return;
+  }
   submitPlacement(event.clientX, event.clientY, event);
+});
+gameCanvas.addEventListener('pointercancel', (event) => {
+  if (primaryPointerGesture?.pointerId !== event.pointerId) return;
+  clearPrimaryPointerGesture();
+  city.setPlacementPreview(undefined);
+  setPlacementStatus('Pointer canceled; no district seed was placed.', 'neutral');
+});
+gameCanvas.addEventListener('lostpointercapture', (event) => {
+  if (primaryPointerGesture?.pointerId !== event.pointerId) return;
+  clearPrimaryPointerGesture();
 });
 
 resetButton.addEventListener('click', () => {
@@ -317,8 +389,13 @@ resetButton.addEventListener('click', () => {
   accumulator = 0;
   previousTime = performance.now();
   setBuildOpen(false);
-  city.update(simulation.getSnapshot(), 1);
-  renderHud();
+  const snapshot = simulation.getSnapshot();
+  updateSimulationView(
+    snapshot,
+    1,
+    (currentSnapshot, interpolation) => city.update(currentSnapshot, interpolation),
+    renderHud,
+  );
 });
 
 engine.runRenderLoop(() => {
@@ -331,8 +408,12 @@ engine.runRenderLoop(() => {
     accumulator -= stepMilliseconds;
   }
   const snapshot = simulation.getSnapshot();
-  city.update(snapshot, accumulator / stepMilliseconds);
-  renderHud();
+  updateSimulationView(
+    snapshot,
+    accumulator / stepMilliseconds,
+    (currentSnapshot, interpolation) => city.update(currentSnapshot, interpolation),
+    renderHud,
+  );
   city.scene.render();
 });
 window.addEventListener('resize', () => engine.resize());
@@ -342,6 +423,6 @@ window.addEventListener('beforeunload', () => {
 });
 
 setBuildOpen(false);
-renderHud();
+renderHud(initialSnapshot);
 setSpeed(1);
 registerSW({ immediate: true });

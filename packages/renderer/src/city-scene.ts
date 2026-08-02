@@ -40,6 +40,8 @@ export interface CitySceneStructuralCounters {
   readonly visibleChunks: number;
   readonly renderedChunks: number;
   readonly chunkRebuilds: number;
+  readonly visibleCitizens: number;
+  readonly renderedCitizens: number;
   readonly meshCount: number;
 }
 
@@ -119,7 +121,12 @@ export function createCityScene(
     buildings.reconcile(snapshot.buildings);
     construction.reconcile(snapshot.constructionProjects);
     seeds.reconcile(snapshot.seeds);
-    citizens.reconcile(snapshot.citizens, interpolation);
+    citizens.reconcile(
+      snapshot.citizens,
+      interpolation,
+      ground.getRenderedChunks(),
+      snapshot.chunkSize,
+    );
   };
 
   update(initial, 1);
@@ -152,6 +159,8 @@ export function createCityScene(
         visibleChunks: ground.getVisibleChunkCount(),
         renderedChunks: ground.getRenderedChunkCount(),
         chunkRebuilds: ground.getRebuildCount(),
+        visibleCitizens: citizens.getVisibleCitizenCount(),
+        renderedCitizens: citizens.getRenderedCitizenCount(),
         meshCount: scene.meshes.length,
       };
     },

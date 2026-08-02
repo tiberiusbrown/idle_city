@@ -1,3 +1,5 @@
+import type { ChunkCoordinate } from '@idle-city/shared';
+import { chunkCoordinateForPosition, chunkKey } from '@idle-city/simulation';
 import type { CitizenSnapshot } from '@idle-city/simulation';
 import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
@@ -6,7 +8,14 @@ import { interpolateLogicalPosition, logicalToWorld } from './coordinates';
 import type { CityMaterials } from './materials';
 
 export interface CitizenLayer {
-  reconcile(citizens: readonly CitizenSnapshot[], interpolation: number): void;
+  reconcile(
+    citizens: readonly CitizenSnapshot[],
+    interpolation: number,
+    renderedChunks: readonly ChunkCoordinate[],
+    chunkSize: number,
+  ): void;
+  getVisibleCitizenCount(): number;
+  getRenderedCitizenCount(): number;
   dispose(): void;
 }
 
@@ -20,6 +29,7 @@ export function createCitizenLayer(
   materials: CityMaterials,
 ): CitizenLayer {
   const visuals = new Map<string, CitizenVisual>();
+  let visibleCitizenCount = 0;
   let disposed = false;
 
   const createVisual = (citizen: CitizenSnapshot): CitizenVisual => {
@@ -47,12 +57,27 @@ export function createCitizenLayer(
     visual.root.position.y = 0.04;
   };
 
-  const reconcile = (citizens: readonly CitizenSnapshot[], interpolation: number): void => {
+  const reconcile = (
+    citizens: readonly CitizenSnapshot[],
+    interpolation: number,
+    renderedChunks: readonly ChunkCoordinate[],
+    chunkSize: number,
+  ): void => {
     if (disposed) throw new Error('Cannot update a disposed citizen layer.');
-    const desiredIds = new Set<string>();
+    const renderedChunkKeys = new Set(renderedChunks.map(chunkKey));
+    const seenIds = new Set<string>();
+    const desiredVisibleIds = new Set<string>();
+    let nextVisibleCitizenCount = 0;
     for (const citizen of citizens) {
-      if (desiredIds.has(citizen.id)) throw new Error(`Duplicate citizen ID ${citizen.id}.`);
-      desiredIds.add(citizen.id);
+      if (seenIds.has(citizen.id)) throw new Error(`Duplicate citizen ID ${citizen.id}.`);
+      seenIds.add(citizen.id);
+      const currentChunk = chunkKey(chunkCoordinateForPosition(citizen.position, chunkSize));
+      const previousChunk = chunkKey(
+        chunkCoordinateForPosition(citizen.previousPosition, chunkSize),
+      );
+      if (!renderedChunkKeys.has(currentChunk) && !renderedChunkKeys.has(previousChunk)) continue;
+      nextVisibleCitizenCount += 1;
+      desiredVisibleIds.add(citizen.id);
       const visual = visuals.get(citizen.id);
       if (visual === undefined) {
         const created = createVisual(citizen);
@@ -63,18 +88,26 @@ export function createCitizenLayer(
       }
     }
     for (const [id, visual] of visuals) {
-      if (desiredIds.has(id)) continue;
+      if (desiredVisibleIds.has(id)) continue;
       visual.root.dispose();
       visuals.delete(id);
     }
+    visibleCitizenCount = nextVisibleCitizenCount;
   };
 
   return {
     reconcile,
+    getVisibleCitizenCount(): number {
+      return visibleCitizenCount;
+    },
+    getRenderedCitizenCount(): number {
+      return visuals.size;
+    },
     dispose(): void {
       if (disposed) return;
       for (const visual of visuals.values()) visual.root.dispose();
       visuals.clear();
+      visibleCitizenCount = 0;
       disposed = true;
     },
   };

@@ -26,6 +26,8 @@ describe('visible chunk city scene', () => {
     expect(counters.visibleChunks).toBe(2);
     expect(counters.renderedChunks).toBe(2);
     expect(counters.chunkRebuilds).toBe(2);
+    expect(counters.visibleCitizens).toBe(snapshot.citizens.length);
+    expect(counters.renderedCitizens).toBe(snapshot.citizens.length);
     expect(counters.meshCount).toBeLessThan(
       2 + snapshot.buildings.length * 2 + snapshot.citizens.length * 2 + 2,
     );
@@ -104,6 +106,79 @@ describe('visible chunk city scene', () => {
     expect(city.scene.getTransformNodeByName('render-citizen-1')).not.toBeNull();
     expect(city.scene.getTransformNodeByName(`building-${home.id}`)).not.toBeNull();
     expect(city.scene.getTransformNodeByName(`seed-${seed.id}`)).toBeNull();
+    city.dispose();
+    engine.dispose();
+  });
+
+  it('renders only citizens touching visible chunks, reuses visuals, and restores interpolation', () => {
+    const engine = new NullEngine();
+    const simulation = createSimulation({ citizenCount: 1 });
+    const initial = simulation.getSnapshot();
+    const city = createCityScene(engine, initial, { visibleChunks: [{ x: 0, y: 0 }] });
+    const citizen = initial.citizens[0];
+    if (citizen === undefined) throw new Error('The fixture requires a citizen.');
+    const crossing = replaceSnapshot(initial, {
+      citizens: [
+        {
+          ...citizen,
+          previousPosition: { x: 31, y: 3 },
+          position: { x: 32, y: 3 },
+        },
+      ],
+    });
+    const crossingBefore = JSON.stringify(crossing);
+    city.update(crossing, 0.5);
+    const root = city.scene.getTransformNodeByName('render-citizen-1');
+    if (root === null) throw new Error('The crossing citizen should remain visible.');
+    expect(city.getStructuralCounters().visibleCitizens).toBe(1);
+    expect(city.getStructuralCounters().renderedCitizens).toBe(1);
+    expect(root.position.x).toBeCloseTo((31.5 + 0.5) * 0.25);
+    const meshCount = city.scene.meshes.length;
+
+    city.update(crossing, 0.5);
+    expect(city.scene.getTransformNodeByName('render-citizen-1')).toBe(root);
+    expect(city.scene.meshes.length).toBe(meshCount);
+
+    const offscreen = replaceSnapshot(crossing, {
+      citizens: [
+        {
+          ...citizen,
+          previousPosition: { x: 32, y: 3 },
+          position: { x: 33, y: 3 },
+        },
+      ],
+    });
+    const offscreenBefore = JSON.stringify(offscreen);
+    city.update(offscreen, 1);
+    expect(city.scene.getTransformNodeByName('render-citizen-1')).toBeNull();
+    expect(city.getStructuralCounters().visibleCitizens).toBe(0);
+    expect(city.getStructuralCounters().renderedCitizens).toBe(0);
+    expect(JSON.stringify(crossing)).toBe(crossingBefore);
+    expect(JSON.stringify(offscreen)).toBe(offscreenBefore);
+
+    city.setVisibleChunks([{ x: 1, y: 0 }]);
+    city.update(offscreen, 0.5);
+    expect(city.scene.getTransformNodeByName('render-citizen-1')).not.toBeNull();
+    expect(city.getStructuralCounters().renderedCitizens).toBe(1);
+
+    city.setVisibleChunks([{ x: 0, y: 0 }]);
+    city.update(crossing, 0.25);
+    const reentered = city.scene.getTransformNodeByName('render-citizen-1');
+    if (reentered === null) throw new Error('The citizen should re-enter the visible chunk.');
+    expect(reentered.position.x).toBeCloseTo((31.25 + 0.5) * 0.25);
+    expect(JSON.stringify(crossing)).toBe(crossingBefore);
+    city.dispose();
+    engine.dispose();
+  });
+
+  it('does not create off-screen citizen visuals', () => {
+    const engine = new NullEngine();
+    const snapshot = createSimulation({ citizenCount: 2 }).getSnapshot();
+    const city = createCityScene(engine, snapshot, { visibleChunks: [{ x: 1, y: 0 }] });
+    expect(city.scene.getTransformNodeByName('render-citizen-1')).toBeNull();
+    expect(city.scene.getTransformNodeByName('render-citizen-2')).toBeNull();
+    expect(city.getStructuralCounters().visibleCitizens).toBe(0);
+    expect(city.getStructuralCounters().renderedCitizens).toBe(0);
     city.dispose();
     engine.dispose();
   });

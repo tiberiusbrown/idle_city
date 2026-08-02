@@ -1,5 +1,5 @@
 import type { ChunkCoordinate } from '@idle-city/shared';
-import { chunkCoordinateForPosition, chunkKey } from '@idle-city/simulation';
+import { chunkCoordinateForPosition, chunkKey, compareChunks } from '@idle-city/simulation';
 import type { ArcRotateCamera } from '@babylonjs/core/Cameras/arcRotateCamera';
 import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
 import type { Scene } from '@babylonjs/core/scene';
@@ -18,11 +18,13 @@ export interface ChunkGroundLayer {
   setVisibleChunks(chunks: readonly ChunkCoordinate[]): void;
   getVisibleChunkCount(): number;
   getRenderedChunkCount(): number;
+  getRenderedChunks(): readonly ChunkCoordinate[];
   getRebuildCount(): number;
   dispose(): void;
 }
 
 interface GroundChunk {
+  readonly chunk: ChunkCoordinate;
   readonly key: string;
   readonly revision: number;
   readonly mesh: ReturnType<typeof CreateBox>;
@@ -67,7 +69,12 @@ export function createChunkGroundLayer(
       (summary.chunk.x + summary.chunk.y) % 2 === 0 ? materials.ground : materials.alternateGround;
     mesh.isPickable = true;
     chunkRebuilds += 1;
-    return { key: summary.key, revision: summary.occupancyRevision, mesh };
+    return {
+      chunk: { ...summary.chunk },
+      key: summary.key,
+      revision: summary.occupancyRevision,
+      mesh,
+    };
   };
 
   const visibleChunkCoordinates = (snapshot: SimulationSnapshot): readonly ChunkCoordinate[] => {
@@ -124,6 +131,9 @@ export function createChunkGroundLayer(
     },
     getRenderedChunkCount(): number {
       return groundChunks.size;
+    },
+    getRenderedChunks(): readonly ChunkCoordinate[] {
+      return [...groundChunks.values()].map((ground) => ({ ...ground.chunk })).sort(compareChunks);
     },
     getRebuildCount(): number {
       return chunkRebuilds;

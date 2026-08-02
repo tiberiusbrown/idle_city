@@ -466,6 +466,12 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const isDistrictSeedKind = (value: unknown): value is DistrictSeedKind =>
     value === 'living' || value === 'working' || value === 'services';
 
+  const activeSameTypeSeedCount = (kind: DistrictSeedKind): number =>
+    seeds.reduce((count, seed) => count + (seed.kind === kind ? 1 : 0), 0);
+
+  const currentDistrictSeedCost = (kind: DistrictSeedKind): number =>
+    getDistrictSeedCost(kind, activeSameTypeSeedCount(kind));
+
   const validateDistrictSeedPlacement = (
     command: PlaceDistrictSeedCommand,
   ): DistrictSeedPlacementValidation => {
@@ -486,7 +492,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     if (!isDistrictSeedKindUnlocked(requestedKind)) {
       return { accepted: false, reason: 'locked' };
     }
-    const cost = getDistrictSeedCost(requestedKind);
+    const cost = currentDistrictSeedCost(requestedKind);
     if (data < cost) return { accepted: false, reason: 'insufficient-data' };
     return {
       accepted: true,
@@ -653,7 +659,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   };
 
   const refreshDirtyDemandChunks = (): void => {
-    for (const chunk of spatial.getActiveChunks()) {
+    for (const chunk of spatial.getActiveChunks().sort(compareChunks)) {
       const state = demandChunks.get(chunkKey(chunk));
       if (state?.dirty === true) evaluateDemandChunk(chunk);
     }
@@ -689,6 +695,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   };
 
   for (const chunk of initialChunks) markDemandChunkDirty(chunk);
+  refreshDirtyDemandChunks();
 
   const completeTrip = (citizen: CitizenState, destinationId: string): void => {
     const destination = buildingById(destinationId);
@@ -737,7 +744,10 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
 
   const demandValueAt = (position: GridPosition, buildingType: BuildingType): number => {
     const chunk = chunkCoordinateForPosition(position, chunkSize);
-    const state = evaluateDemandChunk(chunk);
+    const state = demandChunks.get(chunkKey(chunk));
+    if (state?.dirty === true || state?.values === undefined) {
+      throw new Error(`Demand chunk ${chunkKey(chunk)} was not refreshed before evaluation.`);
+    }
     const local = {
       x: position.x - chunk.x * chunkSize,
       y: position.y - chunk.y * chunkSize,
@@ -1264,12 +1274,11 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     readonly demand: SimulationSnapshot['demand'];
     readonly activeChunks: readonly ActiveChunkSnapshot[];
   } => {
-    refreshDirtyDemandChunks();
     const activeChunks: ActiveChunkSnapshot[] = [];
     let totals = zeroTotals();
     for (const chunk of spatial.getActiveChunks()) {
       const state = demandChunks.get(chunkKey(chunk));
-      if (state?.values === undefined) {
+      if (state?.dirty === true || state?.values === undefined) {
         throw new Error(`Active chunk ${chunkKey(chunk)} has no evaluated demand buffer.`);
       }
       totals = {
@@ -1425,6 +1434,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         );
         data = roundData(data + dataGeneratedThisTick);
       }
+      refreshDirtyDemandChunks();
       if (tick % developmentEvaluationIntervalTicks === 0) evaluateDevelopers();
       assertPopulationInvariants();
     },
@@ -1447,6 +1457,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       data = roundData(data - validation.cost);
       developmentStateVersion += 1;
       markDemandAroundPosition(validation.position);
+      refreshDirtyDemandChunks();
       return {
         accepted: true,
         seed: { ...districtSeed, position: copyPosition(districtSeed.position) },
@@ -1470,16 +1481,24 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       spatial.activate(requested);
       developmentStateVersion += 1;
       markDemandForActivation(requested);
+      refreshDirtyDemandChunks();
       return {
         accepted: true,
         chunk: copyChunk(requested),
         activeChunkCount: spatial.getActiveChunks().length,
       };
     },
+    getCurrentDistrictSeedCost(kind: DistrictSeedKind): number {
+      return currentDistrictSeedCost(kind);
+    },
     getDemandChunk(chunk: ChunkCoordinate): DemandChunkSnapshot | undefined {
       if (!Number.isSafeInteger(chunk.x) || !Number.isSafeInteger(chunk.y)) return undefined;
       if (!spatial.isActive(chunk)) return undefined;
-      return copyDemandChunk(evaluateDemandChunk(chunk));
+      const state = demandChunks.get(chunkKey(chunk));
+      if (state === undefined || state.dirty || state.values === undefined) {
+        throw new Error(`Demand chunk ${chunkKey(chunk)} was not refreshed before query.`);
+      }
+      return copyDemandChunk(state);
     },
     queryDemandRegion(regionQuery: DemandRegionQuery): DemandRegionSnapshot {
       if (
@@ -1508,7 +1527,10 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
             inactiveCellCount += 1;
             continue;
           }
-          const state = evaluateDemandChunk(chunk);
+          const state = demandChunks.get(chunkKey(chunk));
+          if (state === undefined || state.dirty || state.values === undefined) {
+            throw new Error(`Demand chunk ${chunkKey(chunk)} was not refreshed before query.`);
+          }
           const local = {
             x: x - chunk.x * chunkSize,
             y: y - chunk.y * chunkSize,

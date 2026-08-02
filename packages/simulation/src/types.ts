@@ -306,6 +306,7 @@ export interface Simulation {
   step(): void;
   previewDistrictSeed(command: PlaceDistrictSeedCommand): DistrictSeedPlacementPreview;
   placeDistrictSeed(command: PlaceDistrictSeedCommand): CommandResult;
+  getCurrentDistrictSeedCost(kind: DistrictSeedKind): number;
   activateChunk(command: ActivateChunkCommand): ChunkActivationResult;
   getDemandChunk(chunk: ChunkCoordinate): DemandChunkSnapshot | undefined;
   queryDemandRegion(region: DemandRegionQuery): DemandRegionSnapshot;
