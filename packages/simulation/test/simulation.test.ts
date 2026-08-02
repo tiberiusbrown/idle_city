@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isInsideFootprint } from '../src/index';
-import { createSimulation } from '../src/index';
+import { createSimulation, isInsideFootprint, type CitizenSnapshot } from '../src/index';
 
 describe('simulation', () => {
   it('spawns citizens at an exterior home entrance and moves at most one cell per tick', () => {
@@ -113,6 +112,70 @@ describe('simulation', () => {
     });
     for (let tick = 0; tick < 80; tick += 1) simulation.step();
     expect(simulation.getSnapshot().completedTrips).toBeGreaterThan(0);
+  });
+
+  it('reserves only commuting cells, releases an entrance on arrival, and keeps traffic exact', () => {
+    const simulation = createSimulation({
+      citizenCount: 6,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1_000_000,
+    });
+    let sawInsideCitizenSharingAnEntrance = false;
+    let sawArrival = false;
+    for (let tick = 0; tick < 220; tick += 1) {
+      const before = simulation.getSnapshot();
+      simulation.step();
+      const after = simulation.getSnapshot();
+      const moving = after.citizens.filter(
+        ({ activity }) => activity === 'commuting-to-work' || activity === 'commuting-home',
+      );
+      const movingKeys = moving.map(
+        ({ position }) => `${String(position.x)},${String(position.y)}`,
+      );
+      expect(new Set(movingKeys).size).toBe(movingKeys.length);
+      expect(after.structural.trafficTraversalEventsRecorded).toBe(
+        after.structural.movementCommittedMoves,
+      );
+      expect(after.structural.movementProposals).toBe(
+        after.structural.movementCommittedMoves + after.structural.movementBlockedMoves,
+      );
+
+      const byPosition = new Map<string, CitizenSnapshot[]>();
+      for (const citizen of after.citizens) {
+        const key = `${String(citizen.position.x)},${String(citizen.position.y)}`;
+        const group = byPosition.get(key);
+        if (group === undefined) byPosition.set(key, [citizen]);
+        else group.push(citizen);
+      }
+      for (const group of byPosition.values()) {
+        if (
+          group.some(({ activity }) => activity === 'home' || activity === 'work') &&
+          group.some(
+            ({ activity }) => activity === 'commuting-to-work' || activity === 'commuting-home',
+          )
+        ) {
+          sawInsideCitizenSharingAnEntrance = true;
+        }
+      }
+
+      for (const citizen of after.citizens) {
+        const previous = before.citizens.find(({ id }) => id === citizen.id);
+        if (previous === undefined) throw new Error(`Missing previous citizen ${citizen.id}.`);
+        if (
+          previous.activity !== citizen.activity &&
+          (citizen.activity === 'home' || citizen.activity === 'work') &&
+          (previous.activity === 'commuting-to-work' || previous.activity === 'commuting-home')
+        ) {
+          sawArrival = true;
+          expect(movingKeys).not.toContain(
+            `${String(citizen.position.x)},${String(citizen.position.y)}`,
+          );
+          expect(citizen.waitTicks).toBe(0);
+        }
+      }
+    }
+    expect(sawInsideCitizenSharingAnEntrance).toBe(true);
+    expect(sawArrival).toBe(true);
   });
 
   it('exposes explicit chunk activation and query APIs without render-time input', () => {

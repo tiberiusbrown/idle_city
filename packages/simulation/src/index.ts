@@ -72,6 +72,30 @@ export {
   type PopulationAssignment,
   type PopulationAssignmentInput,
 } from './population';
+export {
+  buildMovementProposals,
+  compareMovementProposals,
+  findDirectMovementSwapPairs,
+  isMovementReplanDue,
+  isMovementDeadlockRecoveryDue,
+  MOVEMENT_DEADLOCK_RECOVERY_BLOCKED_TICKS,
+  MOVEMENT_REPLAN_FIRST_WAIT_TICKS,
+  MOVEMENT_REPLAN_INTERVAL_TICKS,
+  movementPairKey,
+  replanMovementRoute,
+  resolveMovementReservations,
+  type MovementBlockReason,
+  type MovementCandidate,
+  type MovementBlockedProposal,
+  type MovementMove,
+  type MovementProposal,
+  type MovementProposalInput,
+  type MovementReplanInput,
+  type MovementReplanResult,
+  type MovementResolution,
+  type MovementResolutionInput,
+  type MovementSwapPair,
+} from './movement';
 export type { ChunkCoordinate, GridPosition, GridRect } from '@idle-city/shared';
 export type {
   AcceptedCommandResult,

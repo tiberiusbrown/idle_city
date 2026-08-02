@@ -90,6 +90,8 @@ export interface CitizenSnapshot {
   readonly activityTicksRemaining: number;
   readonly route: readonly GridPosition[];
   readonly routeIndex: number;
+  /** Consecutive logical ticks for which this commuter's proposal was blocked. */
+  readonly waitTicks: number;
 }
 
 export interface DistrictSeed {
@@ -225,6 +227,16 @@ export interface SimulationStructuralCounters {
   readonly trafficExpiredTraversalEvents: number;
   readonly trafficExpiredBuckets: number;
   readonly trafficPeakActiveEdges: number;
+  readonly movementProposals: number;
+  readonly movementCommittedMoves: number;
+  readonly movementBlockedMoves: number;
+  readonly movementTargetConflicts: number;
+  readonly movementDependencyBlocks: number;
+  readonly movementCyclesCommitted: number;
+  readonly movementOrdinarySwapsRejected: number;
+  readonly movementReplansAttempted: number;
+  readonly movementReplansSucceeded: number;
+  readonly movementDeadlockRecoveries: number;
 }
 
 export type ActivateChunkCommand = ChunkCoordinate;

@@ -39,6 +39,12 @@ export const balanceScenarioNames = [
   'narrow-passage',
   'multi-chunk-commute',
   'long-running-repeated-commute',
+  'crossing-flows',
+  'narrow-shared-corridor',
+  'entrance-bottleneck',
+  'two-way-corridor',
+  'dense-commute',
+  'multi-chunk-merge',
   'living-led',
   'working-led',
   'equal-score',
@@ -277,6 +283,91 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     commands: [],
     activations: [],
   },
+  'crossing-flows': {
+    config: trafficScenarioConfig({
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 3, height: 3 },
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 34, y: 10 },
+      citizenCount: 8,
+      housingCapacity: 8,
+      workplaceCapacity: 8,
+      populationCap: 8,
+    }),
+    commands: [],
+    activations: [],
+  },
+  'narrow-shared-corridor': {
+    config: trafficScenarioConfig({
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 1 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 0 },
+      citizenCount: 6,
+      housingCapacity: 6,
+      workplaceCapacity: 6,
+      populationCap: 6,
+    }),
+    commands: [],
+    activations: [],
+  },
+  'entrance-bottleneck': {
+    config: trafficScenarioConfig({
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 18, y: 10 },
+      citizenCount: 12,
+      housingCapacity: 12,
+      workplaceCapacity: 12,
+      populationCap: 12,
+    }),
+    commands: [],
+    activations: [],
+  },
+  'two-way-corridor': {
+    config: trafficScenarioConfig({
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 18, y: 10 },
+      citizenCount: 10,
+      housingCapacity: 10,
+      workplaceCapacity: 10,
+      populationCap: 10,
+    }),
+    commands: [],
+    activations: [],
+  },
+  'dense-commute': {
+    config: trafficScenarioConfig({
+      chunkSize: 8,
+      initialChunkRegion: { minX: -1, minY: -1, width: 4, height: 4 },
+      homePosition: { x: -6, y: -6 },
+      workplacePosition: { x: 18, y: 18 },
+      citizenCount: 20,
+      housingCapacity: 20,
+      workplaceCapacity: 20,
+      populationCap: 20,
+    }),
+    commands: [],
+    activations: [],
+  },
+  'multi-chunk-merge': {
+    config: trafficScenarioConfig({
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 24, y: 24 },
+      citizenCount: 8,
+      housingCapacity: 8,
+      workplaceCapacity: 8,
+      populationCap: 8,
+      pathSearchBudget: 50_000,
+    }),
+    commands: [],
+    activations: [],
+  },
   'living-led': {
     config: { startingData: DISTRICT_SEED_COSTS.living, developmentEvaluationIntervalTicks: 100 },
     commands: [{ tick: 0, command: { kind: 'living', position: { x: 4, y: 4 } } }],
@@ -467,6 +558,21 @@ export interface BalanceActivationResult {
   readonly result: ChunkActivationResult;
 }
 
+export interface BalanceMovementSummary {
+  readonly proposals: number;
+  readonly committedMoves: number;
+  readonly blockedMoves: number;
+  readonly averageWaitTicks: number;
+  readonly maxWaitTicks: number;
+  readonly targetConflicts: number;
+  readonly dependencyBlocks: number;
+  readonly cyclesCommitted: number;
+  readonly ordinarySwapsRejected: number;
+  readonly replansAttempted: number;
+  readonly replansSucceeded: number;
+  readonly emergencySwaps: number;
+}
+
 export interface BalanceSummary {
   readonly scenario: BalanceScenarioName;
   readonly seed: number;
@@ -483,6 +589,7 @@ export interface BalanceSummary {
   readonly demandTotals: DemandTotals;
   readonly seeds: readonly DistrictSeed[];
   readonly activeChunkCount: number;
+  readonly movement: BalanceMovementSummary;
   readonly traffic: readonly TrafficEdgeSnapshot[];
   readonly activeTrafficEdges: number;
   /** Current-window sum of all per-edge directional counters. */
@@ -702,8 +809,28 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
   ) {
     fail('traffic expiry counters are negative');
   }
+  if (
+    snapshot.structural.trafficTraversalEventsRecorded !==
+    snapshot.structural.movementCommittedMoves
+  ) {
+    fail('traffic traversal count does not equal committed movement count');
+  }
+  if (
+    snapshot.structural.movementProposals !==
+    snapshot.structural.movementCommittedMoves + snapshot.structural.movementBlockedMoves
+  ) {
+    fail('movement proposals do not reconcile with committed and blocked moves');
+  }
+  if (
+    snapshot.structural.movementTargetConflicts > snapshot.structural.movementBlockedMoves ||
+    snapshot.structural.movementDependencyBlocks > snapshot.structural.movementBlockedMoves ||
+    snapshot.structural.movementOrdinarySwapsRejected > snapshot.structural.movementBlockedMoves
+  ) {
+    fail('movement conflict counters exceed blocked moves');
+  }
 
   const citizenIds = new Set<string>();
+  const movingCells = new Set<string>();
   const validActivities = new Set(['home', 'commuting-to-work', 'work', 'commuting-home']);
   for (const citizen of snapshot.citizens) {
     if (citizenIds.has(citizen.id)) fail(`duplicate citizen id ${citizen.id}`);
@@ -736,6 +863,14 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
       citizen.activityTicksRemaining < 0
     ) {
       fail(`citizen ${citizen.id} has invalid schedule state`);
+    }
+    if (!Number.isSafeInteger(citizen.waitTicks) || citizen.waitTicks < 0) {
+      fail(`citizen ${citizen.id} has invalid wait state`);
+    }
+    if (citizen.activity === 'commuting-to-work' || citizen.activity === 'commuting-home') {
+      const movingKey = `${String(citizen.position.x)},${String(citizen.position.y)}`;
+      if (movingCells.has(movingKey)) fail(`duplicate moving occupancy at ${movingKey}`);
+      movingCells.add(movingKey);
     }
     if (
       !Number.isSafeInteger(citizen.routeIndex) ||
@@ -834,6 +969,9 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
   const invariantFailures = new Set<string>();
   const commandResults: BalanceCommandResult[] = [];
   const activationResults: BalanceActivationResult[] = [];
+  let observedWaitTicks = 0;
+  let observedWaitSamples = 0;
+  let observedMaxWaitTicks = 0;
   let nextScheduledCommand = 0;
   let nextScheduledActivation = 0;
   const applyScheduled = (): void => {
@@ -862,6 +1000,11 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     }
   };
   const recordInvariantFailures = (label: string, snapshot: SimulationSnapshot): void => {
+    for (const citizen of snapshot.citizens) {
+      observedWaitTicks += citizen.waitTicks;
+      observedWaitSamples += 1;
+      observedMaxWaitTicks = Math.max(observedMaxWaitTicks, citizen.waitTicks);
+    }
     for (const failure of collectInvariantFailures(snapshot))
       invariantFailures.add(`${label}: ${failure}`);
   };
@@ -884,6 +1027,20 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     0,
   );
   const totalTraversals = snapshot.traffic.reduce((total, edge) => total + edge.total, 0);
+  const movement: BalanceMovementSummary = {
+    proposals: snapshot.structural.movementProposals,
+    committedMoves: snapshot.structural.movementCommittedMoves,
+    blockedMoves: snapshot.structural.movementBlockedMoves,
+    averageWaitTicks: observedWaitSamples === 0 ? 0 : observedWaitTicks / observedWaitSamples,
+    maxWaitTicks: observedMaxWaitTicks,
+    targetConflicts: snapshot.structural.movementTargetConflicts,
+    dependencyBlocks: snapshot.structural.movementDependencyBlocks,
+    cyclesCommitted: snapshot.structural.movementCyclesCommitted,
+    ordinarySwapsRejected: snapshot.structural.movementOrdinarySwapsRejected,
+    replansAttempted: snapshot.structural.movementReplansAttempted,
+    replansSucceeded: snapshot.structural.movementReplansSucceeded,
+    emergencySwaps: snapshot.structural.movementDeadlockRecoveries,
+  };
   return {
     scenario,
     seed: options.seed,
@@ -900,6 +1057,7 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     demandTotals: snapshot.demand.totals,
     seeds: snapshot.seeds,
     activeChunkCount: snapshot.activeChunkCount,
+    movement,
     traffic: snapshot.traffic,
     activeTrafficEdges: snapshot.structural.activeTrafficEdges,
     directionalTraversals,

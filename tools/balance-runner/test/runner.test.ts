@@ -132,6 +132,31 @@ describe('balance runner', () => {
     );
   });
 
+  it('reports Step 9 movement scenarios with deterministic wait and conflict metrics', () => {
+    const scenarios = [
+      'crossing-flows',
+      'narrow-shared-corridor',
+      'entrance-bottleneck',
+      'two-way-corridor',
+      'dense-commute',
+      'multi-chunk-merge',
+    ] as const;
+    for (const scenario of scenarios) {
+      const first = runBalance({ seed: 2026, ticks: 120, scenario });
+      const second = runBalance({ seed: 2026, ticks: 120, scenario });
+      expect(first).toEqual(second);
+      expect(first.invariantFailures).toEqual([]);
+      expect(first.movement.proposals).toBe(
+        first.movement.committedMoves + first.movement.blockedMoves,
+      );
+      expect(first.movement.averageWaitTicks).toBeGreaterThanOrEqual(0);
+      expect(first.movement.maxWaitTicks).toBeGreaterThanOrEqual(first.movement.averageWaitTicks);
+      expect(first.trafficTraversalEventsRecorded).toBe(first.movement.committedMoves);
+      expect(first.completedTrips).toBeGreaterThan(0);
+      expect(first.determinismHash).toMatch(/^[0-9a-f]{8}$/);
+    }
+  }, 30_000);
+
   it('covers balanced, tied, capped, and long-run population scenarios', () => {
     const balanced = runBalance({ seed: 7, ticks: 30, scenario: 'balanced-expansion' });
     const tie = runBalance({ seed: 7, ticks: 30, scenario: 'tie' });

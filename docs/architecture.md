@@ -24,6 +24,12 @@ The simulation records internal route usage only when a citizen successfully com
 
 Traffic history uses a ring of per-tick sparse edge-delta buckets with a default 256 logical-tick window. Expiry runs only as logical ticks advance; expired bucket deltas are subtracted from aggregate edge counters and empty edges are removed. Snapshot traffic summaries are detached, nonzero, and sorted by canonical key. The raw ring buckets remain simulation-private, and traffic does not affect A* costs, route selection, or replanning.
 
+## Deterministic movement reservations
+
+Step 9 gives commuting citizens exclusive movement-cell occupancy. Citizens at home or work, including a citizen that has just arrived at an entrance, do not reserve that entrance. A tick snapshots only commuting occupancy, builds one sorted next-cell proposal per eligible commuter, validates route state plus active/static walkability, resolves target conflicts by wait age, remaining route length, trip start tick, and stable citizen ID, then resolves dependencies against cells proposed to be vacated. Accepted moves are committed simultaneously. Cycles of length three or greater are accepted; ordinary two-citizen swaps are rejected. An arrival changes to its inside-building activity and releases its movement cell in the same commit. Detached `previousPosition` values remain available for renderer interpolation.
+
+Blocked proposals increment `waitTicks`; accepted moves reset it. A deterministic bounded A* replan is attempted at waits 8, 16, 24, and so on, using current moving cells as a temporary input only. Failed replans leave the existing route untouched. Repeated identical direct head-on pairs are tracked by stable citizen pair ID and exact endpoint state. After 12 consecutive blocked ticks, one atomic emergency swap is allowed; movement, a route change, trip completion, or topology change resets the relevant deadlock state. Cumulative proposal, commit, block, conflict, cycle, replan, and recovery counters are exposed in structural snapshots. Traffic telemetry is recorded only for committed reservation moves.
+
 ## Deterministic paths and expansion
 
 Pathfinding uses deterministic A* with a Manhattan heuristic, integer movement cost, fixed neighbor order, coordinate/sequence tie-breaking, and an explicit node-expansion budget. The grid seam accepts active-chunk storage and a walkability callback; `findGridPathDetailed` exposes found/no-path/budget-exhausted status plus expanded-node and touched-chunk counts. Current citizen positions are not permanent obstacles. The path API keeps a chunk-level seam available for future hierarchical routing without introducing a portal framework now.
@@ -95,4 +101,4 @@ The headless balance runner reports active/allocated chunks, optional occupancy 
 
 ## Deferred systems
 
-This step intentionally does not add movement reservations, congestion costs, roads, transit, chunk removal, player-facing expansion controls, polygon footprints, detailed voxel meshing, services, demolition, conversion, redevelopment, construction bots, a Travel Flow overlay, Traffic Analysis research state, or traffic-dependent routing.
+This step intentionally does not add congestion costs, roads, transit, chunk removal, player-facing expansion controls, polygon footprints, detailed voxel meshing, services, demolition, conversion, redevelopment, construction bots, a Travel Flow overlay, Traffic Analysis research state, or traffic-dependent routing.

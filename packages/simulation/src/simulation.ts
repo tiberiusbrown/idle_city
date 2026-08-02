@@ -35,6 +35,16 @@ import { findGridPathDetailed } from './pathfinding';
 import { findNearestCompatiblePair } from './population';
 import { SeededRandom } from './random';
 import { createTrafficTelemetry, DEFAULT_TRAFFIC_HISTORY_WINDOW_TICKS } from './traffic';
+import {
+  buildMovementProposals,
+  findDirectMovementSwapPairs,
+  isMovementDeadlockRecoveryDue,
+  isMovementReplanDue,
+  resolveMovementReservations,
+  replanMovementRoute,
+  type MovementCandidate,
+  type MovementSwapPair,
+} from './movement';
 import type {
   ActivateChunkCommand,
   ActiveChunkSnapshot,
@@ -74,9 +84,11 @@ interface CitizenState {
   readonly workplaceBuildingId: string;
   activity: CitizenActivity;
   activityTicksRemaining: number;
+  departurePending: boolean;
   route: GridPosition[];
   routeIndex: number;
   tripStartedTick: number | null;
+  waitTicks: number;
 }
 
 interface DemandChunkState {
@@ -104,6 +116,17 @@ interface ConstructionProjectState {
   readonly seedInfluence: number;
   readonly spatialFactor: number;
   readonly expectedAccessImprovement: number;
+}
+
+interface DeadlockPairState {
+  readonly key: string;
+  readonly leftId: string;
+  readonly rightId: string;
+  readonly leftFrom: GridPosition;
+  readonly leftTo: GridPosition;
+  readonly rightFrom: GridPosition;
+  readonly rightTo: GridPosition;
+  blockedTicks: number;
 }
 
 type DistrictSeedPlacementValidation =
@@ -199,6 +222,10 @@ function coordinateKey(position: GridPosition): string {
 
 function comparePositions(left: GridPosition, right: GridPosition): number {
   return left.y === right.y ? left.x - right.x : left.y - right.y;
+}
+
+function compareCitizenIds(left: CitizenState, right: CitizenState): number {
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 }
 
 function distanceToRect(position: GridPosition, rect: Building['footprint']): number {
@@ -426,13 +453,16 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     workplaceBuildingId: workplace.id,
     activity: 'home',
     activityTicksRemaining: 1 + random.nextInteger(activityDurationTicks),
+    departurePending: false,
     route: [],
     routeIndex: 0,
     tripStartedTick: null,
+    waitTicks: 0,
   });
   const citizens: CitizenState[] = Array.from({ length: initialPopulation }, (_, index) =>
     createCitizenState(`citizen-${String(index + 1)}`, homeBuilding, workplaceBuilding),
   );
+  const citizensById = new Map(citizens.map((citizen) => [citizen.id, citizen]));
   let nextCitizenSequence = initialPopulation + 1;
 
   let tick = 0;
@@ -462,6 +492,17 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   let demandChunksEvaluated = 0;
   let pathNodesExpanded = 0;
   let pathChunksTouched = 0;
+  let movementProposals = 0;
+  let movementCommittedMoves = 0;
+  let movementBlockedMoves = 0;
+  let movementTargetConflicts = 0;
+  let movementDependencyBlocks = 0;
+  let movementCyclesCommitted = 0;
+  let movementOrdinarySwapsRejected = 0;
+  let movementReplansAttempted = 0;
+  let movementReplansSucceeded = 0;
+  let movementDeadlockRecoveries = 0;
+  const deadlockPairStates = new Map<string, DeadlockPairState>();
   const demandChunks = new Map<string, DemandChunkState>();
   const demandCitizens = (): readonly {
     readonly homeBuildingId: string;
@@ -706,6 +747,35 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   for (const chunk of initialChunks) markDemandChunkDirty(chunk);
   refreshDirtyDemandChunks();
 
+  const sortedCitizens = (): CitizenState[] => [...citizens].sort(compareCitizenIds);
+
+  const clearDeadlockPairsForCitizen = (citizenId: string): void => {
+    for (const [key, state] of deadlockPairStates) {
+      if (state.leftId === citizenId || state.rightId === citizenId) {
+        deadlockPairStates.delete(key);
+      }
+    }
+  };
+
+  const clearAllDeadlockPairs = (): void => {
+    deadlockPairStates.clear();
+  };
+
+  const snapshotMovingOccupancy = (): Map<string, string> => {
+    const occupancy = new Map<string, string>();
+    for (const citizen of sortedCitizens()) {
+      if (citizen.activity !== 'commuting-to-work' && citizen.activity !== 'commuting-home') {
+        continue;
+      }
+      const key = coordinateKey(citizen.position);
+      if (occupancy.has(key)) {
+        throw new Error(`Moving citizens share exclusive cell ${key}.`);
+      }
+      occupancy.set(key, citizen.id);
+    }
+    return occupancy;
+  };
+
   const completeTrip = (citizen: CitizenState, destinationId: string): void => {
     const destination = buildingById(destinationId);
     if (!positionsEqual(citizen.position, destination.entrance)) {
@@ -717,7 +787,10 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     totalTripDurationTicks += tick - citizen.tripStartedTick;
     citizen.activity = citizen.activity === 'commuting-to-work' ? 'work' : 'home';
     citizen.activityTicksRemaining = activityDurationTicks;
+    citizen.departurePending = false;
     citizen.tripStartedTick = null;
+    citizen.waitTicks = 0;
+    clearDeadlockPairsForCitizen(citizen.id);
     completedTrips += 1;
   };
 
@@ -725,7 +798,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     citizen: CitizenState,
     activity: CitizenActivity,
     destinationId: string,
-  ): void => {
+  ): boolean => {
     const destination = buildingById(destinationId);
     const result = findGridPathDetailed(
       {
@@ -745,10 +818,17 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       );
     }
     citizen.activity = activity;
+    citizen.departurePending = false;
     citizen.route = result.path.map(copyPosition);
     citizen.routeIndex = 0;
     citizen.tripStartedTick = tick;
-    if (citizen.route.length === 1) completeTrip(citizen, destinationId);
+    citizen.waitTicks = 0;
+    clearDeadlockPairsForCitizen(citizen.id);
+    if (citizen.route.length === 1) {
+      completeTrip(citizen, destinationId);
+      return false;
+    }
+    return true;
   };
 
   const demandValueAt = (position: GridPosition, buildingType: BuildingType): number => {
@@ -865,6 +945,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       'work',
       'commuting-home',
     ];
+    const movingCells = new Map<string, string>();
     for (const citizen of citizens) {
       if (citizenIds.has(citizen.id)) throw new Error(`Duplicate citizen id ${citizen.id}.`);
       citizenIds.add(citizen.id);
@@ -882,6 +963,20 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         citizen.activityTicksRemaining < 0
       ) {
         throw new Error(`Citizen ${citizen.id} has negative schedule state.`);
+      }
+      if (!Number.isSafeInteger(citizen.waitTicks) || citizen.waitTicks < 0) {
+        throw new Error(`Citizen ${citizen.id} has invalid wait state.`);
+      }
+      if (citizen.activity === 'commuting-to-work' || citizen.activity === 'commuting-home') {
+        const movingCell = coordinateKey(citizen.position);
+        if (movingCells.has(movingCell)) {
+          throw new Error(`Moving citizens share exclusive cell ${movingCell}.`);
+        }
+        movingCells.set(movingCell, citizen.id);
+        const routePosition = citizen.route[citizen.routeIndex];
+        if (routePosition === undefined || !positionsEqual(routePosition, citizen.position)) {
+          throw new Error(`Citizen ${citizen.id} is not at its route index.`);
+        }
       }
       if (!spatial.isPositionActive(citizen.position) || !spatial.isWalkable(citizen.position)) {
         throw new Error(`Citizen ${citizen.id} is outside active walkable space.`);
@@ -1037,6 +1132,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     if (!canReserveCandidate(candidate)) return;
     const footprint = footprintCells(candidate.footprint);
     spatial.blockMany(footprint);
+    clearAllDeadlockPairs();
     const project: ConstructionProjectState = {
       id: `construction-project-${String(nextConstructionProjectId)}`,
       buildingType: candidate.buildingType,
@@ -1119,6 +1215,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         assignment.workplace,
       ),
     );
+    const citizen = citizens.at(-1);
+    if (citizen === undefined) throw new Error('A newly grown citizen was not stored.');
+    citizensById.set(citizen.id, citizen);
     nextCitizenSequence += 1;
     return true;
   };
@@ -1246,39 +1345,213 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     lastEvaluatedDevelopmentStateVersion = developmentStateVersion;
   };
 
-  const advanceCitizen = (citizen: CitizenState): void => {
-    citizen.previousPosition = copyPosition(citizen.position);
-    if (citizen.activity === 'home' || citizen.activity === 'work') {
-      citizen.activityTicksRemaining -= 1;
-      if (citizen.activityTicksRemaining <= 0) {
-        if (citizen.activity === 'home') {
-          startTrip(citizen, 'commuting-to-work', citizen.workplaceBuildingId);
-        } else {
-          completedActivities += 1;
-          startTrip(citizen, 'commuting-home', citizen.homeBuildingId);
-        }
+  const pairStateMatches = (state: DeadlockPairState, pair: MovementSwapPair): boolean =>
+    state.key === pair.key &&
+    state.leftId === pair.leftId &&
+    state.rightId === pair.rightId &&
+    positionsEqual(state.leftFrom, pair.leftFrom) &&
+    positionsEqual(state.leftTo, pair.leftTo) &&
+    positionsEqual(state.rightFrom, pair.rightFrom) &&
+    positionsEqual(state.rightTo, pair.rightTo);
+
+  const updateDeadlockPairStates = (
+    directSwapPairs: readonly MovementSwapPair[],
+    emergencySwapKeys: ReadonlySet<string>,
+  ): void => {
+    const activeKeys = new Set(directSwapPairs.map((pair) => pair.key));
+    for (const key of [...deadlockPairStates.keys()]) {
+      if (!activeKeys.has(key)) deadlockPairStates.delete(key);
+    }
+    for (const pair of directSwapPairs) {
+      if (emergencySwapKeys.has(pair.key)) {
+        deadlockPairStates.delete(pair.key);
+        continue;
       }
-      return;
+      const previous = deadlockPairStates.get(pair.key);
+      const blockedTicks =
+        previous !== undefined && pairStateMatches(previous, pair) ? previous.blockedTicks + 1 : 1;
+      deadlockPairStates.set(pair.key, {
+        key: pair.key,
+        leftId: pair.leftId,
+        rightId: pair.rightId,
+        leftFrom: copyPosition(pair.leftFrom),
+        leftTo: copyPosition(pair.leftTo),
+        rightFrom: copyPosition(pair.rightFrom),
+        rightTo: copyPosition(pair.rightTo),
+        blockedTicks,
+      });
+    }
+  };
+
+  const advanceCitizenSchedules = (movingOccupancy: Map<string, string>): void => {
+    for (const citizen of sortedCitizens()) {
+      if (citizen.activity !== 'home' && citizen.activity !== 'work') continue;
+      if (citizen.activityTicksRemaining > 0) citizen.activityTicksRemaining -= 1;
+      if (citizen.activityTicksRemaining > 0) continue;
+      if (!citizen.departurePending) {
+        citizen.departurePending = true;
+        if (citizen.activity === 'work') completedActivities += 1;
+      }
+      const originKey = coordinateKey(citizen.position);
+      if (movingOccupancy.has(originKey)) continue;
+      const activity: CitizenActivity =
+        citizen.activity === 'home' ? 'commuting-to-work' : 'commuting-home';
+      const destinationId =
+        activity === 'commuting-to-work' ? citizen.workplaceBuildingId : citizen.homeBuildingId;
+      if (startTrip(citizen, activity, destinationId)) {
+        movingOccupancy.set(originKey, citizen.id);
+      }
+    }
+  };
+
+  const replanCitizen = (
+    citizen: CitizenState,
+    movingOccupancy: ReadonlyMap<string, string>,
+  ): boolean => {
+    const destinationId =
+      citizen.activity === 'commuting-to-work'
+        ? citizen.workplaceBuildingId
+        : citizen.homeBuildingId;
+    const destination = buildingById(destinationId);
+    const temporaryBlocked = new Set(movingOccupancy.keys());
+    temporaryBlocked.delete(coordinateKey(citizen.position));
+    temporaryBlocked.delete(coordinateKey(destination.entrance));
+    movementReplansAttempted += 1;
+    const result = replanMovementRoute({
+      chunkSize,
+      activeChunks: spatial.getActiveChunks(),
+      start: citizen.position,
+      goal: destination.entrance,
+      currentRoute: citizen.route,
+      currentRouteIndex: citizen.routeIndex,
+      temporaryBlocked,
+      isWalkable: (position) => spatial.isWalkable(position),
+      maxNodes: pathSearchBudget,
+    });
+    pathNodesExpanded += result.nodesExpanded;
+    pathChunksTouched += result.chunksTouched;
+    if (result.status !== 'found') return false;
+    const replannedRoute = result.path.map(copyPosition);
+    citizen.route = replannedRoute;
+    citizen.routeIndex = result.routeIndex;
+    movementReplansSucceeded += 1;
+    if (result.routeChanged) clearDeadlockPairsForCitizen(citizen.id);
+    return true;
+  };
+
+  const maybeReplanBlockedCitizens = (blockedIds: readonly string[]): void => {
+    if (blockedIds.length === 0) return;
+    const movingOccupancy = snapshotMovingOccupancy();
+    const orderedIds = [...blockedIds].sort();
+    for (const citizenId of orderedIds) {
+      const citizen = citizensById.get(citizenId);
+      if (citizen === undefined) throw new Error(`Blocked movement references ${citizenId}.`);
+      if (!isMovementReplanDue(citizen.waitTicks)) continue;
+      replanCitizen(citizen, movingOccupancy);
+    }
+  };
+
+  const advanceCitizens = (): void => {
+    const movingOccupancy = snapshotMovingOccupancy();
+    const initiallyMovingCitizenIds = new Set(movingOccupancy.values());
+    for (const citizen of sortedCitizens()) {
+      citizen.previousPosition = copyPosition(citizen.position);
+    }
+    advanceCitizenSchedules(movingOccupancy);
+
+    const candidates: MovementCandidate[] = [];
+    for (const citizen of sortedCitizens()) {
+      if (citizen.activity !== 'commuting-to-work' && citizen.activity !== 'commuting-home') {
+        continue;
+      }
+      // A newly scheduled trip claims its origin for this tick and becomes
+      // proposal-eligible on the next tick, preserving a distinct trip start.
+      if (!initiallyMovingCitizenIds.has(citizen.id)) continue;
+      if (citizen.tripStartedTick === null) {
+        throw new Error(`Commuter ${citizen.id} has no trip start tick.`);
+      }
+      candidates.push({
+        id: citizen.id,
+        position: copyPosition(citizen.position),
+        route: citizen.route.map(copyPosition),
+        routeIndex: citizen.routeIndex,
+        waitTicks: citizen.waitTicks,
+        tripStartedTick: citizen.tripStartedTick,
+      });
+    }
+    const proposals = buildMovementProposals({
+      candidates,
+      isActive: (position) => spatial.isPositionActive(position),
+      isWalkable: (position) => spatial.isWalkable(position),
+    });
+    movementProposals += proposals.length;
+    const directSwapPairs = findDirectMovementSwapPairs(proposals);
+    const emergencySwapPairs = new Set<string>();
+    for (const pair of directSwapPairs) {
+      const previous = deadlockPairStates.get(pair.key);
+      if (
+        previous !== undefined &&
+        pairStateMatches(previous, pair) &&
+        isMovementDeadlockRecoveryDue(previous.blockedTicks, true)
+      ) {
+        emergencySwapPairs.add(pair.key);
+      }
+    }
+    const resolution = resolveMovementReservations({
+      proposals,
+      movingOccupancy,
+      emergencySwapPairs,
+    });
+    movementCommittedMoves += resolution.accepted.length;
+    movementBlockedMoves += resolution.blocked.length;
+    movementTargetConflicts += resolution.targetConflicts;
+    movementDependencyBlocks += resolution.dependencyBlocks;
+    movementCyclesCommitted += resolution.cyclesCommitted;
+    movementOrdinarySwapsRejected += resolution.ordinarySwapsRejected;
+    movementDeadlockRecoveries += resolution.emergencySwaps;
+
+    for (const move of resolution.accepted) {
+      const citizen = citizensById.get(move.citizenId);
+      if (citizen === undefined)
+        throw new Error(`Committed movement references ${move.citizenId}.`);
+      const expectedNext = citizen.route[citizen.routeIndex + 1];
+      if (expectedNext === undefined || !positionsEqual(expectedNext, move.to)) {
+        throw new Error(`Committed movement is not the next route cell for ${citizen.id}.`);
+      }
+      citizen.position = copyPosition(move.to);
+      citizen.routeIndex += 1;
+      traffic.recordCommittedMove(move.from, move.to);
+    }
+    for (const blocked of resolution.blocked) {
+      const citizen = citizensById.get(blocked.citizenId);
+      if (citizen === undefined)
+        throw new Error(`Blocked movement references ${blocked.citizenId}.`);
+      citizen.waitTicks += 1;
+    }
+    for (const move of resolution.accepted) {
+      const citizen = citizensById.get(move.citizenId);
+      if (citizen === undefined)
+        throw new Error(`Committed movement references ${move.citizenId}.`);
+      citizen.waitTicks = 0;
     }
 
-    const nextIndex = citizen.routeIndex + 1;
-    const next = citizen.route[nextIndex];
-    if (next === undefined) throw new Error(`Citizen ${citizen.id} has an incomplete route.`);
-    if (manhattanDistance(next, citizen.position) !== 1) {
-      throw new Error(`Citizen ${citizen.id} route contains a non-adjacent move.`);
-    }
-    if (!spatial.isWalkable(next)) throw new Error(`Citizen ${citizen.id} entered a blocked cell.`);
-    const from = citizen.position;
-    citizen.position = copyPosition(next);
-    traffic.recordCommittedMove(from, citizen.position);
-    citizen.routeIndex = nextIndex;
-    if (citizen.routeIndex === citizen.route.length - 1) {
+    for (const move of resolution.accepted) {
+      const citizen = citizensById.get(move.citizenId);
+      if (citizen === undefined)
+        throw new Error(`Committed movement references ${move.citizenId}.`);
+      if (citizen.routeIndex !== citizen.route.length - 1) continue;
       const destinationId =
         citizen.activity === 'commuting-to-work'
           ? citizen.workplaceBuildingId
           : citizen.homeBuildingId;
       completeTrip(citizen, destinationId);
     }
+
+    if (resolution.accepted.length > 0) clearAllDeadlockPairs();
+    else updateDeadlockPairStates(resolution.directSwapPairs, emergencySwapPairs);
+    const blockedIds = resolution.blocked.map(({ citizenId }) => citizenId);
+    maybeReplanBlockedCitizens(blockedIds);
+    if (resolution.accepted.length === 0 && blockedIds.length === 0) clearAllDeadlockPairs();
   };
 
   const demandSnapshot = (): {
@@ -1358,6 +1631,16 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       trafficExpiredTraversalEvents: trafficCounters.expiredTraversalEvents,
       trafficExpiredBuckets: trafficCounters.expiredBuckets,
       trafficPeakActiveEdges: trafficCounters.peakActiveEdges,
+      movementProposals,
+      movementCommittedMoves,
+      movementBlockedMoves,
+      movementTargetConflicts,
+      movementDependencyBlocks,
+      movementCyclesCommitted,
+      movementOrdinarySwapsRejected,
+      movementReplansAttempted,
+      movementReplansSucceeded,
+      movementDeadlockRecoveries,
     };
     return {
       chunkSize,
@@ -1402,7 +1685,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         entrance: copyPosition(building.entrance),
       })),
       occupancy: occupancySnapshot().map((building) => ({ ...building })),
-      citizens: citizens.map((citizen): CitizenSnapshot => ({
+      citizens: sortedCitizens().map((citizen): CitizenSnapshot => ({
         id: citizen.id,
         position: copyPosition(citizen.position),
         previousPosition: copyPosition(citizen.previousPosition),
@@ -1412,6 +1695,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         activityTicksRemaining: citizen.activityTicksRemaining,
         route: citizen.route.map(copyPosition),
         routeIndex: citizen.routeIndex,
+        waitTicks: citizen.waitTicks,
       })),
       developmentCandidates: lastDevelopmentCandidates.map((candidate) => ({
         ...candidate,
@@ -1446,7 +1730,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       const activitiesBefore = completedActivities;
       tick += 1;
       traffic.advanceToTick(tick);
-      for (const citizen of citizens) advanceCitizen(citizen);
+      advanceCitizens();
       advanceConstructionProjects();
       const populationGrew = tick % populationGrowthCadenceTicks === 0 ? growPopulation() : false;
       const metricsAfter = calculateMetrics().metrics;
@@ -1507,6 +1791,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         return { accepted: false, reason: 'active-chunk-limit' };
       }
       spatial.activate(requested);
+      clearAllDeadlockPairs();
       developmentStateVersion += 1;
       markDemandForActivation(requested);
       refreshDirtyDemandChunks();

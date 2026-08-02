@@ -449,6 +449,12 @@ Progression rules:
 - Transit corridors require both qualifying traffic and the relevant Core/Access research.
 - High-capacity transit cannot appear before Access rank 5.
 
+### 6.6 Movement reservations â€” Implemented
+
+Commuting citizens reserve exclusive logical movement cells. Home, work, and other inside-building activities do not reserve entrances. Each logical tick snapshots moving occupancy, creates deterministic next-cell proposals, resolves same-target conflicts and dependencies, permits uncontested cycles of length three or greater, rejects ordinary two-citizen swaps, and commits accepted moves simultaneously. Priority is greater wait age, fewer remaining route cells, earlier trip start tick, then stable citizen ID. Arrivals complete their trip and release the entrance in the same commit; `previousPosition` remains detached for renderer interpolation.
+
+Blocked commuters replan with bounded deterministic A* at exactly 8 consecutive blocked ticks and every 8 additional blocked ticks. Current moving cells are temporary replan inputs only, and a failed replan retains the current route. Repeated identical direct head-on pairs receive one atomic emergency swap at exactly 12 consecutive blocked ticks. Movement snapshots expose wait state and cumulative reservation, conflict, replan, cycle, and recovery counters. Traffic telemetry counts committed moves only.
+
 ---
 
 ## 7. Player Understanding

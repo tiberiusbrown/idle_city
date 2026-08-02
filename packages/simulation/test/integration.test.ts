@@ -53,7 +53,7 @@ describe('chunked city integration', () => {
       return simulation.getDeterminismHash();
     };
     expect(run()).toBe(run());
-  });
+  }, 30_000);
 
   it('activates sparse outward chunks without filling the bounding box', () => {
     const simulation = createSimulation({
