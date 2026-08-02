@@ -1,5 +1,5 @@
 import type { ChunkCoordinate, GridPosition } from '@idle-city/shared';
-import { findGridPathDetailed, type PathSearchStatus } from './pathfinding';
+import { findGridPathDetailed, routeTieProfile, type PathSearchStatus } from './pathfinding';
 
 export type MovementBlockReason = 'invalid' | 'target-conflict' | 'dependency' | 'ordinary-swap';
 
@@ -10,6 +10,8 @@ export interface MovementCandidate {
   readonly routeIndex: number;
   readonly waitTicks: number;
   readonly tripStartedTick: number;
+  /** Construction lead builders receive priority only in same-target ties. */
+  readonly critical?: boolean;
 }
 
 export interface MovementProposal {
@@ -19,6 +21,7 @@ export interface MovementProposal {
   readonly waitTicks: number;
   readonly remainingRouteCells: number;
   readonly tripStartedTick: number;
+  readonly critical?: boolean;
   readonly valid: boolean;
   readonly blockReason?: 'invalid';
 }
@@ -70,6 +73,10 @@ export interface MovementReplanInput {
   readonly temporaryBlocked: ReadonlySet<string>;
   readonly isWalkable: (position: GridPosition) => boolean;
   readonly maxNodes: number;
+  readonly routeTieProfile?: number;
+  readonly recovery?: boolean;
+  /** Number of waiting moving neighbors around a candidate recovery cell. */
+  readonly orthogonalQueueNeighbors?: (position: GridPosition) => number;
 }
 
 export interface MovementReplanResult {
@@ -81,9 +88,28 @@ export interface MovementReplanResult {
   readonly chunksTouched: number;
 }
 
-export const MOVEMENT_REPLAN_FIRST_WAIT_TICKS = 8;
-export const MOVEMENT_REPLAN_INTERVAL_TICKS = 8;
+export const MOVEMENT_REPLAN_FIRST_WAIT_TICKS = 4;
+export const MOVEMENT_REPLAN_INTERVAL_TICKS = 4;
 export const MOVEMENT_DEADLOCK_RECOVERY_BLOCKED_TICKS = 12;
+
+export const RECOVERY_EDGE_COST = 100;
+export const RECOVERY_QUEUE_PENALTY_STEP = 50;
+export const RECOVERY_QUEUE_PENALTY_CAP = 150;
+
+/** Exact bounded penalty used by baseline recovery searches. */
+export function recoveryQueuePenalty(orthogonalQueueNeighbors: number): number {
+  if (!Number.isSafeInteger(orthogonalQueueNeighbors) || orthogonalQueueNeighbors < 0) {
+    throw new Error(
+      `orthogonalQueueNeighbors must be a non-negative safe integer; received ${String(orthogonalQueueNeighbors)}.`,
+    );
+  }
+  return Math.min(
+    RECOVERY_QUEUE_PENALTY_CAP,
+    RECOVERY_QUEUE_PENALTY_STEP * orthogonalQueueNeighbors,
+  );
+}
+
+export { routeTieProfile };
 
 export function isMovementReplanDue(waitTicks: number): boolean {
   return (
@@ -107,6 +133,7 @@ export interface MovementResolution {
   readonly cyclesCommitted: number;
   readonly ordinarySwapsRejected: number;
   readonly emergencySwaps: number;
+  readonly criticalPriorityWins: number;
   readonly directSwapPairs: readonly MovementSwapPair[];
 }
 
@@ -141,13 +168,14 @@ function compareCitizenIds(left: string, right: string): number {
 export function compareMovementProposals(
   left: Pick<
     MovementProposal,
-    'citizenId' | 'waitTicks' | 'remainingRouteCells' | 'tripStartedTick'
+    'citizenId' | 'waitTicks' | 'remainingRouteCells' | 'tripStartedTick' | 'critical'
   >,
   right: Pick<
     MovementProposal,
-    'citizenId' | 'waitTicks' | 'remainingRouteCells' | 'tripStartedTick'
+    'citizenId' | 'waitTicks' | 'remainingRouteCells' | 'tripStartedTick' | 'critical'
   >,
 ): number {
+  if (left.critical !== right.critical) return left.critical === true ? -1 : 1;
   if (left.waitTicks !== right.waitTicks) return right.waitTicks - left.waitTicks;
   if (left.remainingRouteCells !== right.remainingRouteCells) {
     return left.remainingRouteCells - right.remainingRouteCells;
@@ -187,6 +215,20 @@ export function replanMovementRoute(input: MovementReplanInput): MovementReplanR
   const temporaryBlocked = new Set(input.temporaryBlocked);
   temporaryBlocked.delete(coordinateKey(input.start));
   temporaryBlocked.delete(coordinateKey(input.goal));
+  const searchOptions =
+    input.recovery === false
+      ? { routeTieProfile: input.routeTieProfile ?? 0 }
+      : {
+          routeTieProfile: input.routeTieProfile ?? 0,
+          movementCost: RECOVERY_EDGE_COST,
+          heuristicCost: RECOVERY_EDGE_COST,
+          ...(input.orthogonalQueueNeighbors === undefined
+            ? {}
+            : {
+                edgeCost: (_from: GridPosition, to: GridPosition) =>
+                  recoveryQueuePenalty(input.orthogonalQueueNeighbors?.(to) ?? 0),
+              }),
+        };
   const result = findGridPathDetailed(
     {
       chunkSize: input.chunkSize,
@@ -197,6 +239,7 @@ export function replanMovementRoute(input: MovementReplanInput): MovementReplanR
     },
     input.start,
     input.goal,
+    searchOptions,
   );
   const path = result.path.map(copyPosition);
   const previousRemainingRoute = input.currentRoute.slice(input.currentRouteIndex);
@@ -256,6 +299,7 @@ export function buildMovementProposals(input: MovementProposalInput): readonly M
       remainingRouteCells: Math.max(0, candidate.route.length - nextIndex - 1),
       tripStartedTick: candidate.tripStartedTick,
       valid,
+      ...(candidate.critical === undefined ? {} : { critical: candidate.critical }),
       ...(valid ? {} : { blockReason: 'invalid' as const }),
     });
   }
@@ -291,6 +335,7 @@ function chooseTargetWinners(
     group.sort((left, right) => {
       const leftIsReciprocal = reciprocalProposalIds.has(left.citizenId);
       const rightIsReciprocal = reciprocalProposalIds.has(right.citizenId);
+      if (left.critical !== right.critical) return left.critical === true ? -1 : 1;
       if (leftIsReciprocal !== rightIsReciprocal) return leftIsReciprocal ? -1 : 1;
       return compareMovementProposals(left, right);
     });
@@ -356,6 +401,20 @@ export function resolveMovementReservations(input: MovementResolutionInput): Mov
   const proposals = [...input.proposals].sort(compareProposals);
   const validProposals = proposals.filter((proposal) => proposal.valid);
   const winners = chooseTargetWinners(validProposals);
+  const targetGroups = new Map<string, MovementProposal[]>();
+  for (const proposal of validProposals) {
+    const targetKey = coordinateKey(proposal.to);
+    const group = targetGroups.get(targetKey);
+    if (group === undefined) targetGroups.set(targetKey, [proposal]);
+    else group.push(proposal);
+  }
+  let criticalPriorityWins = 0;
+  for (const group of targetGroups.values()) {
+    const winner = group.find((proposal) => winners.get(proposal.citizenId) !== undefined);
+    if (winner?.critical === true && group.some((proposal) => proposal.critical !== true)) {
+      criticalPriorityWins += 1;
+    }
+  }
   const blocked: MovementBlockedProposal[] = proposals
     .filter((proposal) => !proposal.valid)
     .map((proposal) => blockedFromProposal(proposal, 'invalid'));
@@ -475,6 +534,7 @@ export function resolveMovementReservations(input: MovementResolutionInput): Mov
     cyclesCommitted,
     ordinarySwapsRejected,
     emergencySwaps,
+    criticalPriorityWins,
     directSwapPairs,
   };
 }

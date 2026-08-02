@@ -45,10 +45,21 @@ body {
   box-shadow:
     0 20px 60px rgb(0 0 0 / 40%),
     inset 0 1px 0 rgb(255 255 255 / 5%);
-  backdrop-filter: blur(16px);
   max-height: calc(100vh - max(20px, env(safe-area-inset-top)) - 20px);
   overflow-y: auto;
   pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.hud.build-mode {
+  overflow: hidden;
+}
+
+.build-panel[hidden],
+.research-panel[hidden] {
+  display: none !important;
 }
 
 .hud button {
@@ -173,6 +184,35 @@ button.active {
   border: 1px solid rgb(114 246 211 / 20%);
   border-radius: 14px;
   background: rgb(4 12 28 / 55%);
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.build-selector {
+  flex: 0 0 auto;
+}
+
+.build-details {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.build-action-dock {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding-top: 10px;
+  background: rgb(4 12 28 / 78%);
+}
+
+.build-action-dock .confirm-button,
+.build-action-dock .cancel-button {
+  margin-top: 0;
 }
 
 .research-panel {
@@ -357,6 +397,7 @@ button.active {
 }
 .confirm-button {
   width: 100%;
+  min-height: 44px;
   margin-top: 12px;
   color: #06141c;
   border-color: #72f6d3;
@@ -400,6 +441,58 @@ button.active {
   }
   button {
     min-height: 46px;
+  }
+}
+
+@media (max-width: 720px), (max-height: 700px) {
+  .hud.build-mode {
+    width: min(390px, calc(100vw - 24px));
+    max-height: 132px;
+    padding: 12px;
+    overflow: visible;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  .hud.build-mode header,
+  .hud.build-mode .metrics,
+  .hud.build-mode .status,
+  .hud.build-mode .entity-summary {
+    display: none;
+  }
+
+  .hud.build-mode .controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .hud.build-mode .controls button {
+    min-height: 40px;
+    padding: 6px 4px;
+    font-size: 10px;
+  }
+
+  .hud.build-mode .build-panel {
+    position: fixed;
+    z-index: 10;
+    right: max(12px, env(safe-area-inset-right));
+    bottom: max(12px, env(safe-area-inset-bottom));
+    left: max(12px, env(safe-area-inset-left));
+    width: auto;
+    height: min(60dvh, 420px);
+    max-height: min(72dvh, 520px);
+    margin: 0;
+    padding: 14px;
+    border-radius: 16px;
+    box-shadow: 0 18px 50px rgb(0 0 0 / 48%);
+  }
+
+  .hud.build-mode .build-details {
+    flex: 1 1 auto;
+  }
+
+  .build-action-dock {
+    padding-bottom: max(0px, env(safe-area-inset-bottom));
   }
 }
 

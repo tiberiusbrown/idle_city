@@ -55,6 +55,16 @@ npm run sim:run -- --seed 1234 --ticks 1000
 npm run sim:run -- --scenario long-commute --seed 1234 --ticks 1000
 ```
 
+Step 10.5 adds deterministic four-profile equal-cost route ties, baseline
+stuck recovery at waits 4, 8, 12, and so on, and per-project critical-builder
+state after 12 zero-labor ticks. Recovery uses only current start-of-tick
+occupancy and wait state; historical traffic is deliberately excluded until
+the future ACCESS-2 congestion-routing upgrade. District influence is an
+axis-aligned square with Chebyshev distance: Living/Working/Services use
+radius and side lengths 10/21, 12/25, and 8/17. The Build flow reads these
+authoritative values and uses a responsive selector, scrollable details, and
+persistent confirmation dock.
+
 The command prints one JSON object containing the scenario, seed, executed ticks, citizen count and population cap, completed trips and work/service activities, service trips/uses/waits, Data by work/service source, Services Core state and purchase results, demand totals, the three normalized city indicators, active/allocated chunk and ROW counters, demand dirty/evaluation counts, incremental developer job progress and budget peaks, construction labor counters, path instrumentation, scheduled command previews/results, invariant failures, and a stable final-state hash. Named scenarios also cover `sparse-expansion`, `extent`, `localized-demand`, `long-route`, `living-led`, `working-led`, `equal-score`, `obstacle-constrained`, `no-valid-footprint`, `long-run-construction`, `housing-surplus`, `workplace-surplus`, `balanced-expansion`, `tie`, `capped-growth`, `long-run-city`, `seed-boundary`, `multiple-same-type-seeds`, `sparse-development`, `two-connected-row-buildings`, `narrow-connector`, `dense-circulation`, `development-supersession`, `long-incremental-development`, `step9-dense-movement`, `one-worker-slow-build`, `full-staff-build`, `workers-competing-one-corridor`, `staging-cell-queue`, `worker-blocked-replans`, `no-eligible-workers`, `phase-cap-decrease`, `construction-dense-commute`, `off-screen-construction`, `repeated-deterministic-construction`, `services-core-progression`, `no-service-shortage`, `one-service-near-homes`, `one-service-near-workplaces`, `competing-services`, `service-capacity-bottleneck`, `services-seed-development`, and `dense-service-commute`. Omitting `--scenario` preserves the baseline command. Repeating identical inputs must produce byte-identical JSON and the same hash.
 
 ## Determinism and timing

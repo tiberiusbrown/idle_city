@@ -253,20 +253,19 @@ describe('deterministic next-cell reservations', () => {
     expect(left).toEqual(right);
   });
 
-  it('schedules the first replan at wait 8 and then every 8 additional waits', () => {
-    expect(Array.from({ length: 7 }, (_, index) => isMovementReplanDue(index + 1))).toEqual([
-      false,
-      false,
-      false,
-      false,
+  it('schedules the first replan at wait 4 and then every 4 additional waits', () => {
+    expect(Array.from({ length: 3 }, (_, index) => isMovementReplanDue(index + 1))).toEqual([
       false,
       false,
       false,
     ]);
+    expect(isMovementReplanDue(4)).toBe(true);
+    expect(isMovementReplanDue(5)).toBe(false);
+    expect(isMovementReplanDue(7)).toBe(false);
     expect(isMovementReplanDue(8)).toBe(true);
     expect(isMovementReplanDue(9)).toBe(false);
-    expect(isMovementReplanDue(15)).toBe(false);
-    expect(isMovementReplanDue(16)).toBe(true);
+    expect(isMovementReplanDue(11)).toBe(false);
+    expect(isMovementReplanDue(12)).toBe(true);
   });
 
   it('retains a route when a bounded replan has no alternate and uses adjacent cells when it succeeds', () => {

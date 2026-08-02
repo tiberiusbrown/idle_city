@@ -91,6 +91,12 @@ export interface ConstructionProject {
   readonly phaseTicksRemaining: number;
   readonly phaseTicksElapsed: number;
   readonly totalTicksElapsed: number;
+  /** Consecutive logical ticks in the current phase that produced no labor. */
+  readonly ticksSinceLastLabor: number;
+  /** At most one assigned commuter may hold critical movement priority. */
+  readonly criticalBuilderId: string | null;
+  /** Plain-language explanation for the current critical-builder state. */
+  readonly criticalBuilderReason: string | null;
   readonly startedTick: number;
   readonly score: number;
   readonly primaryReason: DevelopmentReason;
@@ -128,6 +134,10 @@ export interface CitizenSnapshot {
   readonly constructionStagingCell: GridPosition | null;
   /** The ordinary home/work destination saved before construction recruitment. */
   readonly resumeDestinationBuildingId: string | null;
+  /** The project for which this commuter is currently the critical lead builder. */
+  readonly criticalBuilderProjectId: string | null;
+  /** Plain-language explanation for the critical-builder designation. */
+  readonly criticalBuilderReason: string | null;
 }
 
 export interface DistrictSeed {
@@ -141,6 +151,8 @@ export interface DistrictSeedDefinition {
   readonly label: string;
   readonly baseCost: number;
   readonly influenceRadius: number;
+  readonly sideLength: number;
+  readonly influenceShape: 'square';
   readonly unlocked: boolean;
 }
 
@@ -148,9 +160,11 @@ export interface DistrictSeedPlacementInfo {
   readonly kind: DistrictSeedKind;
   readonly position: GridPosition;
   readonly radius: number;
+  readonly sideLength: number;
   readonly cost: number;
   readonly coveredCellCount: number;
   readonly activeCoveredCellCount: number;
+  readonly inactiveCoveredCellCount: number;
   readonly coveredCells: readonly GridPosition[];
   readonly activeCoveredCells: readonly GridPosition[];
   readonly valid: boolean;
@@ -379,7 +393,9 @@ export interface SimulationStructuralCounters {
   readonly movementOrdinarySwapsRejected: number;
   readonly movementReplansAttempted: number;
   readonly movementReplansSucceeded: number;
+  readonly movementReplansUnchanged: number;
   readonly movementDeadlockRecoveries: number;
+  readonly movementCriticalPriorityWins: number;
   readonly allocatedRightOfWayBuffers: number;
   readonly rightOfWayCells: number;
   readonly rightOfWayCellsAdded: number;
@@ -406,6 +422,10 @@ export interface SimulationStructuralCounters {
   readonly constructionPausedProjectTicks: number;
   readonly constructionPhaseCompletions: number;
   readonly constructionWorkerReleases: number;
+  readonly constructionCriticalPromotions: number;
+  readonly constructionCriticalClears: number;
+  readonly constructionCriticalNoEligibleWorkerTicks: number;
+  readonly constructionCriticalConflictWins: number;
   readonly serviceTrips: number;
   readonly serviceUses: number;
   readonly failedServiceDestinationAttempts: number;

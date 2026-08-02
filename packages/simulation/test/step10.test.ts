@@ -33,7 +33,7 @@ const coreConfiguration: SimulationConfig = {
   populationCap: 20,
   activityDurationTicks: 1,
   startingData: 400,
-  developmentEvaluationIntervalTicks: 1_000,
+  developmentEvaluationIntervalTicks: 100,
   seed: 10,
 };
 
@@ -57,8 +57,13 @@ function placeFirstValidSeed(simulation: Simulation, kind: DistrictSeedKind): vo
   expect(simulation.placeDistrictSeed({ kind, position }).accepted).toBe(true);
 }
 
-function createCoreProgression(): Simulation {
-  const simulation = createSimulation(coreConfiguration);
+function createCoreProgression(
+  developmentEvaluationIntervalTicks = coreConfiguration.developmentEvaluationIntervalTicks,
+): Simulation {
+  const simulation = createSimulation({
+    ...coreConfiguration,
+    developmentEvaluationIntervalTicks,
+  });
   placeFirstValidSeed(simulation, 'living');
   placeFirstValidSeed(simulation, 'working');
   for (let tick = 0; tick < 1_500; tick += 1) {
@@ -143,6 +148,7 @@ describe('Step 10 Services Core and vertical slice', () => {
     expect(locked.getDistrictSeedDefinition('services')).toMatchObject({
       baseCost: DISTRICT_SEED_COSTS.services,
       influenceRadius: 8,
+      sideLength: 17,
       unlocked: false,
     });
     expect(locked.previewDistrictSeed({ kind: 'services', position: { x: 6, y: 6 } })).toEqual({
@@ -326,7 +332,7 @@ describe('Step 10 Services Core and vertical slice', () => {
       }),
     ).toBe(true);
 
-    const noDestination = createCoreProgression();
+    const noDestination = createCoreProgression(1_000);
     installServicesCore(noDestination);
     let noDestinationMaxNeed = 0;
     for (let tick = 0; tick < 260; tick += 1) {

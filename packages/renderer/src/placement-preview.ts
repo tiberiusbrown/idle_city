@@ -11,6 +11,7 @@ export interface PlacementPreview {
   readonly position: GridPosition;
   readonly valid: boolean;
   readonly radius?: number;
+  readonly sideLength?: number;
   readonly coveredCells?: readonly GridPosition[];
   readonly activeCoveredCells?: readonly GridPosition[];
 }
@@ -20,15 +21,19 @@ export interface PlacementPreviewLayer {
   dispose(): void;
 }
 
-function diamondPoints(center: GridPosition, radius: number, cellWorldScale: number): Vector3[] {
+function squareOutlinePoints(
+  center: GridPosition,
+  sideLength: number,
+  cellWorldScale: number,
+): Vector3[] {
   const origin = logicalToWorld(center, cellWorldScale);
-  const distance = radius * cellWorldScale;
+  const halfExtent = (sideLength / 2) * cellWorldScale;
   return [
-    new Vector3(origin.x, 0.13, origin.z - distance),
-    new Vector3(origin.x + distance, 0.13, origin.z),
-    new Vector3(origin.x, 0.13, origin.z + distance),
-    new Vector3(origin.x - distance, 0.13, origin.z),
-    new Vector3(origin.x, 0.13, origin.z - distance),
+    new Vector3(origin.x - halfExtent, 0.13, origin.z - halfExtent),
+    new Vector3(origin.x + halfExtent, 0.13, origin.z - halfExtent),
+    new Vector3(origin.x + halfExtent, 0.13, origin.z + halfExtent),
+    new Vector3(origin.x - halfExtent, 0.13, origin.z + halfExtent),
+    new Vector3(origin.x - halfExtent, 0.13, origin.z - halfExtent),
   ];
 }
 
@@ -95,18 +100,22 @@ export function createPlacementPreviewLayer(
       mesh.position.y = 0.08;
       mesh.material = preview.valid ? materials.placementValid : materials.placementInvalid;
       mesh.isVisible = true;
-      const radius = preview.radius ?? 1;
+      const sideLength =
+        preview.sideLength ?? (preview.radius === undefined ? 3 : preview.radius * 2 + 1);
       if (influence === undefined) {
         influence = CreateLines(
           'placement-preview-influence',
-          { points: diamondPoints(preview.position, radius, cellWorldScale) },
+          { points: squareOutlinePoints(preview.position, sideLength, cellWorldScale) },
           scene,
         );
         influence.isPickable = false;
       } else {
         CreateLines(
           'placement-preview-influence',
-          { points: diamondPoints(preview.position, radius, cellWorldScale), instance: influence },
+          {
+            points: squareOutlinePoints(preview.position, sideLength, cellWorldScale),
+            instance: influence,
+          },
           scene,
         );
       }

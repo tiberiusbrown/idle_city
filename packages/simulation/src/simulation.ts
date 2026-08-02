@@ -1,5 +1,7 @@
 import {
+  orthogonalDistance,
   positionsEqual,
+  squareDistance,
   stableHash,
   type ChunkCoordinate,
   type GridPosition,
@@ -67,12 +69,14 @@ import {
 import { createTrafficTelemetry, DEFAULT_TRAFFIC_HISTORY_WINDOW_TICKS } from './traffic';
 import {
   buildMovementProposals,
+  compareMovementProposals,
   findDirectMovementSwapPairs,
   MOVEMENT_DEADLOCK_RECOVERY_BLOCKED_TICKS,
   isMovementDeadlockRecoveryDue,
   isMovementReplanDue,
   resolveMovementReservations,
   replanMovementRoute,
+  routeTieProfile,
   type MovementCandidate,
   type MovementSwapPair,
 } from './movement';
@@ -140,6 +144,8 @@ interface CitizenState {
   constructionStagingCell: GridPosition | null;
   resumeDestinationBuildingId: string | null;
   resumeActivity: 'commuting-to-work' | 'commuting-home' | null;
+  criticalBuilderProjectId: string | null;
+  criticalBuilderReason: string | null;
 }
 
 interface DemandChunkState {
@@ -165,6 +171,9 @@ interface ConstructionProjectState {
   phaseTicksRemaining: number;
   phaseTicksElapsed: number;
   totalTicksElapsed: number;
+  ticksSinceLastLabor: number;
+  criticalBuilderId: string | null;
+  criticalBuilderReason: string | null;
   readonly startedTick: number;
   readonly score: number;
   readonly primaryReason: ConstructionProject['primaryReason'];
@@ -274,8 +283,8 @@ function clampUnit(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-function manhattanDistance(left: GridPosition, right: GridPosition): number {
-  return Math.abs(left.x - right.x) + Math.abs(left.y - right.y);
+function orthogonalTravelDistance(left: GridPosition, right: GridPosition): number {
+  return orthogonalDistance(left, right);
 }
 
 function roundData(value: number): number {
@@ -329,7 +338,7 @@ function distanceToRect(position: GridPosition, rect: Building['footprint']): nu
       : position.y >= rect.y + rect.height
         ? position.y - (rect.y + rect.height - 1)
         : 0;
-  return dx + dy;
+  return Math.max(dx, dy);
 }
 
 function normalizedDistance(distance: number, maximum: number): number {
@@ -434,8 +443,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     }
     candidates.sort(
       (left, right) =>
-        manhattanDistance(left, workplaceOrigin) - manhattanDistance(right, workplaceOrigin) ||
-        comparePositions(left, right),
+        orthogonalTravelDistance(left, workplaceOrigin) -
+          orthogonalTravelDistance(right, workplaceOrigin) || comparePositions(left, right),
     );
     const replacement = candidates.find((candidate) => {
       const footprint = buildingFootprint(candidate, 'workplace');
@@ -659,6 +668,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     constructionStagingCell: null,
     resumeDestinationBuildingId: null,
     resumeActivity: null,
+    criticalBuilderProjectId: null,
+    criticalBuilderReason: null,
   });
   const citizens: CitizenState[] = Array.from({ length: initialPopulation }, (_, index) =>
     createCitizenState(`citizen-${String(index + 1)}`, homeBuilding, workplaceBuilding),
@@ -753,7 +764,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   let movementOrdinarySwapsRejected = 0;
   let movementReplansAttempted = 0;
   let movementReplansSucceeded = 0;
+  let movementReplansUnchanged = 0;
   let movementDeadlockRecoveries = 0;
+  let movementCriticalPriorityWins = 0;
   let constructionAssignmentsOffered = 0;
   let constructionAssignmentsAccepted = 0;
   let constructionCommutes = 0;
@@ -762,6 +775,10 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   let constructionPausedProjectTicks = 0;
   let constructionPhaseCompletions = 0;
   let constructionWorkerReleases = 0;
+  let constructionCriticalPromotions = 0;
+  let constructionCriticalClears = 0;
+  let constructionCriticalNoEligibleWorkerTicks = 0;
+  let constructionCriticalConflictWins = 0;
   const deadlockPairStates = new Map<string, DeadlockPairState>();
   const demandChunks = new Map<string, DemandChunkState>();
   const demandCitizens = (): readonly {
@@ -934,9 +951,11 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       kind,
       position: requestedPosition,
       radius: definition.influenceRadius,
+      sideLength: definition.sideLength,
       cost: isDistrictSeedKind(requestedKind) ? currentDistrictSeedCost(requestedKind) : 0,
       coveredCellCount: coveredCells.length,
       activeCoveredCellCount: activeCoveredCells.length,
+      inactiveCoveredCellCount: coveredCells.length - activeCoveredCells.length,
       coveredCells: coveredCells.map(copyPosition),
       activeCoveredCells: activeCoveredCells.map(copyPosition),
       valid: validation.accepted,
@@ -997,7 +1016,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         ? 1
         : clampUnit(Math.min(housingTotal / population, workplaceTotal / population));
     const plannedTripDistances = citizens.map((citizen) =>
-      manhattanDistance(
+      orthogonalTravelDistance(
         buildingById(citizen.homeBuildingId).entrance,
         buildingById(citizen.workplaceBuildingId).entrance,
       ),
@@ -1278,6 +1297,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     citizen.tripStartedTick = null;
     citizen.waitTicks = 0;
     citizen.departurePending = false;
+    clearCriticalForCitizen(citizen);
     constructionWorkerArrivals += 1;
   };
 
@@ -1287,6 +1307,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     destinationId: string,
   ): boolean => {
     const destination = buildingById(destinationId);
+    clearCriticalForCitizen(citizen);
     const result = findGridPathDetailed(
       {
         chunkSize,
@@ -1296,6 +1317,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       },
       citizen.position,
       destination.entrance,
+      { routeTieProfile: routeTieProfile(citizen.id) },
     );
     pathNodesExpanded += result.nodesExpanded;
     pathChunksTouched += result.chunksTouched;
@@ -1429,6 +1451,19 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       ) {
         throw new Error(`Construction project ${project.id} has invalid labor state.`);
       }
+      if (!Number.isSafeInteger(project.ticksSinceLastLabor) || project.ticksSinceLastLabor < 0) {
+        throw new Error(`Construction project ${project.id} has invalid labor wait state.`);
+      }
+      if (project.criticalBuilderId !== null) {
+        const criticalCitizen = citizensById.get(project.criticalBuilderId);
+        const hasValidCriticalCitizen =
+          criticalCitizen?.criticalBuilderProjectId === project.id &&
+          criticalCitizen.constructionProjectId === project.id &&
+          criticalCitizen.activity === 'commuting-to-construction';
+        if (!hasValidCriticalCitizen) {
+          throw new Error(`Construction project ${project.id} has an invalid critical builder.`);
+        }
+      }
     }
     for (const building of buildings) {
       const occupied = occupancy.get(building.id) ?? 0;
@@ -1512,6 +1547,17 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
           : constructionProjects.find((project) => project.id === citizen.constructionProjectId);
       if (citizen.constructionProjectId !== null && constructionProject === undefined) {
         throw new Error(`Citizen ${citizen.id} references missing construction project.`);
+      }
+      if (citizen.criticalBuilderProjectId !== null) {
+        if (
+          citizen.constructionProjectId !== citizen.criticalBuilderProjectId ||
+          citizen.activity !== 'commuting-to-construction' ||
+          constructionProject?.criticalBuilderId !== citizen.id
+        ) {
+          throw new Error(`Citizen ${citizen.id} has an invalid critical builder state.`);
+        }
+      } else if (citizen.criticalBuilderReason !== null) {
+        throw new Error(`Citizen ${citizen.id} has an orphaned critical builder reason.`);
       }
       if (citizen.constructionProjectId === null) {
         if (citizen.constructionStagingCell !== null) {
@@ -1606,7 +1652,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
           throw new Error(`Citizen ${citizen.id} route enters a blocked interior.`);
         }
         const previous = citizen.route[index - 1];
-        if (previous !== undefined && manhattanDistance(previous, position) !== 1) {
+        if (previous !== undefined && orthogonalTravelDistance(previous, position) !== 1) {
           throw new Error(`Citizen ${citizen.id} route contains a non-adjacent move.`);
         }
       }
@@ -1681,7 +1727,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (!opposites.includes(building.type)) continue;
       factor = Math.max(
         factor,
-        normalizedDistance(manhattanDistance(entrance, building.entrance), demandInfluenceRadius),
+        normalizedDistance(squareDistance(entrance, building.entrance), demandInfluenceRadius),
       );
     }
     return factor;
@@ -1704,6 +1750,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       },
       start,
       goal,
+      { routeTieProfile: 0 },
     );
     pathNodesExpanded += result.nodesExpanded;
     pathChunksTouched += result.chunksTouched;
@@ -1774,7 +1821,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
             : seed.position.y > farCorner.y
               ? seed.position.y - farCorner.y
               : 0;
-        return dx + dy <= radius;
+        return Math.max(dx, dy) <= radius;
       });
     });
   };
@@ -1861,10 +1908,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     let nearestRowDistance = Number.POSITIVE_INFINITY;
     for (const cell of footprintCellsForCandidate) {
       for (const building of buildings) {
-        nearestRowDistance = Math.min(
-          nearestRowDistance,
-          manhattanDistance(cell, building.entrance),
-        );
+        nearestRowDistance = Math.min(nearestRowDistance, squareDistance(cell, building.entrance));
       }
     }
     const entranceAccessibility =
@@ -1957,7 +2001,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     if (affected.length === 0) return;
     const movingOccupancy = snapshotMovingOccupancy();
     for (const citizen of affected) {
-      if (!replanCitizen(citizen, movingOccupancy)) {
+      if (!replanCitizen(citizen, movingOccupancy, new Map(), false)) {
         throw new Error(
           `Affected route for ${citizen.id} could not replan after project placement.`,
         );
@@ -2052,6 +2096,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       phaseTicksRemaining: constructionPhaseDurations.survey,
       phaseTicksElapsed: 0,
       totalTicksElapsed: 0,
+      ticksSinceLastLabor: 0,
+      criticalBuilderId: null,
+      criticalBuilderReason: null,
       startedTick: tick,
       score: candidate.score,
       primaryReason: { ...candidate.primaryReason },
@@ -2100,6 +2147,87 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const constructionWorkers = (projectId: string): CitizenState[] =>
     sortedCitizens().filter((citizen) => citizen.constructionProjectId === projectId);
 
+  const clearCriticalBuilder = (project: ConstructionProjectState): void => {
+    const citizenId = project.criticalBuilderId;
+    if (citizenId === null) {
+      project.criticalBuilderReason = null;
+      return;
+    }
+    const citizen = citizensById.get(citizenId);
+    if (citizen?.criticalBuilderProjectId === project.id) {
+      citizen.criticalBuilderProjectId = null;
+      citizen.criticalBuilderReason = null;
+    }
+    project.criticalBuilderId = null;
+    project.criticalBuilderReason = null;
+    constructionCriticalClears += 1;
+  };
+
+  const clearCriticalForCitizen = (citizen: CitizenState): void => {
+    const projectId = citizen.criticalBuilderProjectId;
+    if (projectId === null) {
+      citizen.criticalBuilderReason = null;
+      return;
+    }
+    const project = constructionProjects.find((candidate) => candidate.id === projectId);
+    citizen.criticalBuilderProjectId = null;
+    citizen.criticalBuilderReason = null;
+    if (project?.criticalBuilderId === citizen.id) {
+      project.criticalBuilderId = null;
+      project.criticalBuilderReason = null;
+      constructionCriticalClears += 1;
+    }
+  };
+
+  const criticalBuilderCandidates = (project: ConstructionProjectState): readonly CitizenState[] =>
+    constructionWorkers(project.id)
+      .filter(
+        (citizen) =>
+          citizen.activity === 'commuting-to-construction' &&
+          citizen.tripStartedTick !== null &&
+          citizen.route.length > 0 &&
+          citizen.routeIndex < citizen.route.length - 1,
+      )
+      .sort((left, right) =>
+        compareMovementProposals(
+          {
+            citizenId: left.id,
+            waitTicks: left.waitTicks,
+            remainingRouteCells: Math.max(0, left.route.length - left.routeIndex - 1),
+            tripStartedTick: left.tripStartedTick ?? Number.MAX_SAFE_INTEGER,
+            critical: false,
+          },
+          {
+            citizenId: right.id,
+            waitTicks: right.waitTicks,
+            remainingRouteCells: Math.max(0, right.route.length - right.routeIndex - 1),
+            tripStartedTick: right.tripStartedTick ?? Number.MAX_SAFE_INTEGER,
+            critical: false,
+          },
+        ),
+      );
+
+  const designateCriticalBuilder = (project: ConstructionProjectState): void => {
+    if (project.criticalBuilderId !== null) {
+      const current = citizensById.get(project.criticalBuilderId);
+      if (current !== undefined && criticalBuilderCandidates(project).includes(current)) return;
+      clearCriticalBuilder(project);
+    }
+    const candidate = criticalBuilderCandidates(project)[0];
+    if (candidate === undefined) {
+      project.criticalBuilderReason =
+        'No assigned reachable worker is available for critical movement priority.';
+      constructionCriticalNoEligibleWorkerTicks += 1;
+      return;
+    }
+    const reason = 'Lead builder prioritized after 12 zero-labor ticks.';
+    candidate.criticalBuilderProjectId = project.id;
+    candidate.criticalBuilderReason = reason;
+    project.criticalBuilderId = candidate.id;
+    project.criticalBuilderReason = reason;
+    constructionCriticalPromotions += 1;
+  };
+
   const releaseConstructionWorker = (citizen: CitizenState): void => {
     const destinationId = citizen.resumeDestinationBuildingId;
     const resumeActivity = citizen.resumeActivity;
@@ -2114,6 +2242,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     citizen.routeIndex = 0;
     citizen.waitTicks = 0;
     citizen.tripStartedTick = null;
+    clearCriticalForCitizen(citizen);
     constructionWorkerReleases += 1;
     startTrip(citizen, resumeActivity, destinationId);
   };
@@ -2135,6 +2264,14 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       project.totalTicksElapsed += 1;
       const workers = constructionWorkers(project.id);
       const constructingWorkers = workers.filter((worker) => worker.activity === 'constructing');
+      if (
+        project.criticalBuilderId !== null &&
+        !criticalBuilderCandidates(project).some(
+          (worker) => worker.id === project.criticalBuilderId,
+        )
+      ) {
+        clearCriticalBuilder(project);
+      }
       project.paused = constructingWorkers.length === 0;
       if (project.paused) constructionPausedProjectTicks += 1;
 
@@ -2143,6 +2280,11 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (labor > 0) {
         project.phaseLaborCompleted += labor;
         constructionLaborUnits += labor;
+        project.ticksSinceLastLabor = 0;
+        clearCriticalBuilder(project);
+      } else {
+        project.ticksSinceLastLabor += 1;
+        if (project.ticksSinceLastLabor >= 12) designateCriticalBuilder(project);
       }
       if (project.phaseLaborCompleted < project.phaseLaborRequired) {
         project.phaseTicksRemaining = Math.max(
@@ -2155,6 +2297,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       }
 
       constructionPhaseCompletions += 1;
+      clearCriticalBuilder(project);
+      project.ticksSinceLastLabor = 0;
       const nextPhase = nextConstructionPhase(project.phase);
       if (nextPhase === undefined) {
         for (const worker of constructionWorkers(project.id)) releaseConstructionWorker(worker);
@@ -2590,19 +2734,19 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     citizen: CitizenState,
     stagingCell: GridPosition,
   ): readonly GridPosition[] | undefined => {
-    const reservedStaging = reservedConstructionStagingCells();
-    const goalKey = coordinateKey(stagingCell);
     const result = findGridPathDetailed(
       {
         chunkSize,
         activeChunks: spatial.getActiveChunks(),
-        isWalkable: (position) =>
-          isCirculationWalkable(position) &&
-          (coordinateKey(position) === goalKey || !reservedStaging.has(coordinateKey(position))),
+        // Endpoints stay uniquely assigned; transit may cross another
+        // staging endpoint so a later worker is not made unreachable. The
+        // movement resolver still blocks current occupants at each tick.
+        isWalkable: (position) => isCirculationWalkable(position),
         maxNodes: pathSearchBudget,
       },
       citizen.position,
       stagingCell,
+      { routeTieProfile: routeTieProfile(citizen.id) },
     );
     pathNodesExpanded += result.nodesExpanded;
     pathChunksTouched += result.chunksTouched;
@@ -2681,6 +2825,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       citizen.routeIndex = 0;
       citizen.tripStartedTick = tick;
       citizen.waitTicks = 0;
+      clearCriticalForCitizen(citizen);
       assignedCitizens.add(citizen.id);
       assignedStaging.add(stagingKey);
       projectCounts.set(project.id, projectWorkerCount + 1);
@@ -2712,6 +2857,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         },
         citizen.position,
         building.entrance,
+        { routeTieProfile: routeTieProfile(citizen.id) },
       );
       pathNodesExpanded += route.nodesExpanded;
       pathChunksTouched += route.chunksTouched;
@@ -2792,6 +2938,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const replanCitizen = (
     citizen: CitizenState,
     movingOccupancy: ReadonlyMap<string, string>,
+    waitTicksAtStart: ReadonlyMap<string, number>,
+    recovery = true,
   ): boolean => {
     const isConstructionCommute = citizen.activity === 'commuting-to-construction';
     const destinationId = isConstructionCommute
@@ -2821,11 +2969,6 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     const temporaryBlocked = new Set(movingOccupancy.keys());
     temporaryBlocked.delete(coordinateKey(citizen.position));
     temporaryBlocked.delete(coordinateKey(destination));
-    if (isConstructionCommute) {
-      for (const reserved of reservedConstructionStagingCells()) {
-        if (reserved !== coordinateKey(destination)) temporaryBlocked.add(reserved);
-      }
-    }
     movementReplansAttempted += 1;
     const result = replanMovementRoute({
       chunkSize,
@@ -2837,32 +2980,68 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       temporaryBlocked,
       isWalkable: (position) => isCirculationWalkable(position),
       maxNodes: pathSearchBudget,
+      routeTieProfile: routeTieProfile(citizen.id),
+      recovery,
+      orthogonalQueueNeighbors: (position) => {
+        let neighbors = 0;
+        for (const direction of [
+          { x: 1, y: 0 },
+          { x: 0, y: 1 },
+          { x: -1, y: 0 },
+          { x: 0, y: -1 },
+        ] as const) {
+          const neighbor = { x: position.x + direction.x, y: position.y + direction.y };
+          const occupantId = movingOccupancy.get(coordinateKey(neighbor));
+          if (
+            occupantId !== undefined &&
+            occupantId !== citizen.id &&
+            (waitTicksAtStart.get(occupantId) ?? 0) > 0
+          ) {
+            neighbors += 1;
+          }
+        }
+        return neighbors;
+      },
     });
     pathNodesExpanded += result.nodesExpanded;
     pathChunksTouched += result.chunksTouched;
     if (result.status !== 'found') return false;
+    if (!result.routeChanged) {
+      movementReplansUnchanged += 1;
+      return false;
+    }
     const replannedRoute = result.path.map(copyPosition);
+    clearCriticalForCitizen(citizen);
     citizen.route = replannedRoute;
     citizen.routeIndex = result.routeIndex;
     movementReplansSucceeded += 1;
-    if (result.routeChanged) clearDeadlockPairsForCitizen(citizen.id);
+    clearDeadlockPairsForCitizen(citizen.id);
     return true;
   };
 
-  const maybeReplanBlockedCitizens = (blockedIds: readonly string[]): void => {
+  const maybeReplanBlockedCitizens = (
+    blockedIds: readonly string[],
+    startOfTickOccupancy: ReadonlyMap<string, string>,
+    waitTicksAtStart: ReadonlyMap<string, number>,
+  ): void => {
     if (blockedIds.length === 0) return;
-    const movingOccupancy = snapshotMovingOccupancy();
     const orderedIds = [...blockedIds].sort();
     for (const citizenId of orderedIds) {
       const citizen = citizensById.get(citizenId);
       if (citizen === undefined) throw new Error(`Blocked movement references ${citizenId}.`);
       if (!isMovementReplanDue(citizen.waitTicks)) continue;
-      replanCitizen(citizen, movingOccupancy);
+      replanCitizen(citizen, startOfTickOccupancy, waitTicksAtStart);
     }
   };
 
   const advanceCitizens = (): void => {
     const movingOccupancy = snapshotMovingOccupancy();
+    const startOfTickOccupancy = new Map(movingOccupancy);
+    const waitTicksAtStart = new Map<string, number>();
+    for (const citizenId of startOfTickOccupancy.values()) {
+      const citizen = citizensById.get(citizenId);
+      if (citizen !== undefined) waitTicksAtStart.set(citizen.id, citizen.waitTicks);
+    }
     const initiallyMovingCitizenIds = new Set(movingOccupancy.values());
     for (const citizen of sortedCitizens()) {
       citizen.previousPosition = copyPosition(citizen.position);
@@ -2890,6 +3069,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         routeIndex: citizen.routeIndex,
         waitTicks: citizen.waitTicks,
         tripStartedTick: citizen.tripStartedTick,
+        critical: citizen.criticalBuilderProjectId !== null,
       });
     }
     const proposals = buildMovementProposals({
@@ -2929,6 +3109,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     movementCyclesCommitted += resolution.cyclesCommitted;
     movementOrdinarySwapsRejected += resolution.ordinarySwapsRejected;
     movementDeadlockRecoveries += resolution.emergencySwaps;
+    movementCriticalPriorityWins += resolution.criticalPriorityWins;
+    constructionCriticalConflictWins += resolution.criticalPriorityWins;
 
     for (const move of resolution.accepted) {
       const citizen = citizensById.get(move.citizenId);
@@ -2988,7 +3170,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     for (const move of resolution.accepted) clearDeadlockPairsForCitizen(move.citizenId);
     updateDeadlockPairStates(resolution.directSwapPairs, emergencySwapPairs);
     const blockedIds = resolution.blocked.map(({ citizenId }) => citizenId);
-    maybeReplanBlockedCitizens(blockedIds);
+    maybeReplanBlockedCitizens(blockedIds, startOfTickOccupancy, waitTicksAtStart);
     if (resolution.accepted.length === 0 && blockedIds.length === 0) clearAllDeadlockPairs();
   };
 
@@ -3093,7 +3275,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       movementOrdinarySwapsRejected,
       movementReplansAttempted,
       movementReplansSucceeded,
+      movementReplansUnchanged,
       movementDeadlockRecoveries,
+      movementCriticalPriorityWins,
       allocatedRightOfWayBuffers: spatial.getAllocatedRightOfWayBufferCount(),
       rightOfWayCells: spatial.getRightOfWayCellCount(),
       rightOfWayCellsAdded,
@@ -3120,6 +3304,10 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       constructionPausedProjectTicks,
       constructionPhaseCompletions,
       constructionWorkerReleases,
+      constructionCriticalPromotions,
+      constructionCriticalClears,
+      constructionCriticalNoEligibleWorkerTicks,
+      constructionCriticalConflictWins,
       serviceTrips,
       serviceUses,
       failedServiceDestinationAttempts,
@@ -3220,6 +3408,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
             ? null
             : copyPosition(citizen.constructionStagingCell),
         resumeDestinationBuildingId: citizen.resumeDestinationBuildingId,
+        criticalBuilderProjectId: citizen.criticalBuilderProjectId,
+        criticalBuilderReason: citizen.criticalBuilderReason,
       })),
       developmentCandidates: lastDevelopmentCandidates.map((candidate) => ({
         ...candidate,
@@ -3249,6 +3439,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         phaseTicksRemaining: project.phaseTicksRemaining,
         phaseTicksElapsed: project.phaseTicksElapsed,
         totalTicksElapsed: project.totalTicksElapsed,
+        ticksSinceLastLabor: project.ticksSinceLastLabor,
+        criticalBuilderId: project.criticalBuilderId,
+        criticalBuilderReason: project.criticalBuilderReason,
         startedTick: project.startedTick,
         score: project.score,
         primaryReason: { ...project.primaryReason },

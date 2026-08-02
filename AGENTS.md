@@ -1,5 +1,42 @@
 # AGENTS.md
 
+## Multi-agent orchestration
+
+When the primary thread uses GPT-5.6 Sol, Sol is the orchestrator.
+
+Sol owns:
+
+- interpreting the user request,
+- reading the implementation playbook,
+- decomposing work,
+- selecting bounded assignments,
+- resolving architectural questions,
+- reviewing worker results,
+- running or requesting final integration validation,
+- deciding whether the task gate is satisfied,
+- reporting final status to the user.
+
+Implementation must normally be delegated to the `luna_executor` custom agent.
+
+Review must normally be delegated to the `luna_reviewer` custom agent after implementation.
+
+Delegation rules:
+
+1. Spawn only named custom agents.
+2. Do not use an unnamed or built-in worker when `luna_executor` is available.
+3. Give each worker a complete, self-contained assignment.
+4. Include relevant paths, fixed contracts, exclusions, required tests, and expected report format.
+5. Wait for the executor before starting review.
+6. At most one workspace-write subagent may edit the current worktree at a time.
+7. Read-only exploration and review may run in parallel when their responsibilities do not overlap.
+8. Sol must inspect the resulting diff rather than accepting a worker's summary as proof.
+9. Sol owns final validation and scope auditing.
+10. Subagents may not begin later playbook steps.
+11. Subagents may not spawn further subagents.
+12. A failed or incomplete worker must receive a narrowly targeted correction task; do not restart the entire implementation without evidence that it is necessary.
+
+---
+
 ## Purpose
 
 This repository contains **Idle City**, a browser-first, installable 3D incremental city simulation.

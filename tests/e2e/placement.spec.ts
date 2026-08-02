@@ -51,6 +51,19 @@ async function findValidMapPoint(
   const bounds = await canvas.boundingBox();
   if (bounds === null) throw new Error('The game canvas is not measurable.');
   const candidates = [
+    { x: 0.54, y: 0.1 },
+    { x: 0.66, y: 0.14 },
+    { x: 0.78, y: 0.18 },
+    { x: 0.9, y: 0.22 },
+    { x: 0.7, y: 0.26 },
+    { x: 0.84, y: 0.28 },
+    { x: 0.94, y: 0.28 },
+    { x: 0.78, y: 0.32 },
+    { x: 0.9, y: 0.32 },
+    { x: 0.98, y: 0.34 },
+    { x: 0.76, y: 0.36 },
+    { x: 0.88, y: 0.36 },
+    { x: 0.96, y: 0.38 },
     { x: 0.54, y: 0.32 },
     { x: 0.66, y: 0.36 },
     { x: 0.78, y: 0.4 },
@@ -86,6 +99,19 @@ async function findMapPointWithStatus(page: Page, message: string): Promise<MapP
   const bounds = await canvas.boundingBox();
   if (bounds === null) throw new Error('The game canvas is not measurable.');
   const candidates = [
+    { x: 0.54, y: 0.1 },
+    { x: 0.66, y: 0.14 },
+    { x: 0.78, y: 0.18 },
+    { x: 0.9, y: 0.22 },
+    { x: 0.7, y: 0.26 },
+    { x: 0.84, y: 0.28 },
+    { x: 0.94, y: 0.28 },
+    { x: 0.78, y: 0.32 },
+    { x: 0.9, y: 0.32 },
+    { x: 0.98, y: 0.34 },
+    { x: 0.76, y: 0.36 },
+    { x: 0.88, y: 0.36 },
+    { x: 0.96, y: 0.38 },
     { x: 0.54, y: 0.32 },
     { x: 0.66, y: 0.36 },
     { x: 0.78, y: 0.4 },
@@ -349,4 +375,94 @@ test.describe('touch viewport', () => {
     await expect(page.getByTestId('seed-count')).toHaveText('1 seed');
     await expect(page.getByRole('button', { name: 'Cancel placement' })).toBeVisible();
   });
+});
+
+interface TestViewport {
+  readonly width: number;
+  readonly height: number;
+  readonly label: string;
+}
+
+async function assertResponsivePlacement(page: Page, viewport: TestViewport): Promise<void> {
+  await page.setViewportSize({ width: viewport.width, height: viewport.height });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await openBuild(page);
+
+  const canvas = page.locator('#game-canvas');
+  const canvasBounds = await canvas.boundingBox();
+  expect(canvasBounds?.width ?? 0).toBeGreaterThan(0);
+  expect(canvasBounds?.height ?? 0).toBeGreaterThan(0);
+
+  let workingPoint: MapPoint | undefined;
+  for (const [index, [kind, cost]] of (
+    [
+      ['Living', 10],
+      ['Working', 12],
+    ] as const
+  ).entries()) {
+    if (index > 0) {
+      await page.getByRole('button', { name: 'Reset simulation' }).click();
+      await openBuild(page);
+    }
+    await page.getByRole('button', { name: `Choose ${kind} district seed` }).click();
+    const point = await findValidMapPoint(page, kind);
+    if (kind === 'Working') workingPoint = point;
+    await page.mouse.click(point.x, point.y);
+
+    const confirmButton = page.locator('[data-action="confirm-placement"]');
+    const cancelButton = page.locator('[data-action="cancel-placement"]');
+    await expect(confirmButton).toBeVisible();
+    await expect(cancelButton).toBeVisible();
+    await expect(confirmButton).toBeEnabled();
+
+    for (const button of [confirmButton, cancelButton]) {
+      const bounds = await button.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(bounds?.x ?? -1).toBeGreaterThanOrEqual(0);
+      expect(bounds?.y ?? -1).toBeGreaterThanOrEqual(0);
+      expect((bounds?.x ?? 0) + (bounds?.width ?? 0)).toBeLessThanOrEqual(viewport.width);
+      expect((bounds?.y ?? 0) + (bounds?.height ?? 0)).toBeLessThanOrEqual(viewport.height);
+    }
+
+    const before = await metric(page, 'data-metric');
+    await confirmButton.click();
+    await expect(page.getByTestId('status')).toContainText(`${kind} seed accepted`);
+    expect(before - (await metric(page, 'data-metric'))).toBe(cost);
+  }
+
+  await page.getByRole('button', { name: 'Choose Working district seed' }).click();
+  if (workingPoint === undefined) throw new Error('The responsive Working point was not saved.');
+  const invalidPoint = workingPoint;
+  await page.mouse.click(invalidPoint.x, invalidPoint.y);
+  const disabledConfirm = page.locator('[data-action="confirm-placement"]');
+  await expect(disabledConfirm).toBeVisible();
+  await expect(disabledConfirm).toBeDisabled();
+  await expect(page.locator('[data-action="cancel-placement"]')).toBeVisible();
+  await expect(page.getByTestId('placement-reason')).toContainText('already has a district seed');
+
+  const layout = await page.evaluate(() => ({
+    documentWidth: document.documentElement.scrollWidth,
+    bodyWidth: document.body.scrollWidth,
+    viewportWidth: window.innerWidth,
+  }));
+  expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.bodyWidth).toBeLessThanOrEqual(layout.viewportWidth);
+  await page.locator('[data-action="cancel-placement"]').click();
+}
+
+test.describe('responsive Build action dock', () => {
+  const viewports: readonly TestViewport[] = [
+    { width: 320, height: 568, label: '320x568' },
+    { width: 360, height: 640, label: '360x640' },
+    { width: 390, height: 844, label: '390x844' },
+    { width: 768, height: 600, label: '768x600' },
+    { width: 1280, height: 800, label: 'desktop' },
+  ];
+
+  for (const viewport of viewports) {
+    test(`keeps the Build action dock usable at ${viewport.label}`, async ({ page }) => {
+      await assertResponsivePlacement(page, viewport);
+    });
+  }
 });

@@ -73,6 +73,8 @@ function legacyDefinitions(radius: number): SeedDefinitions {
     label,
     baseCost,
     influenceRadius: radius,
+    sideLength: radius * 2 + 1,
+    influenceShape: 'square',
     unlocked: true,
   });
   return {
@@ -82,14 +84,14 @@ function legacyDefinitions(radius: number): SeedDefinitions {
   };
 }
 
-function diamondPoints(radius: number, cellWorldScale: number): Vector3[] {
-  const distance = radius * cellWorldScale;
+function squareOutlinePoints(sideLength: number, cellWorldScale: number): Vector3[] {
+  const halfExtent = (sideLength / 2) * cellWorldScale;
   return [
-    new Vector3(0, 0, -distance),
-    new Vector3(distance, 0, 0),
-    new Vector3(0, 0, distance),
-    new Vector3(-distance, 0, 0),
-    new Vector3(0, 0, -distance),
+    new Vector3(-halfExtent, 0, -halfExtent),
+    new Vector3(halfExtent, 0, -halfExtent),
+    new Vector3(halfExtent, 0, halfExtent),
+    new Vector3(-halfExtent, 0, halfExtent),
+    new Vector3(-halfExtent, 0, -halfExtent),
   ];
 }
 
@@ -155,7 +157,7 @@ export function createSeedLayer(
     marker.isPickable = false;
     const influence = CreateLines(
       `${seed.id}-influence`,
-      { points: diamondPoints(definition.influenceRadius, cellWorldScale) },
+      { points: squareOutlinePoints(definition.sideLength, cellWorldScale) },
       scene,
     );
     influence.parent = root;
@@ -219,7 +221,7 @@ export function createSeedLayer(
         );
         // The chunk size is only used for an active-coverage hint when a
         // caller supplies no richer renderer metadata. The simulation keeps
-        // the exact authoritative diamond in the seed definition.
+        // the exact authoritative square in the seed definition.
         updateVisual(current, seed, activeChunks.length === 0 ? [] : activeCells);
       }
       for (const [id, visual] of visuals) {

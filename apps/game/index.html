@@ -100,86 +100,100 @@
           </article>
         </section>
         <section class="build-panel" data-testid="build-panel" aria-labelledby="build-title" hidden>
-          <div class="panel-heading">
-            <h2 id="build-title">Build</h2>
-            <span class="panel-kicker">District seeds</span>
+          <div class="build-selector">
+            <div class="panel-heading">
+              <h2 id="build-title">Build</h2>
+              <span class="panel-kicker">District seeds</span>
+            </div>
+            <p class="panel-copy">Choose a district, preview a cell, then confirm the placement.</p>
+            <div class="build-options" aria-label="District seed choices">
+              <button
+                type="button"
+                data-build-kind="living"
+                aria-label="Choose Living district seed"
+                aria-pressed="false"
+              >
+                <span>Living</span><small data-testid="living-cost">Data cost</small>
+              </button>
+              <button
+                type="button"
+                data-build-kind="working"
+                aria-label="Choose Working district seed"
+                aria-pressed="false"
+              >
+                <span>Working</span><small data-testid="working-cost">Data cost</small>
+              </button>
+              <button
+                type="button"
+                data-build-kind="services"
+                aria-label="Choose Services district seed"
+                aria-pressed="false"
+                hidden
+              >
+                <span>Services</span><small data-testid="services-cost">20 Data</small>
+              </button>
+            </div>
           </div>
-          <p class="panel-copy">Choose a district, preview a cell, then confirm the placement.</p>
-          <div class="build-options" aria-label="District seed choices">
-            <button
-              type="button"
-              data-build-kind="living"
-              aria-label="Choose Living district seed"
-              aria-pressed="false"
+          <div class="build-details">
+            <p
+              class="placement-status"
+              data-testid="placement-status"
+              role="status"
+              aria-live="polite"
             >
-              <span>Living</span><small data-testid="living-cost">Data cost</small>
-            </button>
+              Choose Living or Working to enter placement mode.
+            </p>
+            <p class="placement-cost" data-testid="placement-cost">
+              Select a district to see its cost.
+            </p>
+            <dl class="placement-details" aria-label="Placement details">
+              <div>
+                <dt>Radius</dt>
+                <dd data-testid="placement-radius">—</dd>
+              </div>
+              <div>
+                <dt>Coordinates</dt>
+                <dd data-testid="placement-coordinates">—</dd>
+              </div>
+              <div>
+                <dt>Active coverage</dt>
+                <dd data-testid="active-covered-count">—</dd>
+              </div>
+              <div>
+                <dt>Side length</dt>
+                <dd data-testid="placement-side-length">-</dd>
+              </div>
+              <div>
+                <dt>Inactive coverage</dt>
+                <dd data-testid="inactive-covered-count">-</dd>
+              </div>
+              <div>
+                <dt>Reason</dt>
+                <dd data-testid="placement-reason">—</dd>
+              </div>
+            </dl>
+            <p class="build-data" data-testid="build-data">Data available: 0</p>
+          </div>
+          <div class="build-action-dock" aria-label="Placement actions">
             <button
               type="button"
-              data-build-kind="working"
-              aria-label="Choose Working district seed"
-              aria-pressed="false"
-            >
-              <span>Working</span><small data-testid="working-cost">Data cost</small>
-            </button>
-            <button
-              type="button"
-              data-build-kind="services"
-              aria-label="Choose Services district seed"
-              aria-pressed="false"
+              class="confirm-button"
+              data-action="confirm-placement"
+              aria-label="Confirm district seed placement"
               hidden
             >
-              <span>Services</span><small data-testid="services-cost">20 Data</small>
+              Place district seed
+            </button>
+            <button
+              type="button"
+              class="cancel-button"
+              data-action="cancel-placement"
+              aria-label="Cancel placement"
+              hidden
+            >
+              Cancel placement
             </button>
           </div>
-          <p
-            class="placement-status"
-            data-testid="placement-status"
-            role="status"
-            aria-live="polite"
-          >
-            Choose Living or Working to enter placement mode.
-          </p>
-          <p class="placement-cost" data-testid="placement-cost">
-            Select a district to see its cost.
-          </p>
-          <dl class="placement-details" aria-label="Placement details">
-            <div>
-              <dt>Radius</dt>
-              <dd data-testid="placement-radius">—</dd>
-            </div>
-            <div>
-              <dt>Coordinates</dt>
-              <dd data-testid="placement-coordinates">—</dd>
-            </div>
-            <div>
-              <dt>Active coverage</dt>
-              <dd data-testid="active-covered-count">—</dd>
-            </div>
-            <div>
-              <dt>Reason</dt>
-              <dd data-testid="placement-reason">—</dd>
-            </div>
-          </dl>
-          <p class="build-data" data-testid="build-data">Data available: 0</p>
-          <button
-            type="button"
-            class="confirm-button"
-            data-action="confirm-placement"
-            aria-label="Confirm district seed placement"
-            hidden
-          >
-            Place district seed
-          </button>
-          <button
-            type="button"
-            class="cancel-button"
-            data-action="cancel-placement"
-            aria-label="Cancel placement"
-            hidden
-          >
-            Cancel placement
-          </button>
         </section>
       </section>
       <aside class="hint">Drag to orbit <span>·</span> Pinch or scroll to zoom</aside>

@@ -198,7 +198,7 @@ describe('authoritative district seed commands', () => {
         position: { x: 2, y: 0 },
         kind: 'living',
       }),
-    ).toBe(0.75);
+    ).toBe(0.6);
     expect(
       calculateDistrictSeedInfluence({
         width: 5,

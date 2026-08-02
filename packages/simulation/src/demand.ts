@@ -125,7 +125,7 @@ function distanceToRect(position: GridPosition, rect: GridRect): number {
       : position.y >= rect.y + rect.height
         ? position.y - (rect.y + rect.height - 1)
         : 0;
-  return finite('building footprint distance', dx + dy);
+  return finite('building footprint square distance', Math.max(dx, dy));
 }
 
 function totalCapacity(buildings: readonly Building[], type: BuildingType): number {
@@ -456,7 +456,7 @@ export function calculateCityDemand(input: DemandCalculationInput): LegacyCityDe
     input.buildings,
     input.citizens,
     input.metrics,
-    Math.max(1, width + height - 2),
+    Math.max(1, Math.max(width, height) - 1),
     input.seedInfluence,
     input.servicesEnabled ?? true,
   );

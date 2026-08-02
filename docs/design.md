@@ -235,6 +235,16 @@ is aggregated after movement arrival resolution, does not carry into the
 next phase, and advances at most one phase per tick. A project with no
 constructing workers pauses without labor progress.
 
+Each active project also tracks `ticksSinceLastLabor`. A zero-labor tick
+increments it; any labor resets it. At 12 consecutive zero-labor ticks, the
+project may designate at most one assigned, reachable worker who is currently
+commuting to that project as its critical lead builder. Candidates are ordered
+by greater wait age, fewer remaining route cells, earlier trip start tick,
+then stable citizen ID. The designation is explanatory state, not a new
+worker or a teleport: it is cleared on labor, arrival, reassignment,
+completion, or trip change. A project with no assigned eligible worker never
+receives critical movement priority.
+
 Citizens are recruited only at a completed home or work activity boundary.
 In-progress activities and commutes are never interrupted. Recruitment saves
 the ordinary next destination, enters an explicit construction commute, and
@@ -305,32 +315,42 @@ Different seed types may overlap.
 
 Same-type influences add together and cap at `1`.
 
-### 5.3 Influence — Implemented
+### 5.3 Influence — Implemented Step 10.5
 
-The current seed influence uses Manhattan distance.
+Seed influence is an axis-aligned square measured with Chebyshev distance.
 
 The implemented neighborhood radii are fixed simulation definitions:
 
-| Seed     |   Radius |
-| -------- | -------: |
-| Living   | 10 cells |
-| Working  | 12 cells |
-| Services |  8 cells |
+| Seed     |   Radius | Side length |
+| -------- | -------: | ----------: |
+| Living   | 10 cells |    21 cells |
+| Working  | 12 cells |    25 cells |
+| Services |  8 cells |    17 cells |
 
 These radii never derive from chunk dimensions. The simulation exposes the
 definitions and a detached current-placement-info result containing the exact
-diamond cells, active covered-cell subset, current cost, and validation
-reason. The browser, renderer, and balance runner consume that authoritative
-information.
+row-major square cells, active and inactive covered-cell counts, current cost,
+and validation reason. The browser, renderer, and balance runner consume that
+authoritative information.
 
 For a matching seed:
 
 ```text
+square_distance = max(abs(dx), abs(dy))
+
 single_seed_influence =
-    max(0, 1 - manhattan_distance / influence_radius)
+    distance > radius
+        ? 0
+        : (radius + 1 - distance) / (radius + 1)
 ```
 
-Matching contributions add, cap at `1`, and round to six decimal places.
+The outer boundary has positive influence `1 / (radius + 1)`; cells outside
+the square have zero influence. Contributions and running matching totals are
+rounded to six decimal places. Matching contributions add and cap at `1`.
+Different seed types may overlap without contributing to one another.
+
+The placement preview and placed influence overlay use the same square
+definition, while ROW corridors remain visible over the overlay.
 
 The configured radius is authoritative simulation balance data. UI previews must read the authoritative value rather than duplicate it.
 
@@ -384,11 +404,12 @@ A rejected command changes none of:
 - determinism hash
 
 Selecting a seed type does not purchase it. Hovering shows a transient exact
-diamond preview; clicking or tapping locks the candidate; an explicit
+axis-aligned square preview anchored at the candidate cell; clicking or tapping locks the candidate; an explicit
 `Place <Type> for <Cost> Data` confirmation revalidates the command and
 charges once. Cancel, drag, pointer cancellation, and lost capture clear the
-candidate without mutation. The placement panel shows radius, coordinates,
-active covered-cell count, current cost, and a plain-language reason.
+candidate without mutation. The placement panel shows radius, side length,
+coordinates, active and inactive covered-cell counts, current cost, and a
+plain-language reason.
 
 ### 5.6 Seed relocation — Contracted
 
@@ -538,7 +559,21 @@ Progression rules:
 
 Commuting citizens reserve exclusive logical movement cells. Home, work, and other inside-building activities do not reserve entrances. Each logical tick snapshots moving occupancy, creates deterministic next-cell proposals, resolves same-target conflicts and dependencies, permits uncontested cycles of length three or greater, rejects ordinary two-citizen swaps, and commits accepted moves simultaneously. Priority is greater wait age, fewer remaining route cells, earlier trip start tick, then stable citizen ID. Arrivals complete their trip and release the entrance in the same commit; `previousPosition` remains detached for renderer interpolation.
 
-Blocked commuters replan with bounded deterministic A* at exactly 8 consecutive blocked ticks and every 8 additional blocked ticks. Current moving cells are temporary replan inputs only, and a failed replan retains the current route. Repeated identical direct head-on pairs receive one atomic emergency swap at exactly 12 consecutive blocked ticks. Movement snapshots expose wait state and cumulative reservation, conflict, replan, cycle, and recovery counters. Traffic telemetry counts committed moves only.
+Blocked commuters replan with bounded deterministic A* at exactly 4
+consecutive blocked ticks and every 4 additional blocked ticks. Recovery uses
+only the start-of-tick moving occupancy and wait state: other occupied cells
+are temporary blockers, and each candidate edge costs `100 +
+min(150, 50 × orthogonalQueueNeighbors)`, with a Manhattan heuristic scaled by 100. Recovery uses the citizen's stable route-tie profile, installs only a
+valid route that differs from the remaining route, and leaves the route
+untouched after a failure or identical result. Ordinary trip-start routing
+does not read historical traffic; historical congestion remains reserved for
+the later ACCESS-2 upgrade. Repeated identical direct head-on pairs receive
+one atomic emergency swap at exactly 12 consecutive blocked ticks. Movement
+snapshots expose wait state and cumulative reservation, conflict, replan,
+cycle, and recovery counters. A critical builder outranks a noncritical
+mover only when both propose the same target cell; dependency, cycle,
+one-cell-per-tick, and exclusivity rules remain unchanged. Traffic telemetry
+counts committed moves only.
 
 ---
 
@@ -575,8 +610,8 @@ Only one major overlay is active at a time.
 Placed seed markers remain compact. Their full influence and active-world
 boundary are hidden by default and become visible when the seed is selected,
 the influence overlay is active, or the player is placing or relocating a
-seed. Placement previews show the complete authoritative Manhattan diamond
-and distinguish its currently active cells near world boundaries.
+seed. Placement previews show the complete authoritative axis-aligned square
+and distinguish its currently active and inactive cells near world boundaries.
 
 ### 7.3 Explanations
 

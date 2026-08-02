@@ -1,13 +1,41 @@
 import type { ChunkCoordinate, GridPosition } from '@idle-city/shared';
+import { stableHash } from '@idle-city/shared';
 import { chunkCoordinateForPosition, chunkKey, compareChunks, validateChunkSize } from './chunks';
 
-const movementCost = 10;
-const directions: readonly GridPosition[] = [
+const defaultMovementCost = 10;
+const baseDirections: readonly GridPosition[] = [
   { x: 1, y: 0 },
   { x: 0, y: 1 },
   { x: -1, y: 0 },
   { x: 0, y: -1 },
 ];
+/**
+ * Four deterministic rotations of the base order. Profiles only influence
+ * insertion order among equal-cost A* alternatives; edge costs stay uniform
+ * for ordinary trip planning, so a profile can never lengthen a shortest path.
+ */
+export const ROUTE_DIRECTION_ORDERS: readonly (readonly GridPosition[])[] = [
+  baseDirections,
+  [
+    { x: 0, y: 1 },
+    { x: -1, y: 0 },
+    { x: 0, y: -1 },
+    { x: 1, y: 0 },
+  ],
+  [
+    { x: -1, y: 0 },
+    { x: 0, y: -1 },
+    { x: 1, y: 0 },
+    { x: 0, y: 1 },
+  ],
+  [
+    { x: 0, y: -1 },
+    { x: 1, y: 0 },
+    { x: 0, y: 1 },
+    { x: -1, y: 0 },
+  ],
+];
+export const ROUTE_TIE_PROFILE_COUNT = ROUTE_DIRECTION_ORDERS.length;
 const defaultSearchBudget = 100_000;
 
 function key(position: GridPosition): string {
@@ -36,6 +64,14 @@ export interface PathGrid {
 
 export interface PathSearchOptions {
   readonly maxNodes?: number;
+  /** Stable citizen route profile; non-citizen validation uses profile 0. */
+  readonly routeTieProfile?: number;
+  /** Base cost for one orthogonal edge. */
+  readonly movementCost?: number;
+  /** Cost multiplier used by the admissible Manhattan heuristic. */
+  readonly heuristicCost?: number;
+  /** Optional deterministic additional edge cost used by recovery searches. */
+  readonly edgeCost?: (from: GridPosition, to: GridPosition) => number;
 }
 
 export type PathSearchStatus = 'found' | 'no-path' | 'budget-exhausted';
@@ -107,9 +143,12 @@ class MinHeap {
 function compareEntries(left: OpenEntry, right: OpenEntry): number {
   if (left.f !== right.f) return left.f - right.f;
   if (left.h !== right.h) return left.h - right.h;
+  // Sequence reflects the selected direction order. It is consulted only
+  // after equal f/h values, so it cannot trade a longer path for a shorter one.
+  if (left.sequence !== right.sequence) return left.sequence - right.sequence;
   const positionOrder = comparePositions(left.position, right.position);
   if (positionOrder !== 0) return positionOrder;
-  return left.sequence - right.sequence;
+  return 0;
 }
 
 function validateEndpoint(position: GridPosition): void {
@@ -126,6 +165,36 @@ function validateBudget(value: number | undefined): number {
     );
   }
   return budget;
+}
+
+function validateCost(name: string, value: number | undefined, fallback: number): number {
+  const cost = value ?? fallback;
+  if (!Number.isSafeInteger(cost) || cost < 1) {
+    throw new Error(`${name} must be a positive safe integer; received ${String(cost)}.`);
+  }
+  return cost;
+}
+
+function directionOrder(profile: number | undefined): readonly GridPosition[] {
+  const normalized = profile ?? 0;
+  if (
+    !Number.isSafeInteger(normalized) ||
+    normalized < 0 ||
+    normalized >= ROUTE_TIE_PROFILE_COUNT
+  ) {
+    throw new Error(
+      `Route tie profile must be an integer in [0, ${String(ROUTE_TIE_PROFILE_COUNT - 1)}].`,
+    );
+  }
+  const order = ROUTE_DIRECTION_ORDERS[normalized];
+  if (order === undefined)
+    throw new Error(`Missing route direction profile ${String(normalized)}.`);
+  return order;
+}
+
+/** Computes the stable four-way route profile required by citizen routing. */
+export function routeTieProfile(citizenId: string): number {
+  return Number.parseInt(stableHash(citizenId), 16) % ROUTE_TIE_PROFILE_COUNT;
 }
 
 function activeChunkSet(grid: PathGrid): ReadonlySet<string> | undefined {
@@ -198,6 +267,10 @@ export function findGridPathDetailed(
   }
 
   const budget = validateBudget(options.maxNodes ?? grid.maxNodes);
+  const baseCost = validateCost('Path movement cost', options.movementCost, defaultMovementCost);
+  const heuristicCost = validateCost('Path heuristic cost', options.heuristicCost, baseCost);
+  const directions = directionOrder(options.routeTieProfile);
+  const edgeCost = options.edgeCost ?? (() => 0);
   const open = new MinHeap();
   const startKey = key(start);
   const goalKey = key(goal);
@@ -206,7 +279,7 @@ export function findGridPathDetailed(
   const closed = new Set<string>();
   const touchedChunks = new Set<string>();
   let sequence = 0;
-  const startHeuristic = manhattanDistance(start, goal) * movementCost;
+  const startHeuristic = manhattanDistance(start, goal) * heuristicCost;
   open.push({
     position: { ...start },
     key: startKey,
@@ -251,10 +324,16 @@ export function findGridPathDetailed(
       };
       const nextKey = key(next);
       if (!isActive(next) || !isWalkable(next) || closed.has(nextKey)) continue;
-      const nextG = current.g + movementCost;
+      const additionalCost = edgeCost(current.position, next);
+      if (!Number.isSafeInteger(additionalCost) || additionalCost < 0) {
+        throw new Error(
+          `Path edge cost must be a finite non-negative safe integer; received ${String(additionalCost)}.`,
+        );
+      }
+      const nextG = current.g + baseCost + additionalCost;
       const previousG = bestG.get(nextKey);
       if (previousG !== undefined && nextG >= previousG) continue;
-      const heuristic = manhattanDistance(next, goal) * movementCost;
+      const heuristic = manhattanDistance(next, goal) * heuristicCost;
       bestG.set(nextKey, nextG);
       parents.set(nextKey, { ...current.position });
       sequence += 1;

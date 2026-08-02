@@ -1,3 +1,4 @@
+import { squareDistance } from '@idle-city/shared';
 import type { GridPosition } from '@idle-city/shared';
 import { DISTRICT_SEED_COSTS, isDistrictSeedKindUnlocked } from './balance-rules';
 import type { DistrictSeed, DistrictSeedDefinition, DistrictSeedKind } from './types';
@@ -11,6 +12,8 @@ export const DISTRICT_SEED_DEFINITIONS: Readonly<Record<DistrictSeedKind, Distri
       label: 'Living',
       baseCost: DISTRICT_SEED_COSTS.living,
       influenceRadius: 10,
+      sideLength: 21,
+      influenceShape: 'square',
       unlocked: isDistrictSeedKindUnlocked('living'),
     },
     working: {
@@ -18,6 +21,8 @@ export const DISTRICT_SEED_DEFINITIONS: Readonly<Record<DistrictSeedKind, Distri
       label: 'Working',
       baseCost: DISTRICT_SEED_COSTS.working,
       influenceRadius: 12,
+      sideLength: 25,
+      influenceShape: 'square',
       unlocked: isDistrictSeedKindUnlocked('working'),
     },
     services: {
@@ -25,6 +30,8 @@ export const DISTRICT_SEED_DEFINITIONS: Readonly<Record<DistrictSeedKind, Distri
       label: 'Services',
       baseCost: DISTRICT_SEED_COSTS.services,
       influenceRadius: 8,
+      sideLength: 17,
+      influenceShape: 'square',
       unlocked: isDistrictSeedKindUnlocked('services'),
     },
   };
@@ -37,10 +44,6 @@ export function getDistrictSeedDefinitions(): readonly DistrictSeedDefinition[] 
   return (['living', 'working', 'services'] as const).map((kind) =>
     getDistrictSeedDefinition(kind),
   );
-}
-
-function manhattanDistance(left: GridPosition, right: GridPosition): number {
-  return Math.abs(left.x - right.x) + Math.abs(left.y - right.y);
 }
 
 function roundInfluence(value: number): number {
@@ -60,7 +63,7 @@ export function districtSeedInfluenceRadius(kind: DistrictSeedKind): number {
   return DISTRICT_SEED_DEFINITIONS[kind].influenceRadius;
 }
 
-/** Complete matching-type Manhattan diamond in stable row-major order. */
+/** Complete matching-type square in stable row-major order. */
 export function enumerateDistrictSeedInfluenceCells(
   position: GridPosition,
   kind: DistrictSeedKind,
@@ -68,8 +71,7 @@ export function enumerateDistrictSeedInfluenceCells(
   const radius = districtSeedInfluenceRadius(kind);
   const cells: GridPosition[] = [];
   for (let y = position.y - radius; y <= position.y + radius; y += 1) {
-    const remaining = radius - Math.abs(y - position.y);
-    for (let x = position.x - remaining; x <= position.x + remaining; x += 1) {
+    for (let x = position.x - radius; x <= position.x + radius; x += 1) {
       cells.push({ x, y });
     }
   }
@@ -77,10 +79,10 @@ export function enumerateDistrictSeedInfluenceCells(
 }
 
 /**
- * A seed contributes max(0, 1 - distance / radius).
- * Contributions from matching seeds are added, capped at 1, and rounded to
- * six decimal places. The Manhattan distance keeps the field aligned with the
- * simulation's grid movement and the cap keeps influence normalized.
+ * A seed contributes (radius + 1 - Chebyshev distance) / (radius + 1) inside
+ * its square, including a positive contribution on the outer boundary.
+ * Matching contributions are rounded, added, capped at one, and rounded again
+ * so preview, demand, and developer scoring share one exact field.
  */
 export function calculateDistrictSeedInfluence(input: DistrictSeedInfluenceInput): number {
   const radius = Math.max(
@@ -88,13 +90,14 @@ export function calculateDistrictSeedInfluence(input: DistrictSeedInfluenceInput
     input.radius ??
       (input.width === undefined || input.height === undefined
         ? districtSeedInfluenceRadius(input.kind)
-        : input.width + input.height - 2),
+        : Math.max(input.width, input.height) - 1),
   );
   let total = 0;
   for (const seed of input.seeds) {
     if (seed.kind !== input.kind) continue;
-    const distance = manhattanDistance(input.position, seed.position);
-    total += Math.max(0, 1 - distance / radius);
+    const distance = squareDistance(input.position, seed.position);
+    const contribution = roundInfluence(Math.max(0, (radius + 1 - distance) / (radius + 1)));
+    total = roundInfluence(Math.min(1, total + contribution));
     if (total >= 1) return 1;
   }
   return roundInfluence(Math.min(1, total));

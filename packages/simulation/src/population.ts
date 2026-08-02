@@ -1,3 +1,4 @@
+import { squareDistance } from '@idle-city/shared';
 import type { GridPosition } from '@idle-city/shared';
 import type { Building } from './types';
 
@@ -19,7 +20,7 @@ function compareIds(left: string, right: string): number {
 }
 
 function distance(left: GridPosition, right: GridPosition): number {
-  return Math.abs(left.x - right.x) + Math.abs(left.y - right.y);
+  return squareDistance(left, right);
 }
 
 function compareAssignments(left: PopulationAssignment, right: PopulationAssignment): number {

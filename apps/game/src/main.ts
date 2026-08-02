@@ -42,11 +42,17 @@ const placementCostElement = document.querySelector<HTMLElement>('[data-testid="
 const placementRadiusElement = document.querySelector<HTMLElement>(
   '[data-testid="placement-radius"]',
 );
+const placementSideLengthElement = document.querySelector<HTMLElement>(
+  '[data-testid="placement-side-length"]',
+);
 const placementCoordinatesElement = document.querySelector<HTMLElement>(
   '[data-testid="placement-coordinates"]',
 );
 const activeCoveredCountElement = document.querySelector<HTMLElement>(
   '[data-testid="active-covered-count"]',
+);
+const inactiveCoveredCountElement = document.querySelector<HTMLElement>(
+  '[data-testid="inactive-covered-count"]',
 );
 const placementReasonElement = document.querySelector<HTMLElement>(
   '[data-testid="placement-reason"]',
@@ -88,8 +94,10 @@ if (
   placementStatusElement === null ||
   placementCostElement === null ||
   placementRadiusElement === null ||
+  placementSideLengthElement === null ||
   placementCoordinatesElement === null ||
   activeCoveredCountElement === null ||
+  inactiveCoveredCountElement === null ||
   placementReasonElement === null ||
   buildDataElement === null ||
   confirmPlacementButton === null ||
@@ -124,8 +132,10 @@ const confirmCorePurchaseButton = confirmCoreButton;
 const placementStatusDisplay = placementStatusElement;
 const placementCostDisplay = placementCostElement;
 const placementRadiusDisplay = placementRadiusElement;
+const placementSideLengthDisplay = placementSideLengthElement;
 const placementCoordinatesDisplay = placementCoordinatesElement;
 const activeCoveredCountDisplay = activeCoveredCountElement;
+const inactiveCoveredCountDisplay = inactiveCoveredCountElement;
 const placementReasonDisplay = placementReasonElement;
 const buildDataDisplay = buildDataElement;
 const confirmButton = confirmPlacementButton;
@@ -142,7 +152,7 @@ const configuration = {
   housingCapacity: 20,
   workplaceCapacity: 20,
   populationCap: 20,
-  startingData: 24,
+  startingData: 30,
 } as const;
 let simulation = createSimulation(configuration);
 const initialSnapshot = simulation.getSnapshot();
@@ -262,8 +272,10 @@ function clearPlacementSelection(): void {
   confirmButton.textContent = 'Place district seed';
   placementCostDisplay.textContent = 'Select a district to see its cost.';
   placementRadiusDisplay.textContent = '—';
+  placementSideLengthDisplay.textContent = '—';
   placementCoordinatesDisplay.textContent = '—';
   activeCoveredCountDisplay.textContent = '—';
+  inactiveCoveredCountDisplay.textContent = '—';
   placementReasonDisplay.textContent = '—';
   setPlacementStatus(
     simulation.getServicesCoreState().unlocked
@@ -279,6 +291,7 @@ function setBuildOpen(open: boolean): void {
   buildToggle.setAttribute('aria-expanded', String(open));
   buildToggle.setAttribute('aria-label', open ? 'Close Build menu' : 'Open Build menu');
   buildToggle.classList.toggle('active', open);
+  document.querySelector<HTMLElement>('.hud')?.classList.toggle('build-mode', open);
   if (!open) clearPlacementSelection();
 }
 
@@ -371,8 +384,10 @@ function beginPlacement(kind: PlaceableDistrictSeedKind): void {
   confirmButton.disabled = true;
   placementCostDisplay.textContent = `Current cost: ${String(cost)} Data`;
   placementRadiusDisplay.textContent = `${String(definition.influenceRadius)} cells`;
+  placementSideLengthDisplay.textContent = `${String(definition.sideLength)} cells`;
   placementCoordinatesDisplay.textContent = '—';
   activeCoveredCountDisplay.textContent = '—';
+  inactiveCoveredCountDisplay.textContent = '—';
   placementReasonDisplay.textContent = 'Hover over a cell to preview.';
   setPlacementStatus(`${displayKind(kind)} placement mode: move over an active visible cell.`);
   gameCanvas.setAttribute(
@@ -386,8 +401,10 @@ function renderPlacementInfo(info: DistrictSeedPlacementInfo, locked: boolean): 
   placementCandidate = info;
   city.setPlacementPreview(info);
   placementRadiusDisplay.textContent = `${String(info.radius)} cells`;
+  placementSideLengthDisplay.textContent = `${String(info.sideLength)} cells`;
   placementCoordinatesDisplay.textContent = coordinates;
   activeCoveredCountDisplay.textContent = `${String(info.activeCoveredCellCount)} / ${String(info.coveredCellCount)} cells`;
+  inactiveCoveredCountDisplay.textContent = `${String(info.inactiveCoveredCellCount)} cells`;
   placementReasonDisplay.textContent = info.valid
     ? locked
       ? 'Ready to confirm.'
@@ -414,8 +431,10 @@ function previewPlacementAt(picked: PickedLogicalCell | undefined): void {
     placementCandidate = undefined;
     city.setPlacementPreview(undefined);
     placementRadiusDisplay.textContent = `${String(simulation.getDistrictSeedDefinition(placementKind).influenceRadius)} cells`;
+    placementSideLengthDisplay.textContent = `${String(simulation.getDistrictSeedDefinition(placementKind).sideLength)} cells`;
     placementCoordinatesDisplay.textContent = '—';
     activeCoveredCountDisplay.textContent = '—';
+    inactiveCoveredCountDisplay.textContent = '—';
     placementReasonDisplay.textContent = 'Hover over a cell to preview.';
     confirmButton.hidden = true;
     confirmButton.disabled = true;
@@ -477,8 +496,10 @@ function confirmPlacement(): void {
     city.setPlacementPreview(undefined);
     confirmButton.hidden = true;
     confirmButton.disabled = true;
+    placementSideLengthDisplay.textContent = '—';
     placementCoordinatesDisplay.textContent = '—';
     activeCoveredCountDisplay.textContent = '—';
+    inactiveCoveredCountDisplay.textContent = '—';
     placementReasonDisplay.textContent = 'Choose another cell to preview.';
     setPlacementStatus(
       `${displayKind(placementKind)} seed placed at ${coordinates}. Choose another cell or cancel.`,

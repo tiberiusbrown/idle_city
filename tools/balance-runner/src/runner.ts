@@ -50,7 +50,10 @@ export const balanceScenarioNames = [
   'narrow-shared-corridor',
   'entrance-bottleneck',
   'two-way-corridor',
+  'two-lane-equal-cost-corridor',
   'dense-commute',
+  'dense-home-work-commute',
+  'crossing-four-route-profiles',
   'multi-chunk-merge',
   'living-led',
   'working-led',
@@ -78,6 +81,8 @@ export const balanceScenarioNames = [
   'workers-competing-one-corridor',
   'staging-cell-queue',
   'worker-blocked-replans',
+  'builder-queued-corridor',
+  'labor-starvation-11-12',
   'no-eligible-workers',
   'phase-cap-decrease',
   'construction-dense-commute',
@@ -91,6 +96,11 @@ export const balanceScenarioNames = [
   'service-capacity-bottleneck',
   'services-seed-development',
   'dense-service-commute',
+  'square-seed-straightaway',
+  'square-seed-row-corridor',
+  'overlapping-square-seeds',
+  'square-seed-boundary',
+  'step10-5-repeated',
 ] as const;
 
 export type BalanceScenarioName = (typeof balanceScenarioNames)[number];
@@ -144,14 +154,15 @@ function servicesScenarioConfig(overrides: SimulationConfig): SimulationConfig {
     chunkSize: 8,
     initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
     homePosition: { x: 0, y: 0 },
-    workplacePosition: { x: 8, y: 8 },
+    workplacePosition: { x: 8, y: 16 },
     citizenCount: 20,
     housingCapacity: 20,
     workplaceCapacity: 20,
     populationCap: 20,
     activityDurationTicks: 1,
     populationGrowthCadenceTicks: 1_000_000,
-    developmentEvaluationIntervalTicks: 10,
+    developmentEvaluationIntervalTicks: 50,
+    developmentMinimumScore: 0.58,
     startingData: 400,
     ...overrides,
   };
@@ -409,6 +420,20 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     commands: [],
     activations: [],
   },
+  'two-lane-equal-cost-corridor': {
+    config: trafficScenarioConfig({
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 18, y: 10 },
+      citizenCount: 8,
+      housingCapacity: 8,
+      workplaceCapacity: 8,
+      populationCap: 8,
+    }),
+    commands: [],
+    activations: [],
+  },
   'dense-commute': {
     config: trafficScenarioConfig({
       chunkSize: 8,
@@ -419,6 +444,34 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
       housingCapacity: 20,
       workplaceCapacity: 20,
       populationCap: 20,
+    }),
+    commands: [],
+    activations: [],
+  },
+  'dense-home-work-commute': {
+    config: trafficScenarioConfig({
+      chunkSize: 8,
+      initialChunkRegion: { minX: -1, minY: -1, width: 4, height: 4 },
+      homePosition: { x: -6, y: -6 },
+      workplacePosition: { x: 18, y: 18 },
+      citizenCount: 20,
+      housingCapacity: 20,
+      workplaceCapacity: 20,
+      populationCap: 20,
+    }),
+    commands: [],
+    activations: [],
+  },
+  'crossing-four-route-profiles': {
+    config: trafficScenarioConfig({
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 3, height: 3 },
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 34, y: 10 },
+      citizenCount: 8,
+      housingCapacity: 8,
+      workplaceCapacity: 8,
+      populationCap: 8,
     }),
     commands: [],
     activations: [],
@@ -777,6 +830,40 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
     activations: [],
   },
+  'builder-queued-corridor': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      citizenCount: 20,
+      housingCapacity: 20,
+      workplaceCapacity: 20,
+      populationCap: 20,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: DISTRICT_SEED_COSTS.living,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
+    activations: [],
+  },
+  'labor-starvation-11-12': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      citizenCount: 20,
+      housingCapacity: 20,
+      workplaceCapacity: 20,
+      populationCap: 20,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: DISTRICT_SEED_COSTS.living,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
+    activations: [],
+  },
   'no-eligible-workers': {
     config: {
       chunkSize: 8,
@@ -881,7 +968,7 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     corePurchases: [servicesCorePurchase()],
   },
   'one-service-near-homes': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 10 }),
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 50 }),
     commands: [
       { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
       { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
@@ -891,28 +978,28 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     corePurchases: [servicesCorePurchase()],
   },
   'one-service-near-workplaces': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 10 }),
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 50 }),
     commands: [
       { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
       { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
-      servicesSeedCommand(1_001, { x: 14, y: 8 }),
+      servicesSeedCommand(1_001, { x: 12, y: 12 }),
     ],
     activations: [],
     corePurchases: [servicesCorePurchase()],
   },
   'competing-services': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 10 }),
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 50 }),
     commands: [
       { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
       { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
       servicesSeedCommand(1_001, { x: 4, y: 4 }),
-      servicesSeedCommand(1_002, { x: 14, y: 8 }),
+      servicesSeedCommand(1_002, { x: 12, y: 12 }),
     ],
     activations: [],
     corePurchases: [servicesCorePurchase()],
   },
   'service-capacity-bottleneck': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 10 }),
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 50 }),
     commands: [
       { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
       { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
@@ -922,7 +1009,7 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     corePurchases: [servicesCorePurchase()],
   },
   'services-seed-development': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 1 }),
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 10 }),
     commands: [
       { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
       { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
@@ -932,7 +1019,7 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     corePurchases: [servicesCorePurchase()],
   },
   'dense-service-commute': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 1 }),
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 10 }),
     commands: [
       { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
       { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
@@ -940,6 +1027,76 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     ],
     activations: [],
     corePurchases: [servicesCorePurchase()],
+  },
+  'square-seed-straightaway': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 2 },
+      startingData: 100,
+      developmentEvaluationIntervalTicks: 1_000_000,
+      citizenCount: 0,
+    },
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } },
+      { tick: 0, command: { kind: 'working', position: { x: 16, y: 1 } } },
+    ],
+    activations: [],
+  },
+  'square-seed-row-corridor': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 2 },
+      startingData: 100,
+      developmentEvaluationIntervalTicks: 1_000_000,
+      citizenCount: 0,
+    },
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } },
+      { tick: 0, command: { kind: 'working', position: { x: 18, y: 1 } } },
+    ],
+    activations: [],
+  },
+  'overlapping-square-seeds': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 2 },
+      startingData: 100,
+      developmentEvaluationIntervalTicks: 1_000_000,
+      citizenCount: 0,
+    },
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } },
+      { tick: 0, command: { kind: 'living', position: { x: 14, y: 1 } } },
+    ],
+    activations: [],
+  },
+  'square-seed-boundary': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      startingData: DISTRICT_SEED_COSTS.living,
+      developmentEvaluationIntervalTicks: 1_000_000,
+      citizenCount: 0,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 7, y: 1 } } }],
+    activations: [],
+  },
+  'step10-5-repeated': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      citizenCount: 3,
+      housingCapacity: 3,
+      workplaceCapacity: 3,
+      populationCap: 3,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: DISTRICT_SEED_COSTS.living,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
+    activations: [],
   },
 };
 
@@ -1023,7 +1180,9 @@ export interface BalanceMovementSummary {
   readonly ordinarySwapsRejected: number;
   readonly replansAttempted: number;
   readonly replansSucceeded: number;
+  readonly replansUnchanged: number;
   readonly emergencySwaps: number;
+  readonly criticalPriorityWins: number;
 }
 
 export interface BalanceConstructionSummary {
@@ -1035,6 +1194,10 @@ export interface BalanceConstructionSummary {
   readonly pausedProjectTicks: number;
   readonly phaseCompletions: number;
   readonly workerReleases: number;
+  readonly criticalPromotions: number;
+  readonly criticalClears: number;
+  readonly criticalNoEligibleWorkerTicks: number;
+  readonly criticalConflictWins: number;
 }
 
 export interface BalanceSummary {
@@ -1800,7 +1963,9 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     ordinarySwapsRejected: snapshot.structural.movementOrdinarySwapsRejected,
     replansAttempted: snapshot.structural.movementReplansAttempted,
     replansSucceeded: snapshot.structural.movementReplansSucceeded,
+    replansUnchanged: snapshot.structural.movementReplansUnchanged,
     emergencySwaps: snapshot.structural.movementDeadlockRecoveries,
+    criticalPriorityWins: snapshot.structural.movementCriticalPriorityWins,
   };
   const construction: BalanceConstructionSummary = {
     assignmentsOffered: snapshot.structural.constructionAssignmentsOffered,
@@ -1811,6 +1976,10 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     pausedProjectTicks: snapshot.structural.constructionPausedProjectTicks,
     phaseCompletions: snapshot.structural.constructionPhaseCompletions,
     workerReleases: snapshot.structural.constructionWorkerReleases,
+    criticalPromotions: snapshot.structural.constructionCriticalPromotions,
+    criticalClears: snapshot.structural.constructionCriticalClears,
+    criticalNoEligibleWorkerTicks: snapshot.structural.constructionCriticalNoEligibleWorkerTicks,
+    criticalConflictWins: snapshot.structural.constructionCriticalConflictWins,
   };
   return {
     scenario,

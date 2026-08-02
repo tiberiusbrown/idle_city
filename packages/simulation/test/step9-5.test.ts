@@ -15,8 +15,8 @@ import {
 const activeEverywhere = (position: { readonly x: number; readonly y: number }): boolean =>
   position.x >= 0 && position.x <= 5 && position.y >= 0 && position.y <= 5;
 
-describe('Step 9.5 neighborhood seeds and circulation contracts', () => {
-  it('uses fixed radii and exact Manhattan diamonds independent of chunk size', () => {
+describe('Step 10.5 square seeds and circulation contracts', () => {
+  it('uses fixed radii and exact square coverage independent of chunk size', () => {
     const radii = [8, 16, 32].map((chunkSize) => {
       const simulation = createSimulation({
         chunkSize,
@@ -27,6 +27,7 @@ describe('Step 9.5 neighborhood seeds and circulation contracts', () => {
       return simulation.getDistrictSeedDefinitions().map(({ kind, influenceRadius }) => ({
         kind,
         influenceRadius,
+        sideLength: simulation.getDistrictSeedDefinition(kind).sideLength,
         previewRadius: simulation.getDistrictSeedPlacementInfo({
           kind,
           position: { x: 1, y: 1 },
@@ -35,15 +36,15 @@ describe('Step 9.5 neighborhood seeds and circulation contracts', () => {
     });
     expect(radii).toEqual(
       Array.from({ length: 3 }, () => [
-        { kind: 'living', influenceRadius: 10, previewRadius: 10 },
-        { kind: 'working', influenceRadius: 12, previewRadius: 12 },
-        { kind: 'services', influenceRadius: 8, previewRadius: 8 },
+        { kind: 'living', influenceRadius: 10, sideLength: 21, previewRadius: 10 },
+        { kind: 'working', influenceRadius: 12, sideLength: 25, previewRadius: 12 },
+        { kind: 'services', influenceRadius: 8, sideLength: 17, previewRadius: 8 },
       ]),
     );
 
-    expect(enumerateDistrictSeedInfluenceCells({ x: 0, y: 0 }, 'living')).toHaveLength(221);
-    expect(enumerateDistrictSeedInfluenceCells({ x: 0, y: 0 }, 'working')).toHaveLength(313);
-    expect(enumerateDistrictSeedInfluenceCells({ x: 0, y: 0 }, 'services')).toHaveLength(145);
+    expect(enumerateDistrictSeedInfluenceCells({ x: 0, y: 0 }, 'living')).toHaveLength(441);
+    expect(enumerateDistrictSeedInfluenceCells({ x: 0, y: 0 }, 'working')).toHaveLength(625);
+    expect(enumerateDistrictSeedInfluenceCells({ x: 0, y: 0 }, 'services')).toHaveLength(289);
     const livingSeed = [{ id: 'living-1', kind: 'living' as const, position: { x: 0, y: 0 } }];
     expect(
       calculateDistrictSeedInfluence({
@@ -51,14 +52,14 @@ describe('Step 9.5 neighborhood seeds and circulation contracts', () => {
         position: { x: 10, y: 0 },
         kind: 'living',
       }),
-    ).toBe(0);
+    ).toBeCloseTo(1 / 11, 6);
     expect(
       calculateDistrictSeedInfluence({
         seeds: livingSeed,
         position: { x: 5, y: 0 },
         kind: 'living',
       }),
-    ).toBe(0.5);
+    ).toBeCloseTo(6 / 11, 6);
     expect(
       calculateDistrictSeedInfluence({
         seeds: [
@@ -82,7 +83,8 @@ describe('Step 9.5 neighborhood seeds and circulation contracts', () => {
     expect(candidate.valid).toBe(true);
     expect(candidate.radius).toBe(simulation.getDistrictSeedDefinition('living').influenceRadius);
     expect(candidate.cost).toBe(10);
-    expect(candidate.coveredCellCount).toBe(221);
+    expect(candidate.sideLength).toBe(21);
+    expect(candidate.coveredCellCount).toBe(441);
     expect(simulation.getSnapshot()).toEqual(before);
     expect(simulation.getDeterminismHash()).toBe(hashBefore);
 
@@ -112,8 +114,9 @@ describe('Step 9.5 neighborhood seeds and circulation contracts', () => {
       kind: 'living',
       position: { x: 15, y: 1 },
     });
-    expect(info.coveredCellCount).toBe(221);
+    expect(info.coveredCellCount).toBe(441);
     expect(info.activeCoveredCellCount).toBeGreaterThan(0);
+    expect(info.inactiveCoveredCellCount).toBe(info.coveredCellCount - info.activeCoveredCellCount);
     expect(info.activeCoveredCellCount).toBeLessThan(info.coveredCellCount);
   });
 

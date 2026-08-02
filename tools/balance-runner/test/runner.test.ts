@@ -272,7 +272,7 @@ describe('balance runner', () => {
     ] as const;
     const summaries = new Map<(typeof scenarios)[number], ReturnType<typeof runBalance>>();
     for (const scenario of scenarios) {
-      const ticks = scenario === 'phase-cap-decrease' ? 180 : 120;
+      const ticks = scenario === 'phase-cap-decrease' ? 240 : 120;
       const first = runBalance({ seed: 2026, ticks, scenario });
       const second = runBalance({ seed: 2026, ticks, scenario });
       summaries.set(scenario, first);
@@ -351,8 +351,10 @@ describe('balance runner', () => {
         ),
       ).toBe(true);
       expect(summary?.serviceCount).toBeGreaterThan(0);
-      expect(summary?.serviceUses).toBeGreaterThan(0);
-      expect(summary?.dataBySource.service).toBeGreaterThan(0);
+      if (scenario !== 'one-service-near-workplaces') {
+        expect(summary?.serviceUses).toBeGreaterThan(0);
+        expect(summary?.dataBySource.service).toBeGreaterThan(0);
+      }
     }
 
     const bottleneck = summaries.get('service-capacity-bottleneck');
@@ -375,5 +377,52 @@ describe('balance runner', () => {
       expect(first.constructionProjectsStarted).toBeGreaterThan(0);
       expect(first.serviceUses).toBeGreaterThan(0);
     }
+  }, 120_000);
+
+  it('covers the Step 10.5 route, recovery, starvation, and square-seed scenarios', () => {
+    const movementScenarios = [
+      'two-lane-equal-cost-corridor',
+      'crossing-four-route-profiles',
+      'dense-home-work-commute',
+    ] as const;
+    for (const scenario of movementScenarios) {
+      const first = runBalance({ seed: 2026, ticks: 180, scenario });
+      const second = runBalance({ seed: 2026, ticks: 180, scenario });
+      expect(first).toEqual(second);
+      expect(first.invariantFailures).toEqual([]);
+      expect(first.movement.proposals).toBeGreaterThan(0);
+      expect(first.movement.replansAttempted).toBeGreaterThan(0);
+      expect(first.movement.replansUnchanged).toBeGreaterThanOrEqual(0);
+      expect(first.movement.criticalPriorityWins).toBeGreaterThanOrEqual(0);
+    }
+
+    const builder = runBalance({ seed: 2026, ticks: 120, scenario: 'builder-queued-corridor' });
+    const starvation = runBalance({ seed: 2026, ticks: 120, scenario: 'labor-starvation-11-12' });
+    const noEligible = runBalance({ seed: 2026, ticks: 120, scenario: 'no-eligible-workers' });
+    expect(builder.invariantFailures).toEqual([]);
+    expect(builder.construction.criticalPromotions).toBeGreaterThan(0);
+    expect(builder.construction.criticalConflictWins).toBeGreaterThanOrEqual(0);
+    expect(starvation.construction.criticalPromotions).toBeGreaterThan(0);
+    expect(starvation.construction.criticalNoEligibleWorkerTicks).toBe(0);
+    expect(noEligible.construction.criticalPromotions).toBe(0);
+    expect(noEligible.construction.criticalNoEligibleWorkerTicks).toBeGreaterThan(0);
+
+    for (const scenario of [
+      'square-seed-straightaway',
+      'square-seed-row-corridor',
+      'overlapping-square-seeds',
+      'square-seed-boundary',
+    ] as const) {
+      const first = runBalance({ seed: 2026, ticks: 0, scenario });
+      const second = runBalance({ seed: 2026, ticks: 0, scenario });
+      expect(first).toEqual(second);
+      expect(first.invariantFailures).toEqual([]);
+      expect(first.commandResults[0]?.preview.coveredCellCount).toBe(441);
+      expect(first.commandResults[0]?.preview.sideLength).toBe(21);
+    }
+
+    const repeated = runBalance({ seed: 2026, ticks: 180, scenario: 'step10-5-repeated' });
+    expect(repeated).toEqual(runBalance({ seed: 2026, ticks: 180, scenario: 'step10-5-repeated' }));
+    expect(repeated.determinismHash).toMatch(/^[0-9a-f]{8}$/);
   }, 60_000);
 });

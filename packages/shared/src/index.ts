@@ -19,6 +19,16 @@ export function positionsEqual(left: GridPosition, right: GridPosition): boolean
   return left.x === right.x && left.y === right.y;
 }
 
+/** Returns the Chebyshev distance used by square district influence fields. */
+export function squareDistance(left: GridPosition, right: GridPosition): number {
+  return Math.max(Math.abs(left.x - right.x), Math.abs(left.y - right.y));
+}
+
+/** Returns the orthogonal grid distance used by movement and travel metrics. */
+export function orthogonalDistance(left: GridPosition, right: GridPosition): number {
+  return Math.abs(left.x - right.x) + Math.abs(left.y - right.y);
+}
+
 function ordered(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(ordered);
   if (value !== null && typeof value === 'object') {

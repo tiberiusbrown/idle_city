@@ -2,6 +2,9 @@ export {
   findGridPath,
   findGridPathDetailed,
   pathChunks,
+  routeTieProfile,
+  ROUTE_DIRECTION_ORDERS,
+  ROUTE_TIE_PROFILE_COUNT,
   type PathGrid,
   type PathSearchOptions,
   type PathSearchResult,
@@ -139,6 +142,10 @@ export {
   MOVEMENT_REPLAN_FIRST_WAIT_TICKS,
   MOVEMENT_REPLAN_INTERVAL_TICKS,
   movementPairKey,
+  recoveryQueuePenalty,
+  RECOVERY_EDGE_COST,
+  RECOVERY_QUEUE_PENALTY_CAP,
+  RECOVERY_QUEUE_PENALTY_STEP,
   replanMovementRoute,
   resolveMovementReservations,
   type MovementBlockReason,
@@ -154,6 +161,7 @@ export {
   type MovementSwapPair,
 } from './movement';
 export type { ChunkCoordinate, GridPosition, GridRect } from '@idle-city/shared';
+export { orthogonalDistance, squareDistance } from '@idle-city/shared';
 export type {
   AcceptedCommandResult,
   AcceptedCorePurchaseResult,
