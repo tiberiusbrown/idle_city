@@ -125,10 +125,10 @@ The world uses signed logical coordinates divided into active chunks.
 
 Initial footprints are:
 
-| Building type | Footprint |
-|---|---:|
-| Home | `3 × 3` logical cells |
-| Workplace | `5 × 5` logical cells |
+| Building type |             Footprint |
+| ------------- | --------------------: |
+| Home          | `3 × 3` logical cells |
+| Workplace     | `5 × 5` logical cells |
 
 Buildings occupy their complete footprint. Citizens route to valid exterior entrance cells rather than to blocked interiors.
 
@@ -189,13 +189,13 @@ Projects reserve their complete footprint and progress through:
 
 Default phase durations are:
 
-| Phase | Logical ticks |
-|---|---:|
-| Survey | 2 |
-| Blueprint | 3 |
-| Foundation | 4 |
-| Frame | 6 |
-| Completion | 1 |
+| Phase      | Logical ticks |
+| ---------- | ------------: |
+| Survey     |             2 |
+| Blueprint  |             3 |
+| Foundation |             4 |
+| Frame      |             6 |
+| Completion |             1 |
 
 Total default construction duration is 16 logical ticks.
 
@@ -209,14 +209,14 @@ Future visual sub-stages may exist inside renderer animation, but they must not 
 
 The complete planned catalog contains exactly six district seed types.
 
-| Contract ID | Seed | Status | Base cost | Unlock |
-|---|---|---|---:|---|
-| `SEED-LIVING` | Living | Implemented | 10 Data | Bootstrap |
-| `SEED-WORKING` | Working | Implemented | 12 Data | Bootstrap |
-| `SEED-SERVICES` | Services | Implemented domain; locked behavior | 20 Data | Services Core |
-| `SEED-LEARNING` | Learning | Contracted | 40 Data | Choose Learning specialization |
-| `SEED-INDUSTRY` | Industry | Contracted | 45 Data | Choose Industry specialization |
-| `SEED-ENTERTAINMENT` | Entertainment | Contracted | 40 Data | Choose Entertainment specialization |
+| Contract ID          | Seed          | Status                              | Base cost | Unlock                              |
+| -------------------- | ------------- | ----------------------------------- | --------: | ----------------------------------- |
+| `SEED-LIVING`        | Living        | Implemented                         |   10 Data | Bootstrap                           |
+| `SEED-WORKING`       | Working       | Implemented                         |   12 Data | Bootstrap                           |
+| `SEED-SERVICES`      | Services      | Implemented domain; locked behavior |   20 Data | Services Core                       |
+| `SEED-LEARNING`      | Learning      | Contracted                          |   40 Data | Choose Learning specialization      |
+| `SEED-INDUSTRY`      | Industry      | Contracted                          |   45 Data | Choose Industry specialization      |
+| `SEED-ENTERTAINMENT` | Entertainment | Contracted                          |   40 Data | Choose Entertainment specialization |
 
 There are no Transit or Research district seeds.
 
@@ -272,14 +272,14 @@ The first seed uses exponent `0`.
 Examples for Living:
 
 | Existing Living seeds | Next Living cost |
-|---:|---:|
-| 0 | 10 |
-| 1 | 13 |
-| 2 | 16 |
-| 3 | 20 |
-| 4 | 25 |
-| 5 | 31 |
-| 6 | 39 |
+| --------------------: | ---------------: |
+|                     0 |               10 |
+|                     1 |               13 |
+|                     2 |               16 |
+|                     3 |               20 |
+|                     4 |               25 |
+|                     5 |               31 |
+|                     6 |               39 |
 
 Only active seeds of the same type affect the exponent. Different seed types do not increase one another’s cost.
 
@@ -356,15 +356,15 @@ The simulation does not expose arbitrary personality statistics before they affe
 
 Activities unlock in this order:
 
-| Core stage | Activities introduced |
-|---|---|
-| Bootstrap | Home, commute, work |
-| Services | Eat and basic service use |
-| Traffic Analysis | Waiting and route-delay response |
-| Transit | Walk-to-stop, wait, ride, transfer |
-| Specialization | Learn, Produce/Deliver, or Recreate depending on chosen specialization |
-| Verticality | Vertical circulation and multi-level destinations |
-| Megacity Coordination | Coordinated multi-stop plans and predictive adaptation |
+| Core stage            | Activities introduced                                                  |
+| --------------------- | ---------------------------------------------------------------------- |
+| Bootstrap             | Home, commute, work                                                    |
+| Services              | Eat and basic service use                                              |
+| Traffic Analysis      | Waiting and route-delay response                                       |
+| Transit               | Walk-to-stop, wait, ride, transfer                                     |
+| Specialization        | Learn, Produce/Deliver, or Recreate depending on chosen specialization |
+| Verticality           | Vertical circulation and multi-level destinations                      |
+| Megacity Coordination | Coordinated multi-stop plans and predictive adaptation                 |
 
 A system must not create demand for an activity before a valid destination and completion path exist.
 
@@ -469,14 +469,14 @@ Detailed diagnostics may exist in inspection panels and development tools, but p
 
 Overlays unlock only with their mechanic:
 
-| Overlay | Unlock |
-|---|---|
-| Space demand | Bootstrap |
-| Seed influence | First seed placement |
-| Building activity | First completed building |
-| Travel flow | Traffic Analysis |
-| Transit network | Transit |
-| Specialization demand | Matching specialization |
+| Overlay                | Unlock                               |
+| ---------------------- | ------------------------------------ |
+| Space demand           | Bootstrap                            |
+| Seed influence         | First seed placement                 |
+| Building activity      | First completed building             |
+| Travel flow            | Traffic Analysis                     |
+| Transit network        | Transit                              |
+| Specialization demand  | Matching specialization              |
 | Redevelopment forecast | Space 6 or Activity 5, as applicable |
 
 Only one major overlay is active at a time.
@@ -590,28 +590,28 @@ Core order is fixed. Research depth is player-directed.
 
 There are six Core tiers after Bootstrap.
 
-| Tier | Core Protocol | New major concept |
-|---:|---|---|
-| 0 | Bootstrap | Living, Working, homes, workplaces, walking, work Data |
-| 1 | Services Core | Needs and destination selection |
-| 2 | Traffic Analysis | Route usage, congestion visibility, seed relocation |
-| 3 | Transit Core | Autonomous transit corridors and multimodal trips |
-| 4 | Specialization Core | First specialized activity and seed |
-| 5 | Vertical Simulation | Second specialization and vertical development |
-| 6 | Megacity Coordination | Predictive coordination and recompilation eligibility |
+| Tier | Core Protocol         | New major concept                                      |
+| ---: | --------------------- | ------------------------------------------------------ |
+|    0 | Bootstrap             | Living, Working, homes, workplaces, walking, work Data |
+|    1 | Services Core         | Needs and destination selection                        |
+|    2 | Traffic Analysis      | Route usage, congestion visibility, seed relocation    |
+|    3 | Transit Core          | Autonomous transit corridors and multimodal trips      |
+|    4 | Specialization Core   | First specialized activity and seed                    |
+|    5 | Vertical Simulation   | Second specialization and vertical development         |
+|    6 | Megacity Coordination | Predictive coordination and recompilation eligibility  |
 
 Core Protocols cannot be skipped in a normal run.
 
 ### 9.2 Core costs
 
-| Core | Data cost |
-|---|---:|
-| Services Core | 50 |
-| Traffic Analysis | 150 |
-| Transit Core | 450 |
-| Specialization Core | 1,200 |
-| Vertical Simulation | 3,200 |
-| Megacity Coordination | 8,000 |
+| Core                  | Data cost |
+| --------------------- | --------: |
+| Services Core         |        50 |
+| Traffic Analysis      |       150 |
+| Transit Core          |       450 |
+| Specialization Core   |     1,200 |
+| Vertical Simulation   |     3,200 |
+| Megacity Coordination |     8,000 |
 
 Kernel effects may reduce effective cost. Effective cost is always rounded up and cannot fall below 50% of the table value.
 
@@ -694,13 +694,13 @@ This allows catch-up while strongly rewarding a deep path.
 Base costs by rank:
 
 | Rank | Base cost |
-|---:|---:|
-| 1 | 30 |
-| 2 | 90 |
-| 3 | 250 |
-| 4 | 700 |
-| 5 | 1,800 |
-| 6 | 4,500 |
+| ---: | --------: |
+|    1 |        30 |
+|    2 |        90 |
+|    3 |       250 |
+|    4 |       700 |
+|    5 |     1,800 |
+|    6 |     4,500 |
 
 Focused cost:
 
@@ -722,36 +722,36 @@ Delayed ranks are optional.
 
 ### 9.6 Space track
 
-| Rank | Contract ID | Upgrade | Fixed effect |
-|---:|---|---|---|
-| 1 | `SPACE-1` | Apartments | Developers may construct dense residential buildings when local Living demand is at least `0.60` and expected occupancy is at least `75%`. |
-| 2 | `SPACE-2` | Adaptive Density | Residential and workplace candidate generation may choose small or dense forms based on demand, saturation, and Access instead of using one form per type. |
-| 3 | `SPACE-3` | Mixed Use | Developers may construct compatible Living/Services or Working/Services mixed-use buildings where both matching local demands are at least `0.50`. |
-| 4 | `SPACE-4` | Vertical Neighborhoods | Dense and mixed-use buildings may add vertical capacity modules instead of requiring a new footprint when local demand is at least `0.70`. |
-| 5 | `SPACE-5` | Satellite Development | Developer evaluation may begin a disconnected satellite cluster in an activated region when central buildable capacity is constrained and a specialization or service anchor exists. |
-| 6 | `SPACE-6` | Predictive Redevelopment | Developers may coordinate conversion, merging, and replacement using forecast demand and Access rather than responding only after failure. |
+| Rank | Contract ID | Upgrade                  | Fixed effect                                                                                                                                                                         |
+| ---: | ----------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+|    1 | `SPACE-1`   | Apartments               | Developers may construct dense residential buildings when local Living demand is at least `0.60` and expected occupancy is at least `75%`.                                           |
+|    2 | `SPACE-2`   | Adaptive Density         | Residential and workplace candidate generation may choose small or dense forms based on demand, saturation, and Access instead of using one form per type.                           |
+|    3 | `SPACE-3`   | Mixed Use                | Developers may construct compatible Living/Services or Working/Services mixed-use buildings where both matching local demands are at least `0.50`.                                   |
+|    4 | `SPACE-4`   | Vertical Neighborhoods   | Dense and mixed-use buildings may add vertical capacity modules instead of requiring a new footprint when local demand is at least `0.70`.                                           |
+|    5 | `SPACE-5`   | Satellite Development    | Developer evaluation may begin a disconnected satellite cluster in an activated region when central buildable capacity is constrained and a specialization or service anchor exists. |
+|    6 | `SPACE-6`   | Predictive Redevelopment | Developers may coordinate conversion, merging, and replacement using forecast demand and Access rather than responding only after failure.                                           |
 
 ### 9.7 Access track
 
-| Rank | Contract ID | Upgrade | Fixed effect |
-|---:|---|---|---|
-| 1 | `ACCESS-1` | Better Job Matching | New citizens choose compatible home/work assignments using route cost, then stable building ID, rather than first available capacity. |
-| 2 | `ACCESS-2` | Congestion-Aware Routing | Long-range route cost includes bounded historical congestion. Current citizen positions remain local reservation concerns, not static global obstacles. |
-| 3 | `ACCESS-3` | Coordinated Transfers | Citizens may combine walking and transit legs and evaluate transfer wait in destination cost. |
-| 4 | `ACCESS-4` | Express Corridors | High-use transit corridors may skip local stops and form a route hierarchy when both local and express demand thresholds are met. |
-| 5 | `ACCESS-5` | High-Capacity Transit | Qualifying express corridors may upgrade to high-capacity transit with greater throughput and higher construction requirements. |
-| 6 | `ACCESS-6` | Predictive Network Planning | The simulation may reserve or upgrade corridors based on forecast movement demand before sustained gridlock occurs. |
+| Rank | Contract ID | Upgrade                     | Fixed effect                                                                                                                                            |
+| ---: | ----------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|    1 | `ACCESS-1`  | Better Job Matching         | New citizens choose compatible home/work assignments using route cost, then stable building ID, rather than first available capacity.                   |
+|    2 | `ACCESS-2`  | Congestion-Aware Routing    | Long-range route cost includes bounded historical congestion. Current citizen positions remain local reservation concerns, not static global obstacles. |
+|    3 | `ACCESS-3`  | Coordinated Transfers       | Citizens may combine walking and transit legs and evaluate transfer wait in destination cost.                                                           |
+|    4 | `ACCESS-4`  | Express Corridors           | High-use transit corridors may skip local stops and form a route hierarchy when both local and express demand thresholds are met.                       |
+|    5 | `ACCESS-5`  | High-Capacity Transit       | Qualifying express corridors may upgrade to high-capacity transit with greater throughput and higher construction requirements.                         |
+|    6 | `ACCESS-6`  | Predictive Network Planning | The simulation may reserve or upgrade corridors based on forecast movement demand before sustained gridlock occurs.                                     |
 
 ### 9.8 Activity track
 
-| Rank | Contract ID | Upgrade | Fixed effect |
-|---:|---|---|---|
-| 1 | `ACTIVITY-1` | Schedule Chaining | A citizen may travel directly from one completed out-of-home activity to the next valid activity instead of always returning home. |
-| 2 | `ACTIVITY-2` | Staggered Schedules | Citizens with repeated delay may choose an earlier or later deterministic departure band. |
-| 3 | `ACTIVITY-3` | Business Relocation | Persistently underused service or specialized businesses may relocate to a better valid site instead of only closing. |
-| 4 | `ACTIVITY-4` | Multi-Stop Plans | Citizens may form deterministic plans containing up to three out-of-home destinations before returning home. |
-| 5 | `ACTIVITY-5` | Demand Forecasting | Developers and businesses may use forecast activity demand when evaluating capacity and location. |
-| 6 | `ACTIVITY-6` | Autonomous Coordination | Schedules, destination capacity, construction timing, and service availability may coordinate through a shared forecast horizon. |
+| Rank | Contract ID  | Upgrade                 | Fixed effect                                                                                                                       |
+| ---: | ------------ | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+|    1 | `ACTIVITY-1` | Schedule Chaining       | A citizen may travel directly from one completed out-of-home activity to the next valid activity instead of always returning home. |
+|    2 | `ACTIVITY-2` | Staggered Schedules     | Citizens with repeated delay may choose an earlier or later deterministic departure band.                                          |
+|    3 | `ACTIVITY-3` | Business Relocation     | Persistently underused service or specialized businesses may relocate to a better valid site instead of only closing.              |
+|    4 | `ACTIVITY-4` | Multi-Stop Plans        | Citizens may form deterministic plans containing up to three out-of-home destinations before returning home.                       |
+|    5 | `ACTIVITY-5` | Demand Forecasting      | Developers and businesses may use forecast activity demand when evaluating capacity and location.                                  |
+|    6 | `ACTIVITY-6` | Autonomous Coordination | Schedules, destination capacity, construction timing, and service availability may coordinate through a shared forecast horizon.   |
 
 ### 9.9 Research-depth intent
 
