@@ -38,6 +38,22 @@ export {
   isDistrictSeedKindUnlocked,
 } from './balance-rules';
 export { calculateDistrictSeedInfluence, type DistrictSeedInfluenceInput } from './district-seeds';
+export {
+  CONSTRUCTION_PHASE_ORDER,
+  DEFAULT_CONSTRUCTION_PHASE_DURATIONS,
+  nextConstructionPhase,
+  validateConstructionPhaseDurations,
+} from './construction';
+export {
+  compareDevelopmentCandidates,
+  compareDevelopmentBuildingTypes,
+  DEVELOPMENT_BUILDING_TYPE_ORDER,
+  DEVELOPMENT_SCORE_PRECISION,
+  DEVELOPMENT_SCORE_WEIGHTS,
+  scoreDevelopmentCandidate,
+  type DevelopmentScoreInput,
+  type DevelopmentScoreResult,
+} from './developer';
 export { createSimulation } from './simulation';
 export type { ChunkCoordinate, GridPosition, GridRect } from '@idle-city/shared';
 export type {
@@ -53,6 +69,8 @@ export type {
   CitizenSnapshot,
   CityDemand,
   CityMetrics,
+  ConstructionPhase,
+  ConstructionProject,
   CommandRejectionReason,
   CommandResult,
   DemandCell,
@@ -62,6 +80,9 @@ export type {
   DemandRegionQuery,
   DemandRegionSnapshot,
   DemandTotals,
+  DevelopmentCandidate,
+  DevelopmentReason,
+  DevelopmentReasonCode,
   DistrictSeed,
   DistrictSeedKind,
   LegacyCityDemand,

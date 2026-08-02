@@ -4,6 +4,20 @@ export type BuildingType = 'home' | 'workplace';
 export type CitizenActivity = 'home' | 'commuting-to-work' | 'work' | 'commuting-home';
 export type DemandKind = 'living' | 'working' | 'services';
 export type DistrictSeedKind = 'living' | 'working' | 'services';
+export type ConstructionPhase = 'survey' | 'blueprint' | 'foundation' | 'frame' | 'completion';
+
+export type DevelopmentReasonCode =
+  | 'matching-seed-influence'
+  | 'local-matching-demand'
+  | 'complementary-use'
+  | 'access-improvement'
+  | 'entrance-accessibility';
+
+export interface DevelopmentReason {
+  readonly code: DevelopmentReasonCode;
+  readonly text: string;
+  readonly scoreContribution: number;
+}
 
 export interface Building {
   readonly id: string;
@@ -11,6 +25,48 @@ export interface Building {
   readonly footprint: GridRect;
   readonly entrance: GridPosition;
   readonly capacity: number;
+}
+
+/**
+ * A valid, ranked development option from the most recent fixed-cadence
+ * evaluation. Candidates are derived data; only an accepted candidate becomes
+ * an authoritative construction project.
+ */
+export interface DevelopmentCandidate {
+  readonly buildingType: BuildingType;
+  readonly anchor: GridPosition;
+  readonly footprint: GridRect;
+  readonly entrance: GridPosition;
+  readonly entranceOrder: number;
+  readonly score: number;
+  readonly primaryReason: DevelopmentReason;
+  readonly localMatchingDemand: number;
+  readonly seedInfluence: number;
+  readonly complementaryUse: number;
+  readonly entranceAccessibility: number;
+  readonly expectedAccessImprovement: number;
+  readonly sameUseSaturation: number;
+  readonly constructionCost: number;
+  /** Weighted spatial/access summary: 0.6 entrance access + 0.4 planned access improvement. */
+  readonly spatialFactor: number;
+}
+
+export interface ConstructionProject {
+  readonly id: string;
+  readonly buildingType: BuildingType;
+  readonly footprint: GridRect;
+  readonly entrance: GridPosition;
+  readonly capacity: number;
+  readonly phase: ConstructionPhase;
+  readonly phaseTicksRemaining: number;
+  readonly phaseTicksElapsed: number;
+  readonly totalTicksElapsed: number;
+  readonly startedTick: number;
+  readonly score: number;
+  readonly primaryReason: DevelopmentReason;
+  readonly seedInfluence: number;
+  readonly spatialFactor: number;
+  readonly expectedAccessImprovement: number;
 }
 
 export interface CitizenSnapshot {
@@ -125,6 +181,12 @@ export interface SimulationStructuralCounters {
   readonly pathNodesExpanded: number;
   readonly pathChunksTouched: number;
   readonly snapshotChunkSummaries: number;
+  readonly developmentEvaluations: number;
+  readonly developmentCandidatesScored: number;
+  readonly developmentFootprintsRejected: number;
+  readonly developmentEntrancesRejected: number;
+  readonly constructionProjectsStarted: number;
+  readonly constructionProjectsCompleted: number;
 }
 
 export type ActivateChunkCommand = ChunkCoordinate;
@@ -169,6 +231,15 @@ export interface SimulationConfig {
   readonly housingCapacity?: number;
   readonly workplaceCapacity?: number;
   readonly startingData?: number;
+  /** Logical ticks between deterministic developer evaluations. */
+  readonly developmentEvaluationIntervalTicks?: number;
+  /** Minimum rounded score required for a candidate to be eligible. */
+  readonly developmentMinimumScore?: number;
+  /** Maximum ranked candidates retained in ordinary detached snapshots. */
+  readonly developmentCandidateSnapshotLimit?: number;
+  readonly developmentHomeCapacity?: number;
+  readonly developmentWorkplaceCapacity?: number;
+  readonly constructionPhaseDurations?: Partial<Record<ConstructionPhase, number>>;
 }
 
 export interface SimulationSnapshot {
@@ -189,6 +260,8 @@ export interface SimulationSnapshot {
   readonly seeds: readonly DistrictSeed[];
   readonly buildings: readonly Building[];
   readonly citizens: readonly CitizenSnapshot[];
+  readonly developmentCandidates: readonly DevelopmentCandidate[];
+  readonly constructionProjects: readonly ConstructionProject[];
 }
 
 export interface Simulation {

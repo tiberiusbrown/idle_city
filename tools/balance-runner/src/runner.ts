@@ -1,4 +1,5 @@
 import {
+  CONSTRUCTION_PHASE_ORDER,
   chunkCoordinateForPosition,
   chunkKey,
   compareChunks,
@@ -30,6 +31,12 @@ export const balanceScenarioNames = [
   'extent',
   'localized-demand',
   'long-route',
+  'living-led',
+  'working-led',
+  'equal-score',
+  'obstacle-constrained',
+  'no-valid-footprint',
+  'long-run-construction',
 ] as const;
 
 export type BalanceScenarioName = (typeof balanceScenarioNames)[number];
@@ -75,7 +82,11 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     activations: [],
   },
   'capacity-pressure': {
-    config: { housingCapacity: 4, workplaceCapacity: 4 },
+    config: {
+      housingCapacity: 4,
+      workplaceCapacity: 4,
+      developmentEvaluationIntervalTicks: 100,
+    },
     commands: [],
     activations: [],
   },
@@ -90,7 +101,10 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     activations: [],
   },
   'living-seed': {
-    config: { startingData: DISTRICT_SEED_COSTS.living },
+    config: {
+      startingData: DISTRICT_SEED_COSTS.living,
+      developmentEvaluationIntervalTicks: 100,
+    },
     commands: [
       { tick: 0, command: { kind: 'living', position: { x: 3, y: 3 } } },
       { tick: 1, command: { kind: 'working', position: { x: 3, y: 3 } } },
@@ -98,7 +112,10 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     activations: [],
   },
   'working-seed': {
-    config: { startingData: DISTRICT_SEED_COSTS.working },
+    config: {
+      startingData: DISTRICT_SEED_COSTS.working,
+      developmentEvaluationIntervalTicks: 100,
+    },
     commands: [
       { tick: 0, command: { kind: 'working', position: { x: 8, y: 6 } } },
       { tick: 1, command: { kind: 'services', position: { x: 3, y: 3 } } },
@@ -150,6 +167,67 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
       pathSearchBudget: 50_000,
     },
     commands: [],
+    activations: [],
+  },
+  'living-led': {
+    config: { startingData: DISTRICT_SEED_COSTS.living, developmentEvaluationIntervalTicks: 100 },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 4, y: 4 } } }],
+    activations: [],
+  },
+  'working-led': {
+    config: { startingData: DISTRICT_SEED_COSTS.working, developmentEvaluationIntervalTicks: 100 },
+    commands: [{ tick: 0, command: { kind: 'working', position: { x: 8, y: 6 } } }],
+    activations: [],
+  },
+  'equal-score': {
+    config: {
+      startingData: DISTRICT_SEED_COSTS.living + DISTRICT_SEED_COSTS.working,
+      developmentEvaluationIntervalTicks: 100,
+    },
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 4, y: 4 } } },
+      { tick: 0, command: { kind: 'working', position: { x: 8, y: 6 } } },
+    ],
+    activations: [],
+  },
+  'obstacle-constrained': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      startingData: DISTRICT_SEED_COSTS.living,
+      developmentEvaluationIntervalTicks: 100,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 4, y: 4 } } }],
+    activations: [],
+  },
+  'no-valid-footprint': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 1, height: 1 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 3, y: 3 },
+      startingData: DISTRICT_SEED_COSTS.living,
+      developmentMinimumScore: 1,
+      developmentEvaluationIntervalTicks: 100,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 1, y: 6 } } }],
+    activations: [],
+  },
+  'long-run-construction': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      startingData: DISTRICT_SEED_COSTS.living + DISTRICT_SEED_COSTS.working,
+      developmentEvaluationIntervalTicks: 10,
+    },
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 4, y: 4 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 5, y: 4 } } },
+    ],
     activations: [],
   },
 };
@@ -219,6 +297,13 @@ export interface BalanceSummary {
   readonly snapshotChunkSummaries: number;
   readonly commandResults: readonly BalanceCommandResult[];
   readonly activationResults: readonly BalanceActivationResult[];
+  readonly buildingCount: number;
+  readonly homeCount: number;
+  readonly workplaceCount: number;
+  readonly activeConstructionProjects: number;
+  readonly constructionProjectsStarted: number;
+  readonly constructionProjectsCompleted: number;
+  readonly developmentEvaluations: number;
   readonly invariantFailures: readonly string[];
   readonly determinismHash: string;
 }
@@ -262,6 +347,7 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
 
   const buildingIds = new Set<string>();
   const occupiedCells = new Set<string>();
+  const reservedCells = new Set<string>();
   const capacityByType = new Map<'home' | 'workplace', number>([
     ['home', 0],
     ['workplace', 0],
@@ -284,6 +370,35 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     if (!active(snapshot, building.entrance)) fail(`building ${building.id} entrance is inactive`);
   }
 
+  const projectIds = new Set<string>();
+  for (const project of snapshot.constructionProjects) {
+    if (projectIds.has(project.id)) fail(`duplicate construction project id ${project.id}`);
+    projectIds.add(project.id);
+    if (!CONSTRUCTION_PHASE_ORDER.includes(project.phase)) {
+      fail(`construction project ${project.id} has invalid phase ${project.phase}`);
+    }
+    if (project.phaseTicksRemaining < 1 || project.phaseTicksElapsed < 0) {
+      fail(`construction project ${project.id} has invalid phase timing`);
+    }
+    if (!isExteriorEntrance(project.entrance, project.footprint)) {
+      fail(`construction project ${project.id} entrance is not exterior`);
+    }
+    if (!active(snapshot, project.entrance)) {
+      fail(`construction project ${project.id} entrance is inactive`);
+    }
+    for (const cell of footprintCells(project.footprint)) {
+      if (!active(snapshot, cell)) fail(`construction project ${project.id} leaves active chunks`);
+      const cellKey = `${String(cell.x)},${String(cell.y)}`;
+      if (occupiedCells.has(cellKey))
+        fail(`construction project overlaps a building at ${cellKey}`);
+      if (reservedCells.has(cellKey)) fail(`construction projects overlap at ${cellKey}`);
+      reservedCells.add(cellKey);
+    }
+    if (occupiedCells.has(`${String(project.entrance.x)},${String(project.entrance.y)}`)) {
+      fail(`construction project ${project.id} entrance is blocked`);
+    }
+  }
+
   const demandKeys = new Set<string>();
   for (const chunk of snapshot.demand.chunks) {
     demandKeys.add(chunk.key);
@@ -302,7 +417,10 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
 
   for (const citizen of snapshot.citizens) {
     if (!active(snapshot, citizen.position)) fail(`citizen ${citizen.id} is inactive`);
-    if (occupiedCells.has(`${String(citizen.position.x)},${String(citizen.position.y)}`)) {
+    if (
+      occupiedCells.has(`${String(citizen.position.x)},${String(citizen.position.y)}`) ||
+      reservedCells.has(`${String(citizen.position.x)},${String(citizen.position.y)}`)
+    ) {
       fail(`citizen ${citizen.id} occupies a building interior`);
     }
     if (!buildingIds.has(citizen.homeBuildingId)) fail(`citizen ${citizen.id} has no home`);
@@ -312,7 +430,10 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
       const position = citizen.route[index];
       if (position === undefined) continue;
       if (!active(snapshot, position)) fail(`citizen ${citizen.id} route leaves active chunks`);
-      if (occupiedCells.has(`${String(position.x)},${String(position.y)}`)) {
+      if (
+        occupiedCells.has(`${String(position.x)},${String(position.y)}`) ||
+        reservedCells.has(`${String(position.x)},${String(position.y)}`)
+      ) {
         fail(`citizen ${citizen.id} route enters a building interior`);
       }
       const previous = citizen.route[index - 1];
@@ -333,6 +454,12 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
   if (!Number.isFinite(snapshot.data) || snapshot.data < 0) fail('Data is invalid');
   if (snapshot.completedTrips < 0 || snapshot.completedActivities < 0) {
     fail('completed counters are negative');
+  }
+  if (
+    snapshot.structural.constructionProjectsCompleted + snapshot.constructionProjects.length !==
+    snapshot.structural.constructionProjectsStarted
+  ) {
+    fail('construction project counts do not reconcile');
   }
   return failures;
 }
@@ -431,6 +558,13 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     snapshotChunkSummaries: snapshot.structural.snapshotChunkSummaries,
     commandResults,
     activationResults,
+    buildingCount: snapshot.buildings.length,
+    homeCount: snapshot.buildings.filter((building) => building.type === 'home').length,
+    workplaceCount: snapshot.buildings.filter((building) => building.type === 'workplace').length,
+    activeConstructionProjects: snapshot.constructionProjects.length,
+    constructionProjectsStarted: snapshot.structural.constructionProjectsStarted,
+    constructionProjectsCompleted: snapshot.structural.constructionProjectsCompleted,
+    developmentEvaluations: snapshot.structural.developmentEvaluations,
     invariantFailures: [...invariantFailures],
     determinismHash: simulation.getDeterminismHash(),
   };

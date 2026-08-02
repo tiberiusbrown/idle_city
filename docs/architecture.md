@@ -39,6 +39,28 @@ Demand dirtying rules are explicit:
 
 Demand uses footprint distance as its spatial reference and preserves district-seed influence through a bounded Manhattan falloff. `getSnapshot()` evaluates only dirty chunks; it does not recompute all active chunks.
 
+## Deterministic developer construction
+
+Developers evaluate every configured logical cadence (20 ticks by default). Evaluation is RNG-free and runs only when the authoritative development state has changed. Candidates are enumerated in this order: `home`, then `workplace`; active chunks sorted by `(chunkY, chunkX)`; row-major anchors within each chunk; and exterior entrances in row-major order. A candidate is discarded unless its complete footprint is active and walkable, protects existing building/project entrances and citizen positions, and has a reachable entrance from existing walkable space.
+
+The pure score is rounded to six decimal places after applying these normalized weights:
+
+```text
+0.30 local matching demand
++ 0.35 matching seed influence
++ 0.10 complementary use
++ 0.10 entrance accessibility
++ 0.15 expected access improvement
+- 0.15 same-use saturation
+- 0.05 construction cost
+```
+
+Candidates are ranked by higher score, higher seed influence, better expected access improvement, lower `y`, lower `x`, stable building-type order, then stable entrance order. At most one candidate becomes a project during an evaluation. Snapshots retain a bounded ranked candidate list and the primary player-readable reason.
+
+The selected project's entire footprint is reserved at survey start by marking every occupied logical cell non-walkable. The reservation remains in place through completion, when those same cells become the completed building. Existing active routes that intersect a proposed reservation make that candidate ineligible; the home-to-work connection and the candidate entrance are also checked with the proposed cells blocked. This makes the point at which construction blocks travel explicit and prevents a project from invalidating a citizen route.
+
+Construction uses centralized fixed durations: survey 2 ticks, blueprint 3, foundation 4, frame 6, and completion 1. A project starts in survey with its full reservation, advances one phase tick per `step()`, and creates a matching `Building` only after completion ends. Project IDs are `construction-project-1`, `construction-project-2`, and so on; completed buildings continue the per-type stable sequence after the initial `home-1` and `workplace-1`. No population growth, services, demolition, conversion, redevelopment, or construction-bot behavior is included.
+
 ## Rendering projection
 
 Babylon is downstream of snapshots. Logical-to-world conversion is centralized and uses the same cell scale for positive and negative coordinates. The renderer owns one ground resource per visible active chunk, never one resource per cell and never a resource for the maximum possible world. Visible chunks can be explicitly selected or derived around the camera target. Ground resources reconcile by stable chunk key and occupancy revision; unchanged updates do not duplicate meshes. Buildings use their footprint dimensions, while citizen interpolation uses detached logical positions.
@@ -53,4 +75,4 @@ The headless balance runner reports active/allocated chunks, optional occupancy 
 
 ## Deferred systems
 
-This step intentionally does not add developer AI, construction, population growth, movement reservations, congestion costs, roads, transit, chunk removal, player-facing expansion controls, polygon footprints, or detailed voxel meshing. The next implementation should add footprint-aware deterministic developer construction and project reservations over active chunks.
+This step intentionally does not add population growth, movement reservations, congestion costs, roads, transit, chunk removal, player-facing expansion controls, polygon footprints, detailed voxel meshing, services, demolition, conversion, redevelopment, or construction bots. The next implementation should add only population growth and compatible home/work assignment over completed building capacity.

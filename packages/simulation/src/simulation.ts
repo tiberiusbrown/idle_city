@@ -8,32 +8,50 @@ import {
   adjacentChunks,
   chunkCoordinateForPosition,
   chunkKey,
+  compareChunks,
   createChunkSpatialStore,
   DEFAULT_CHUNK_SIZE,
   enumerateChunkRegion,
   validateChunkSize,
 } from './chunks';
 import { getDistrictSeedCost, isDistrictSeedKindUnlocked } from './balance-rules';
+import { nextConstructionPhase, validateConstructionPhaseDurations } from './construction';
 import { calculateDemandChunk } from './demand';
+import {
+  compareDevelopmentCandidates,
+  compareDevelopmentBuildingTypes,
+  DEVELOPMENT_BUILDING_TYPE_ORDER,
+  scoreDevelopmentCandidate,
+} from './developer';
 import { calculateDistrictSeedInfluence } from './district-seeds';
-import { buildingFootprint, footprintCells, selectExteriorEntrance } from './footprints';
+import {
+  buildingFootprint,
+  exteriorEntranceCandidates,
+  footprintCells,
+  isInsideFootprint,
+  selectExteriorEntrance,
+} from './footprints';
 import { findGridPathDetailed } from './pathfinding';
 import { SeededRandom } from './random';
 import type {
   ActivateChunkCommand,
   ActiveChunkSnapshot,
   Building,
+  BuildingType,
   ChunkActivationResult,
   ChunkRegion,
   CitizenActivity,
   CitizenSnapshot,
   CityMetrics,
+  ConstructionPhase,
+  ConstructionProject,
   CommandResult,
   DemandCell,
   DemandChunkSnapshot,
   DemandRegionQuery,
   DemandRegionSnapshot,
   DemandTotals,
+  DevelopmentCandidate,
   DistrictSeed,
   DistrictSeedKind,
   PlaceDistrictSeedCommand,
@@ -65,6 +83,24 @@ interface DemandChunkState {
   dirty: boolean;
 }
 
+interface ConstructionProjectState {
+  readonly id: string;
+  readonly buildingType: BuildingType;
+  readonly footprint: Building['footprint'];
+  readonly entrance: GridPosition;
+  readonly capacity: number;
+  phase: ConstructionPhase;
+  phaseTicksRemaining: number;
+  phaseTicksElapsed: number;
+  totalTicksElapsed: number;
+  readonly startedTick: number;
+  readonly score: number;
+  readonly primaryReason: ConstructionProject['primaryReason'];
+  readonly seedInfluence: number;
+  readonly spatialFactor: number;
+  readonly expectedAccessImprovement: number;
+}
+
 const defaults = {
   chunkSize: DEFAULT_CHUNK_SIZE,
   initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 } as const,
@@ -74,6 +110,11 @@ const defaults = {
   citizenCount: 10,
   activityDurationTicks: 3,
   startingData: 0,
+  developmentEvaluationIntervalTicks: 20,
+  developmentMinimumScore: 0.2,
+  developmentCandidateSnapshotLimit: 64,
+  developmentHomeCapacity: 4,
+  developmentWorkplaceCapacity: 6,
 } as const;
 
 const zeroTotals = (): DemandTotals => ({ living: 0, working: 0, services: 0 });
@@ -131,6 +172,41 @@ function copyChunk(chunk: ChunkCoordinate): ChunkCoordinate {
 function copyTotals(totals: DemandTotals): DemandTotals {
   return { living: totals.living, working: totals.working, services: totals.services };
 }
+
+function coordinateKey(position: GridPosition): string {
+  return `${String(position.x)},${String(position.y)}`;
+}
+
+function comparePositions(left: GridPosition, right: GridPosition): number {
+  return left.y === right.y ? left.x - right.x : left.y - right.y;
+}
+
+function distanceToRect(position: GridPosition, rect: Building['footprint']): number {
+  const dx =
+    position.x < rect.x
+      ? rect.x - position.x
+      : position.x >= rect.x + rect.width
+        ? position.x - (rect.x + rect.width - 1)
+        : 0;
+  const dy =
+    position.y < rect.y
+      ? rect.y - position.y
+      : position.y >= rect.y + rect.height
+        ? position.y - (rect.y + rect.height - 1)
+        : 0;
+  return dx + dy;
+}
+
+function normalizedDistance(distance: number, maximum: number): number {
+  return clampUnit(1 - distance / Math.max(1, maximum));
+}
+
+const developmentDirections: readonly GridPosition[] = [
+  { x: 1, y: 0 },
+  { x: 0, y: 1 },
+  { x: -1, y: 0 },
+  { x: 0, y: -1 },
+];
 
 function resolveRegion(config: SimulationConfig): ChunkRegion {
   const region =
@@ -211,6 +287,34 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const startingData = roundData(
     nonNegativeNumber('startingData', config.startingData ?? defaults.startingData),
   );
+  const developmentEvaluationIntervalTicks = positiveInteger(
+    'developmentEvaluationIntervalTicks',
+    config.developmentEvaluationIntervalTicks ?? defaults.developmentEvaluationIntervalTicks,
+  );
+  const developmentMinimumScore = nonNegativeNumber(
+    'developmentMinimumScore',
+    config.developmentMinimumScore ?? defaults.developmentMinimumScore,
+  );
+  if (developmentMinimumScore > 1) {
+    throw new Error(
+      `developmentMinimumScore must be at most 1; received ${String(developmentMinimumScore)}.`,
+    );
+  }
+  const developmentCandidateSnapshotLimit = positiveInteger(
+    'developmentCandidateSnapshotLimit',
+    config.developmentCandidateSnapshotLimit ?? defaults.developmentCandidateSnapshotLimit,
+  );
+  const developmentHomeCapacity = positiveInteger(
+    'developmentHomeCapacity',
+    config.developmentHomeCapacity ?? defaults.developmentHomeCapacity,
+  );
+  const developmentWorkplaceCapacity = positiveInteger(
+    'developmentWorkplaceCapacity',
+    config.developmentWorkplaceCapacity ?? defaults.developmentWorkplaceCapacity,
+  );
+  const constructionPhaseDurations = validateConstructionPhaseDurations(
+    config.constructionPhaseDurations,
+  );
   const random = new SeededRandom(seed);
   const initialMinX = region.minX * chunkSize;
   const initialMinY = region.minY * chunkSize;
@@ -289,6 +393,21 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   let data = startingData;
   let dataGeneratedThisTick = 0;
   const seeds: DistrictSeed[] = [];
+  const constructionProjects: ConstructionProjectState[] = [];
+  let nextConstructionProjectId = 1;
+  const nextBuildingSequence: Record<BuildingType, number> = {
+    home: 2,
+    workplace: 2,
+  };
+  let lastDevelopmentCandidates: DevelopmentCandidate[] = [];
+  let developmentEvaluations = 0;
+  let developmentCandidatesScored = 0;
+  let developmentFootprintsRejected = 0;
+  let developmentEntrancesRejected = 0;
+  let constructionProjectsStarted = 0;
+  let constructionProjectsCompleted = 0;
+  let developmentStateVersion = 0;
+  let lastEvaluatedDevelopmentStateVersion = -1;
   let nextSeedId = 1;
   let demandChunksDirtied = 0;
   let demandChunksEvaluated = 0;
@@ -542,6 +661,376 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     if (citizen.route.length === 1) completeTrip(citizen, destinationId);
   };
 
+  const demandValueAt = (position: GridPosition, buildingType: BuildingType): number => {
+    const chunk = chunkCoordinateForPosition(position, chunkSize);
+    const state = evaluateDemandChunk(chunk);
+    const local = {
+      x: position.x - chunk.x * chunkSize,
+      y: position.y - chunk.y * chunkSize,
+    };
+    const cell = cellFromState(state, local.y * chunkSize + local.x);
+    return buildingType === 'home' ? cell.living : cell.working;
+  };
+
+  const matchingSeedInfluenceAt = (position: GridPosition, buildingType: BuildingType): number =>
+    calculateDistrictSeedInfluence({
+      seeds,
+      position,
+      kind: buildingType === 'home' ? 'living' : 'working',
+      radius: demandInfluenceRadius,
+    });
+
+  const reachableDistances = (): Map<string, number> => {
+    const distances = new Map<string, number>();
+    const queue: GridPosition[] = [];
+    const starts = [...buildings]
+      .sort(
+        (left, right) =>
+          comparePositions(left.entrance, right.entrance) ||
+          compareDevelopmentBuildingTypes(left.type, right.type) ||
+          (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+      )
+      .map((building) => building.entrance);
+    for (const start of starts) {
+      const startKey = coordinateKey(start);
+      if (!spatial.isPositionActive(start) || !spatial.isWalkable(start)) continue;
+      if (distances.has(startKey)) continue;
+      distances.set(startKey, 0);
+      queue.push(copyPosition(start));
+    }
+    let queueIndex = 0;
+    while (queueIndex < queue.length) {
+      const current = queue[queueIndex];
+      queueIndex += 1;
+      if (current === undefined) continue;
+      const currentDistance = distances.get(coordinateKey(current));
+      if (currentDistance === undefined) continue;
+      for (const direction of developmentDirections) {
+        const next = { x: current.x + direction.x, y: current.y + direction.y };
+        if (!Number.isSafeInteger(next.x) || !Number.isSafeInteger(next.y)) continue;
+        const nextKey = coordinateKey(next);
+        if (distances.has(nextKey) || !spatial.isWalkable(next)) continue;
+        distances.set(nextKey, currentDistance + 1);
+        queue.push(next);
+      }
+    }
+    return distances;
+  };
+
+  const occupancyByBuilding = (): Map<string, number> => {
+    const occupancy = new Map<string, number>();
+    for (const citizen of citizens) {
+      occupancy.set(citizen.homeBuildingId, (occupancy.get(citizen.homeBuildingId) ?? 0) + 1);
+      occupancy.set(
+        citizen.workplaceBuildingId,
+        (occupancy.get(citizen.workplaceBuildingId) ?? 0) + 1,
+      );
+    }
+    return occupancy;
+  };
+
+  const localSameUseSaturation = (
+    position: GridPosition,
+    buildingType: BuildingType,
+    occupancy: ReadonlyMap<string, number>,
+  ): number => {
+    let weightedSaturation = 0;
+    let totalWeight = 0;
+    for (const building of buildings) {
+      if (building.type !== buildingType) continue;
+      const weight = normalizedDistance(
+        distanceToRect(position, building.footprint),
+        demandInfluenceRadius,
+      );
+      const saturation =
+        building.capacity === 0
+          ? occupancy.get(building.id) === 0
+            ? 0
+            : 1
+          : clampUnit((occupancy.get(building.id) ?? 0) / building.capacity);
+      weightedSaturation += weight * saturation;
+      totalWeight += weight;
+    }
+    return totalWeight === 0 ? 0 : clampUnit(weightedSaturation / totalWeight);
+  };
+
+  const complementaryUseFactor = (position: GridPosition, buildingType: BuildingType): number => {
+    const opposite = buildingType === 'home' ? 'workplace' : 'home';
+    let factor = 0;
+    for (const building of buildings) {
+      if (building.type !== opposite) continue;
+      factor = Math.max(
+        factor,
+        normalizedDistance(distanceToRect(position, building.footprint), demandInfluenceRadius),
+      );
+    }
+    return factor;
+  };
+
+  const expectedAccessImprovement = (
+    entrance: GridPosition,
+    buildingType: BuildingType,
+  ): number => {
+    const opposite = buildingType === 'home' ? 'workplace' : 'home';
+    let factor = 0;
+    for (const building of buildings) {
+      if (building.type !== opposite) continue;
+      factor = Math.max(
+        factor,
+        normalizedDistance(manhattanDistance(entrance, building.entrance), demandInfluenceRadius),
+      );
+    }
+    return factor;
+  };
+
+  const pathExistsWithBlockedCells = (
+    start: GridPosition,
+    goal: GridPosition,
+    blocked: ReadonlySet<string>,
+  ): boolean => {
+    if (blocked.has(coordinateKey(start)) || blocked.has(coordinateKey(goal))) return false;
+    if (!spatial.isWalkable(start) || !spatial.isWalkable(goal)) return false;
+    const result = findGridPathDetailed(
+      {
+        chunkSize,
+        activeChunks: spatial.getActiveChunks(),
+        isWalkable: (position) =>
+          spatial.isWalkable(position) && !blocked.has(coordinateKey(position)),
+        maxNodes: pathSearchBudget,
+      },
+      start,
+      goal,
+    );
+    pathNodesExpanded += result.nodesExpanded;
+    pathChunksTouched += result.chunksTouched;
+    return result.status === 'found';
+  };
+
+  const canReserveCandidate = (candidate: DevelopmentCandidate): boolean => {
+    const footprint = footprintCells(candidate.footprint);
+    const blocked = new Set(footprint.map(coordinateKey));
+    const existingEntrances = buildings.map((building) => building.entrance).sort(comparePositions);
+    if (
+      !existingEntrances.some((entrance) =>
+        pathExistsWithBlockedCells(entrance, candidate.entrance, blocked),
+      )
+    ) {
+      return false;
+    }
+    const home = buildings.find((building) => building.type === 'home');
+    const workplace = buildings.find((building) => building.type === 'workplace');
+    if (home === undefined || workplace === undefined) return false;
+    if (!pathExistsWithBlockedCells(home.entrance, workplace.entrance, blocked)) return false;
+    for (const citizen of citizens) {
+      if (blocked.has(coordinateKey(citizen.position))) return false;
+      if (citizen.route.some((position) => blocked.has(coordinateKey(position)))) return false;
+      if (citizen.activity === 'commuting-to-work') {
+        if (!pathExistsWithBlockedCells(citizen.position, workplace.entrance, blocked))
+          return false;
+      } else if (citizen.activity === 'commuting-home') {
+        if (!pathExistsWithBlockedCells(citizen.position, home.entrance, blocked)) return false;
+      }
+    }
+    return true;
+  };
+
+  const capacityForDevelopment = (buildingType: BuildingType): number =>
+    buildingType === 'home' ? developmentHomeCapacity : developmentWorkplaceCapacity;
+
+  const startConstruction = (candidate: DevelopmentCandidate): void => {
+    if (!canReserveCandidate(candidate)) return;
+    const footprint = footprintCells(candidate.footprint);
+    spatial.blockMany(footprint);
+    const project: ConstructionProjectState = {
+      id: `construction-project-${String(nextConstructionProjectId)}`,
+      buildingType: candidate.buildingType,
+      footprint: { ...candidate.footprint },
+      entrance: copyPosition(candidate.entrance),
+      capacity: capacityForDevelopment(candidate.buildingType),
+      phase: 'survey',
+      phaseTicksRemaining: constructionPhaseDurations.survey,
+      phaseTicksElapsed: 0,
+      totalTicksElapsed: 0,
+      startedTick: tick,
+      score: candidate.score,
+      primaryReason: { ...candidate.primaryReason },
+      seedInfluence: candidate.seedInfluence,
+      spatialFactor: candidate.spatialFactor,
+      expectedAccessImprovement: candidate.expectedAccessImprovement,
+    };
+    constructionProjects.push(project);
+    nextConstructionProjectId += 1;
+    constructionProjectsStarted += 1;
+    developmentStateVersion += 1;
+  };
+
+  const completeConstructionProject = (project: ConstructionProjectState): void => {
+    for (const cell of footprintCells(project.footprint)) {
+      if (!spatial.isPositionActive(cell)) {
+        throw new Error(`Construction project ${project.id} leaves active space.`);
+      }
+    }
+    const sequence = nextBuildingSequence[project.buildingType];
+    const building: Building = {
+      id: `${project.buildingType}-${String(sequence)}`,
+      type: project.buildingType,
+      footprint: { ...project.footprint },
+      entrance: copyPosition(project.entrance),
+      capacity: project.capacity,
+    };
+    if (buildingsById.has(building.id))
+      throw new Error(`Duplicate constructed building ${building.id}.`);
+    buildings.push(building);
+    buildingsById.set(building.id, building);
+    nextBuildingSequence[project.buildingType] = sequence + 1;
+    constructionProjectsCompleted += 1;
+    developmentStateVersion += 1;
+    markAllDemandChunksDirty();
+  };
+
+  const advanceConstructionProjects = (): void => {
+    for (let index = constructionProjects.length - 1; index >= 0; index -= 1) {
+      const project = constructionProjects[index];
+      if (project === undefined) continue;
+      project.phaseTicksRemaining -= 1;
+      project.phaseTicksElapsed += 1;
+      project.totalTicksElapsed += 1;
+      if (project.phaseTicksRemaining > 0) continue;
+      const nextPhase = nextConstructionPhase(project.phase);
+      if (nextPhase === undefined) {
+        completeConstructionProject(project);
+        constructionProjects.splice(index, 1);
+        continue;
+      }
+      project.phase = nextPhase;
+      project.phaseTicksRemaining = constructionPhaseDurations[nextPhase];
+      project.phaseTicksElapsed = 0;
+    }
+  };
+
+  const evaluateDevelopers = (): void => {
+    developmentEvaluations += 1;
+    if (constructionProjects.length > 0) {
+      lastDevelopmentCandidates = [];
+      return;
+    }
+    if (lastEvaluatedDevelopmentStateVersion === developmentStateVersion) return;
+    // A full seedless city has no unmet development signal. Avoid scanning
+    // every active anchor in that steady state; seeded demand and capacity
+    // pressure still enter the full deterministic evaluation below.
+    if (seeds.length === 0 && calculateMetrics().metrics.space >= 1) {
+      lastDevelopmentCandidates = [];
+      lastEvaluatedDevelopmentStateVersion = developmentStateVersion;
+      return;
+    }
+
+    const distances = reachableDistances();
+    const occupancy = occupancyByBuilding();
+    const ranked: DevelopmentCandidate[] = [];
+    const activeChunks = spatial.getActiveChunks().sort(compareChunks);
+    const protectedEntrances = [
+      ...buildings.map((building) => building.entrance),
+      ...constructionProjects.map((project) => project.entrance),
+    ];
+    const protectedPositions = citizens.map((citizen) => citizen.position);
+    for (const buildingType of DEVELOPMENT_BUILDING_TYPE_ORDER) {
+      for (const chunk of activeChunks) {
+        const origin = {
+          x: chunk.x * chunkSize,
+          y: chunk.y * chunkSize,
+        };
+        for (let localY = 0; localY < chunkSize; localY += 1) {
+          for (let localX = 0; localX < chunkSize; localX += 1) {
+            const anchor = { x: origin.x + localX, y: origin.y + localY };
+            const footprint = buildingFootprint(anchor, buildingType);
+            const cells = footprintCells(footprint);
+            if (
+              cells.some((cell) => !spatial.isPositionActive(cell) || !spatial.isWalkable(cell)) ||
+              protectedEntrances.some((entrance) => isInsideFootprint(entrance, footprint)) ||
+              protectedPositions.some((position) => isInsideFootprint(position, footprint))
+            ) {
+              developmentFootprintsRejected += 1;
+              continue;
+            }
+            const localMatchingDemand = demandValueAt(anchor, buildingType);
+            const seedInfluence = matchingSeedInfluenceAt(anchor, buildingType);
+            const complementaryUse = complementaryUseFactor(anchor, buildingType);
+            const sameUseSaturation = localSameUseSaturation(anchor, buildingType, occupancy);
+            const constructionCost = (footprint.width * footprint.height) / 25;
+            const entrances = exteriorEntranceCandidates(footprint);
+            for (const [entranceOrder, entrance] of entrances.entries()) {
+              if (
+                !spatial.isPositionActive(entrance) ||
+                !spatial.isWalkable(entrance) ||
+                distances.get(coordinateKey(entrance)) === undefined
+              ) {
+                developmentEntrancesRejected += 1;
+                continue;
+              }
+              const entranceDistance = distances.get(coordinateKey(entrance));
+              if (entranceDistance === undefined) {
+                developmentEntrancesRejected += 1;
+                continue;
+              }
+              const entranceAccessibility = normalizedDistance(
+                entranceDistance,
+                demandInfluenceRadius * 2,
+              );
+              const accessImprovement = expectedAccessImprovement(entrance, buildingType);
+              const score = scoreDevelopmentCandidate({
+                buildingType,
+                localMatchingDemand,
+                seedInfluence,
+                complementaryUse,
+                entranceAccessibility,
+                expectedAccessImprovement: accessImprovement,
+                sameUseSaturation,
+                constructionCost,
+              });
+              developmentCandidatesScored += 1;
+              if (score.score < developmentMinimumScore) continue;
+              const candidate: DevelopmentCandidate = {
+                buildingType,
+                anchor: copyPosition(anchor),
+                footprint: { ...footprint },
+                entrance: copyPosition(entrance),
+                entranceOrder,
+                score: score.score,
+                primaryReason: { ...score.primaryReason },
+                localMatchingDemand: roundData(localMatchingDemand),
+                seedInfluence: roundData(seedInfluence),
+                complementaryUse: roundData(complementaryUse),
+                entranceAccessibility: roundData(entranceAccessibility),
+                expectedAccessImprovement: roundData(accessImprovement),
+                sameUseSaturation: roundData(sameUseSaturation),
+                constructionCost: roundData(constructionCost),
+                spatialFactor: score.spatialFactor,
+              };
+              ranked.push(candidate);
+              ranked.sort(compareDevelopmentCandidates);
+              if (ranked.length > developmentCandidateSnapshotLimit) ranked.pop();
+            }
+          }
+        }
+      }
+    }
+    ranked.sort(compareDevelopmentCandidates);
+    lastDevelopmentCandidates = ranked.map((candidate) => ({
+      ...candidate,
+      anchor: copyPosition(candidate.anchor),
+      footprint: { ...candidate.footprint },
+      entrance: copyPosition(candidate.entrance),
+      primaryReason: { ...candidate.primaryReason },
+    }));
+    for (const candidate of ranked) {
+      if (constructionProjects.length > 0) break;
+      const before = constructionProjectsStarted;
+      startConstruction(candidate);
+      if (constructionProjectsStarted !== before) break;
+    }
+    lastEvaluatedDevelopmentStateVersion = developmentStateVersion;
+  };
+
   const advanceCitizen = (citizen: CitizenState): void => {
     citizen.previousPosition = copyPosition(citizen.position);
     if (citizen.activity === 'home' || citizen.activity === 'work') {
@@ -639,6 +1128,12 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       pathNodesExpanded,
       pathChunksTouched,
       snapshotChunkSummaries: demand.activeChunks.length,
+      developmentEvaluations,
+      developmentCandidatesScored,
+      developmentFootprintsRejected,
+      developmentEntrancesRejected,
+      constructionProjectsStarted,
+      constructionProjectsCompleted,
     };
     return {
       chunkSize,
@@ -682,6 +1177,30 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         route: citizen.route.map(copyPosition),
         routeIndex: citizen.routeIndex,
       })),
+      developmentCandidates: lastDevelopmentCandidates.map((candidate) => ({
+        ...candidate,
+        anchor: copyPosition(candidate.anchor),
+        footprint: { ...candidate.footprint },
+        entrance: copyPosition(candidate.entrance),
+        primaryReason: { ...candidate.primaryReason },
+      })),
+      constructionProjects: constructionProjects.map((project): ConstructionProject => ({
+        id: project.id,
+        buildingType: project.buildingType,
+        footprint: { ...project.footprint },
+        entrance: copyPosition(project.entrance),
+        capacity: project.capacity,
+        phase: project.phase,
+        phaseTicksRemaining: project.phaseTicksRemaining,
+        phaseTicksElapsed: project.phaseTicksElapsed,
+        totalTicksElapsed: project.totalTicksElapsed,
+        startedTick: project.startedTick,
+        score: project.score,
+        primaryReason: { ...project.primaryReason },
+        seedInfluence: project.seedInfluence,
+        spatialFactor: project.spatialFactor,
+        expectedAccessImprovement: project.expectedAccessImprovement,
+      })),
     };
   };
 
@@ -691,8 +1210,12 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       const activitiesBefore = completedActivities;
       tick += 1;
       for (const citizen of citizens) advanceCitizen(citizen);
+      advanceConstructionProjects();
       const metricsAfter = calculateMetrics().metrics;
-      if (!sameMetrics(metricsBefore, metricsAfter)) markAllDemandChunksDirty();
+      if (!sameMetrics(metricsBefore, metricsAfter)) {
+        markAllDemandChunksDirty();
+        developmentStateVersion += 1;
+      }
       const activitiesCompletedThisTick = completedActivities - activitiesBefore;
       dataGeneratedThisTick = 0;
       if (activitiesCompletedThisTick > 0) {
@@ -701,6 +1224,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         );
         data = roundData(data + dataGeneratedThisTick);
       }
+      if (tick % developmentEvaluationIntervalTicks === 0) evaluateDevelopers();
     },
     placeDistrictSeed(command: PlaceDistrictSeedCommand): CommandResult {
       const requestedPosition = command.position;
@@ -733,6 +1257,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       seeds.push(districtSeed);
       nextSeedId += 1;
       data = roundData(data - cost);
+      developmentStateVersion += 1;
       markDemandAroundPosition(requestedPosition);
       return {
         accepted: true,
@@ -755,6 +1280,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         return { accepted: false, reason: 'active-chunk-limit' };
       }
       spatial.activate(requested);
+      developmentStateVersion += 1;
       markDemandForActivation(requested);
       return {
         accepted: true,
