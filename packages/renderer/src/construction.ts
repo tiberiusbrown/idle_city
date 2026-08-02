@@ -53,6 +53,11 @@ function setBoxDimensions(
   mesh.position.y = height / 2;
 }
 
+function laborRatio(project: ConstructionProject): number {
+  if (project.phaseLaborRequired <= 0) return 0;
+  return Math.max(0, Math.min(1, project.phaseLaborCompleted / project.phaseLaborRequired));
+}
+
 export function createConstructionLayer(
   scene: Scene,
   cellWorldScale: number,
@@ -83,14 +88,23 @@ export function createConstructionLayer(
     visual.root.position = footprintToWorldCenter(project.footprint, cellWorldScale);
     const size = footprintToWorldSize(project.footprint, cellWorldScale);
     const finalHeight = buildingVisualHeight(project.buildingType);
+    const ratio = laborRatio(project);
     for (const phase of CONSTRUCTION_PHASE_ORDER) {
       const mesh = visual.phaseMeshes[phase];
       const height =
-        phase === 'blueprint' || phase === 'frame' || phase === 'completion'
-          ? finalHeight
-          : phaseHeights[phase];
+        phase === 'foundation'
+          ? phaseHeights.foundation + (finalHeight * 0.35 - phaseHeights.foundation) * ratio
+          : phase === 'frame'
+            ? finalHeight * (0.35 + 0.65 * ratio)
+            : phase === 'completion'
+              ? finalHeight * (0.75 + 0.25 * ratio)
+              : phase === 'blueprint'
+                ? Math.max(0.08, finalHeight * ratio)
+                : phaseHeights[phase];
       setBoxDimensions(mesh, size.width, height, size.depth);
       mesh.isVisible = phase === project.phase;
+      if (phase === project.phase && project.paused) mesh.material = materials.constructionPaused;
+      else mesh.material = phaseMaterial(phase, materials);
     }
   };
 

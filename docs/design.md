@@ -204,7 +204,7 @@ simulation does not rerun every citizen route for every candidate; after a
 project is accepted it replans only citizens whose stored future route
 intersects the newly reserved footprint.
 
-### 4.7 Construction — Implemented
+### 4.7 Citizen construction labor — Implemented Step 9.6
 
 Projects reserve their complete footprint and progress through:
 
@@ -214,7 +214,38 @@ Projects reserve their complete footprint and progress through:
 4. Frame
 5. Completion
 
-Default phase durations are:
+Construction is performed by existing citizens. Each project stores exactly
+three distinct staging cells outside its footprint. The selected entrance is
+first; remaining staging cells are ordered by shortest perimeter distance from
+the entrance, then `y`, then `x`. Project staging cells are marked as ROW in
+the same authoritative transition that starts the project.
+
+The labor contract is:
+
+| Phase      | Labor required | Maximum workers |
+| ---------- | -------------: | --------------: |
+| Survey     |              2 |               1 |
+| Blueprint  |              3 |               1 |
+| Foundation |              8 |               2 |
+| Frame      |             18 |               3 |
+| Completion |              2 |               2 |
+
+One constructing citizen contributes one labor unit per logical tick. Labor
+is aggregated after movement arrival resolution, does not carry into the
+next phase, and advances at most one phase per tick. A project with no
+constructing workers pauses without labor progress.
+
+Citizens are recruited only at a completed home or work activity boundary.
+In-progress activities and commutes are never interrupted. Recruitment saves
+the ordinary next destination, enters an explicit construction commute, and
+then enters `constructing` at the assigned staging cell. Assignment order is
+project ID, shortest reachable route, staging-cell index, then citizen ID.
+Workers are retained through a phase transition up to the next phase cap in
+stable citizen-ID order; excess and final workers resume their saved ordinary
+destination. Construction labor generates no Data, while home/work capacity
+occupancy remains attached to every citizen.
+
+Default full-staff target durations are:
 
 | Phase      | Logical ticks |
 | ---------- | ------------: |
@@ -224,7 +255,11 @@ Default phase durations are:
 | Frame      |             6 |
 | Completion |             1 |
 
-Total default construction duration is 16 logical ticks.
+The full-staff target is 16 logical ticks (`2 + 3 + 4 + 6 + 1`). These are
+target durations rather than unconditional timers: the former duration
+configuration now represents the duration at the phase's maximum staffing.
+Understaffed phases take longer, and labor-starved phases can remain paused
+indefinitely.
 
 Future visual sub-stages may exist inside renderer animation, but they must not create additional authoritative construction phases unless this contract is revised.
 

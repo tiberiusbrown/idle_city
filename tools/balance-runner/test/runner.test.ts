@@ -256,4 +256,47 @@ describe('balance runner', () => {
     ).toBeGreaterThan(0);
     expect(summaries.get('step9-dense-movement')?.movement.proposals).toBeGreaterThan(0);
   }, 30_000);
+
+  it('covers Step 9.6 labor, staging, pause, commute, and renderer-scale scenarios', () => {
+    const scenarios = [
+      'one-worker-slow-build',
+      'full-staff-build',
+      'workers-competing-one-corridor',
+      'staging-cell-queue',
+      'worker-blocked-replans',
+      'no-eligible-workers',
+      'phase-cap-decrease',
+      'construction-dense-commute',
+      'off-screen-construction',
+      'repeated-deterministic-construction',
+    ] as const;
+    const summaries = new Map<(typeof scenarios)[number], ReturnType<typeof runBalance>>();
+    for (const scenario of scenarios) {
+      const ticks = scenario === 'phase-cap-decrease' ? 180 : 120;
+      const first = runBalance({ seed: 2026, ticks, scenario });
+      const second = runBalance({ seed: 2026, ticks, scenario });
+      summaries.set(scenario, first);
+      expect(first).toEqual(second);
+      expect(first.invariantFailures).toEqual([]);
+      expect(first.determinismHash).toMatch(/^[0-9a-f]{8}$/);
+    }
+    expect(summaries.get('one-worker-slow-build')?.construction.laborUnits).toBeGreaterThan(0);
+    expect(summaries.get('full-staff-build')?.construction.workerArrivals).toBeGreaterThan(0);
+    expect(
+      summaries.get('workers-competing-one-corridor')?.movement.replansAttempted,
+    ).toBeGreaterThan(0);
+    expect(summaries.get('staging-cell-queue')?.construction.assignmentsAccepted).toBeGreaterThan(
+      0,
+    );
+    expect(summaries.get('worker-blocked-replans')?.movement.replansSucceeded).toBeGreaterThan(0);
+    expect(summaries.get('no-eligible-workers')?.construction.laborUnits).toBe(0);
+    expect(summaries.get('no-eligible-workers')?.construction.pausedProjectTicks).toBeGreaterThan(
+      0,
+    );
+    expect(summaries.get('phase-cap-decrease')?.construction.workerReleases).toBeGreaterThan(0);
+    expect(
+      summaries.get('construction-dense-commute')?.construction.constructionCommutes,
+    ).toBeGreaterThan(0);
+    expect(summaries.get('off-screen-construction')?.construction.laborUnits).toBeGreaterThan(0);
+  }, 30_000);
 });

@@ -9,12 +9,14 @@ export interface CityMaterials {
   readonly workplace: PBRMaterial;
   readonly window: PBRMaterial;
   readonly citizen: PBRMaterial;
+  readonly constructionCitizen: PBRMaterial;
   readonly citizenAccent: PBRMaterial;
   readonly constructionSurvey: PBRMaterial;
   readonly constructionBlueprint: PBRMaterial;
   readonly constructionFoundation: PBRMaterial;
   readonly constructionFrame: PBRMaterial;
   readonly constructionCompletion: PBRMaterial;
+  readonly constructionPaused: PBRMaterial;
   readonly seedLiving: PBRMaterial;
   readonly seedWorking: PBRMaterial;
   readonly seedServices: PBRMaterial;
@@ -59,6 +61,12 @@ export function createCityMaterials(scene: Scene): CityMaterials {
     workplace: createMaterial(scene, 'workplace-material', working, 0.12),
     window: createMaterial(scene, 'window-material', cyan, 0.7),
     citizen: createMaterial(scene, 'citizen-material', new Color3(0.98, 0.65, 0.27), 0.18),
+    constructionCitizen: createMaterial(
+      scene,
+      'construction-citizen-material',
+      new Color3(0.98, 0.42, 0.2),
+      0.35,
+    ),
     citizenAccent: createMaterial(scene, 'citizen-accent', cyan, 0.3),
     constructionSurvey: createMaterial(scene, 'construction-survey-material', cyan, 0.35, 0.32),
     constructionBlueprint: createMaterial(scene, 'construction-blueprint-material', cyan, 0.5, 0.5),
@@ -82,6 +90,13 @@ export function createCityMaterials(scene: Scene): CityMaterials {
       new Color3(0.4, 0.92, 0.72),
       0.5,
       0.62,
+    ),
+    constructionPaused: createMaterial(
+      scene,
+      'construction-paused-material',
+      new Color3(0.95, 0.82, 0.28),
+      0.4,
+      0.72,
     ),
     seedLiving: createMaterial(scene, 'seed-living-material', living, 0.45),
     seedWorking: createMaterial(scene, 'seed-working-material', working, 0.45),

@@ -279,6 +279,95 @@ describe('visible chunk city scene', () => {
     engine.dispose();
   });
 
+  it('renders labor progress, paused construction, and distinct construction citizens', () => {
+    const engine = new NullEngine();
+    const simulation = createSimulation({
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      citizenCount: 3,
+      housingCapacity: 3,
+      workplaceCapacity: 3,
+      populationCap: 3,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: 10,
+    });
+    expect(
+      simulation.placeDistrictSeed({ kind: 'living', position: { x: 5, y: 1 } }).accepted,
+    ).toBe(true);
+    for (let tick = 0; tick < 20; tick += 1) {
+      simulation.step();
+      if (simulation.getSnapshot().constructionProjects.length > 0) break;
+    }
+    const projectSnapshot = simulation.getSnapshot();
+    const project = projectSnapshot.constructionProjects[0];
+    if (project === undefined) throw new Error('The fixture requires a construction project.');
+    const city = createCityScene(engine, projectSnapshot, {
+      visibleChunks: projectSnapshot.activeChunks.map(({ chunk }) => chunk),
+    });
+    const paused = replaceSnapshot(projectSnapshot, {
+      constructionProjects: [
+        {
+          ...project,
+          phase: 'foundation',
+          phaseLaborCompleted: 0,
+          phaseLaborRequired: 8,
+          paused: true,
+        },
+      ],
+    });
+    city.update(paused, 1);
+    const foundation = city.scene.getMeshByName(`${project.id}-foundation`);
+    if (foundation === null) throw new Error('The foundation visual is required.');
+    const pausedHeight = foundation.scaling.y;
+    expect(foundation.material?.name).toBe('construction-paused-material');
+    const progress = replaceSnapshot(paused, {
+      constructionProjects: [
+        {
+          ...project,
+          phase: 'foundation',
+          phaseLaborCompleted: 4,
+          phaseLaborRequired: 8,
+          paused: false,
+        },
+      ],
+    });
+    city.update(progress, 1);
+    expect(foundation.scaling.y).toBeGreaterThan(pausedHeight);
+    expect(foundation.material?.name).toBe('construction-foundation-material');
+
+    const citizen = projectSnapshot.citizens[0];
+    const stagingCell = project.stagingCells[0];
+    if (citizen === undefined || stagingCell === undefined) {
+      throw new Error('The fixture requires a citizen and staging cell.');
+    }
+    const constructionCitizen = {
+      ...citizen,
+      position: { ...stagingCell },
+      previousPosition: { ...stagingCell },
+      activity: 'constructing' as const,
+      route: [{ ...stagingCell }],
+      routeIndex: 0,
+      constructionProjectId: project.id,
+      constructionStagingCell: { ...stagingCell },
+      resumeDestinationBuildingId: citizen.workplaceBuildingId,
+    };
+    const constructionSnapshot = replaceSnapshot(progress, {
+      citizens: [constructionCitizen, ...projectSnapshot.citizens.slice(1)],
+    });
+    city.update(constructionSnapshot, 1);
+    expect(city.scene.getMeshByName(`${constructionCitizen.id}-body`)?.material?.name).toBe(
+      'construction-citizen-material',
+    );
+    const meshCount = city.scene.meshes.length;
+    city.update(constructionSnapshot, 1);
+    expect(city.scene.meshes.length).toBe(meshCount);
+    city.dispose();
+    engine.dispose();
+  });
+
   it('keeps shared entities stable on repeated updates and sizes buildings by footprint', () => {
     const engine = new NullEngine();
     const initial = createSimulation({ citizenCount: 1 }).getSnapshot();

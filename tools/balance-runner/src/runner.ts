@@ -68,6 +68,16 @@ export const balanceScenarioNames = [
   'development-supersession',
   'long-incremental-development',
   'step9-dense-movement',
+  'one-worker-slow-build',
+  'full-staff-build',
+  'workers-competing-one-corridor',
+  'staging-cell-queue',
+  'worker-blocked-replans',
+  'no-eligible-workers',
+  'phase-cap-decrease',
+  'construction-dense-commute',
+  'off-screen-construction',
+  'repeated-deterministic-construction',
 ] as const;
 
 export type BalanceScenarioName = (typeof balanceScenarioNames)[number];
@@ -380,12 +390,20 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     activations: [],
   },
   'living-led': {
-    config: { startingData: DISTRICT_SEED_COSTS.living, developmentEvaluationIntervalTicks: 100 },
+    config: {
+      startingData: DISTRICT_SEED_COSTS.living,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+    },
     commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
     activations: [],
   },
   'working-led': {
-    config: { startingData: DISTRICT_SEED_COSTS.working, developmentEvaluationIntervalTicks: 100 },
+    config: {
+      startingData: DISTRICT_SEED_COSTS.working,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+    },
     commands: [{ tick: 0, command: { kind: 'working', position: { x: 8, y: 6 } } }],
     activations: [],
   },
@@ -625,6 +643,176 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     commands: [],
     activations: [],
   },
+  'one-worker-slow-build': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      citizenCount: 1,
+      housingCapacity: 1,
+      workplaceCapacity: 1,
+      populationCap: 1,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: DISTRICT_SEED_COSTS.living,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
+    activations: [],
+  },
+  'full-staff-build': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      citizenCount: 3,
+      housingCapacity: 3,
+      workplaceCapacity: 3,
+      populationCap: 3,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: DISTRICT_SEED_COSTS.living,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
+    activations: [],
+  },
+  'workers-competing-one-corridor': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 0 },
+      citizenCount: 6,
+      housingCapacity: 6,
+      workplaceCapacity: 6,
+      populationCap: 6,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: DISTRICT_SEED_COSTS.living,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } }],
+    activations: [],
+  },
+  'staging-cell-queue': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      citizenCount: 6,
+      housingCapacity: 6,
+      workplaceCapacity: 6,
+      populationCap: 6,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: DISTRICT_SEED_COSTS.living,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
+    activations: [],
+  },
+  'worker-blocked-replans': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      citizenCount: 20,
+      housingCapacity: 20,
+      workplaceCapacity: 20,
+      populationCap: 20,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: DISTRICT_SEED_COSTS.living,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
+    activations: [],
+  },
+  'no-eligible-workers': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      citizenCount: 0,
+      housingCapacity: 0,
+      workplaceCapacity: 0,
+      populationCap: 0,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: DISTRICT_SEED_COSTS.living,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
+    activations: [],
+  },
+  'phase-cap-decrease': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      citizenCount: 3,
+      housingCapacity: 3,
+      workplaceCapacity: 3,
+      populationCap: 3,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: DISTRICT_SEED_COSTS.living,
+      constructionPhaseDurations: { frame: 100 },
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
+    activations: [],
+  },
+  'construction-dense-commute': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: -1, minY: -1, width: 4, height: 4 },
+      homePosition: { x: -6, y: -6 },
+      workplacePosition: { x: 18, y: 18 },
+      citizenCount: 20,
+      housingCapacity: 20,
+      workplaceCapacity: 20,
+      populationCap: 20,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: DISTRICT_SEED_COSTS.living,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: -1, y: -5 } } }],
+    activations: [],
+  },
+  'off-screen-construction': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 24, y: 24 },
+      citizenCount: 1,
+      housingCapacity: 1,
+      workplaceCapacity: 1,
+      populationCap: 1,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: DISTRICT_SEED_COSTS.living,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } }],
+    activations: [],
+  },
+  'repeated-deterministic-construction': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 8 },
+      citizenCount: 3,
+      housingCapacity: 3,
+      workplaceCapacity: 3,
+      populationCap: 3,
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1,
+      startingData: DISTRICT_SEED_COSTS.living,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
+    activations: [],
+  },
 };
 
 export function isBalanceScenarioName(value: string): value is BalanceScenarioName {
@@ -693,6 +881,17 @@ export interface BalanceMovementSummary {
   readonly emergencySwaps: number;
 }
 
+export interface BalanceConstructionSummary {
+  readonly assignmentsOffered: number;
+  readonly assignmentsAccepted: number;
+  readonly constructionCommutes: number;
+  readonly workerArrivals: number;
+  readonly laborUnits: number;
+  readonly pausedProjectTicks: number;
+  readonly phaseCompletions: number;
+  readonly workerReleases: number;
+}
+
 export interface BalanceSummary {
   readonly scenario: BalanceScenarioName;
   readonly seed: number;
@@ -710,6 +909,7 @@ export interface BalanceSummary {
   readonly seeds: readonly DistrictSeed[];
   readonly activeChunkCount: number;
   readonly movement: BalanceMovementSummary;
+  readonly construction: BalanceConstructionSummary;
   readonly traffic: readonly TrafficEdgeSnapshot[];
   readonly activeTrafficEdges: number;
   /** Current-window sum of all per-edge directional counters. */
@@ -890,6 +1090,8 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
   if (occupancyIds.size !== buildingIds.size) fail('occupancy does not cover buildings');
 
   const projectIds = new Set<string>();
+  const projectWorkerCounts = new Map<string, number>();
+  const projectConstructingCounts = new Map<string, number>();
   for (const project of snapshot.constructionProjects) {
     if (projectIds.has(project.id)) fail(`duplicate construction project id ${project.id}`);
     projectIds.add(project.id);
@@ -899,6 +1101,32 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     if (project.phaseTicksRemaining < 1 || project.phaseTicksElapsed < 0) {
       fail(`construction project ${project.id} has invalid phase timing`);
     }
+    if (
+      !Number.isSafeInteger(project.phaseLaborCompleted) ||
+      !Number.isSafeInteger(project.phaseLaborRequired) ||
+      project.phaseLaborRequired < 1 ||
+      project.phaseLaborCompleted < 0 ||
+      project.phaseLaborCompleted > project.phaseLaborRequired ||
+      !Number.isSafeInteger(project.workerCount) ||
+      project.workerCount < 0
+    ) {
+      fail(`construction project ${project.id} has invalid labor state`);
+    }
+    if (project.stagingCells.length !== 3) {
+      fail(`construction project ${project.id} does not have exactly three staging cells`);
+    }
+    const stagingKeys = new Set<string>();
+    for (const staging of project.stagingCells) {
+      const stagingKey = `${String(staging.x)},${String(staging.y)}`;
+      if (stagingKeys.has(stagingKey)) fail(`construction project ${project.id} repeats staging`);
+      stagingKeys.add(stagingKey);
+      if (!rowKeys.has(stagingKey)) fail(`construction project ${project.id} staging is not ROW`);
+      if (occupiedCells.has(stagingKey) || reservedCells.has(stagingKey)) {
+        fail(`construction project ${project.id} staging enters a footprint`);
+      }
+    }
+    projectWorkerCounts.set(project.id, 0);
+    projectConstructingCounts.set(project.id, 0);
     if (!isExteriorEntrance(project.entrance, project.footprint)) {
       fail(`construction project ${project.id} entrance is not exterior`);
     }
@@ -1025,7 +1253,14 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
 
   const citizenIds = new Set<string>();
   const movingCells = new Set<string>();
-  const validActivities = new Set(['home', 'commuting-to-work', 'work', 'commuting-home']);
+  const validActivities = new Set([
+    'home',
+    'commuting-to-work',
+    'work',
+    'commuting-home',
+    'commuting-to-construction',
+    'constructing',
+  ]);
   for (const citizen of snapshot.citizens) {
     if (citizenIds.has(citizen.id)) fail(`duplicate citizen id ${citizen.id}`);
     citizenIds.add(citizen.id);
@@ -1061,10 +1296,46 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     if (!Number.isSafeInteger(citizen.waitTicks) || citizen.waitTicks < 0) {
       fail(`citizen ${citizen.id} has invalid wait state`);
     }
-    if (citizen.activity === 'commuting-to-work' || citizen.activity === 'commuting-home') {
+    if (
+      citizen.activity === 'commuting-to-work' ||
+      citizen.activity === 'commuting-home' ||
+      citizen.activity === 'commuting-to-construction' ||
+      citizen.activity === 'constructing'
+    ) {
       const movingKey = `${String(citizen.position.x)},${String(citizen.position.y)}`;
       if (movingCells.has(movingKey)) fail(`duplicate moving occupancy at ${movingKey}`);
       movingCells.add(movingKey);
+    }
+    if (citizen.constructionProjectId !== null) {
+      const project = snapshot.constructionProjects.find(
+        ({ id }) => id === citizen.constructionProjectId,
+      );
+      if (project === undefined) {
+        fail(`citizen ${citizen.id} references missing construction project`);
+      } else {
+        projectWorkerCounts.set(project.id, (projectWorkerCounts.get(project.id) ?? 0) + 1);
+        const constructionStagingCell = citizen.constructionStagingCell;
+        if (constructionStagingCell === null) {
+          fail(`citizen ${citizen.id} has no construction staging assignment`);
+        } else if (
+          !project.stagingCells.some(
+            (cell) => cell.x === constructionStagingCell.x && cell.y === constructionStagingCell.y,
+          )
+        ) {
+          fail(`citizen ${citizen.id} has an invalid construction staging assignment`);
+        }
+        if (citizen.activity === 'constructing') {
+          projectConstructingCounts.set(
+            project.id,
+            (projectConstructingCounts.get(project.id) ?? 0) + 1,
+          );
+        }
+      }
+    } else if (
+      citizen.constructionStagingCell !== null ||
+      citizen.resumeDestinationBuildingId !== null
+    ) {
+      fail(`citizen ${citizen.id} has orphaned construction assignment state`);
     }
     if (
       !Number.isSafeInteger(citizen.routeIndex) ||
@@ -1100,6 +1371,16 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
         ? (homeOccupancy.get(building.id) ?? 0)
         : (workplaceOccupancy.get(building.id) ?? 0);
     if (occupied > building.capacity) fail(`building ${building.id} exceeds capacity`);
+  }
+  for (const project of snapshot.constructionProjects) {
+    const workerCount = projectWorkerCounts.get(project.id) ?? 0;
+    const constructingCount = projectConstructingCounts.get(project.id) ?? 0;
+    if (workerCount !== project.workerCount) {
+      fail(`construction project ${project.id} worker count mismatch`);
+    }
+    if (project.paused !== (constructingCount === 0)) {
+      fail(`construction project ${project.id} paused state mismatch`);
+    }
   }
   if (!Number.isSafeInteger(snapshot.populationCap) || snapshot.populationCap < 0) {
     fail('population cap is invalid');
@@ -1254,6 +1535,16 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     replansSucceeded: snapshot.structural.movementReplansSucceeded,
     emergencySwaps: snapshot.structural.movementDeadlockRecoveries,
   };
+  const construction: BalanceConstructionSummary = {
+    assignmentsOffered: snapshot.structural.constructionAssignmentsOffered,
+    assignmentsAccepted: snapshot.structural.constructionAssignmentsAccepted,
+    constructionCommutes: snapshot.structural.constructionCommutes,
+    workerArrivals: snapshot.structural.constructionWorkerArrivals,
+    laborUnits: snapshot.structural.constructionLaborUnits,
+    pausedProjectTicks: snapshot.structural.constructionPausedProjectTicks,
+    phaseCompletions: snapshot.structural.constructionPhaseCompletions,
+    workerReleases: snapshot.structural.constructionWorkerReleases,
+  };
   return {
     scenario,
     seed: options.seed,
@@ -1271,6 +1562,7 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     seeds: snapshot.seeds,
     activeChunkCount: snapshot.activeChunkCount,
     movement,
+    construction,
     traffic: snapshot.traffic,
     activeTrafficEdges: snapshot.structural.activeTrafficEdges,
     directionalTraversals,

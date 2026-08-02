@@ -1,7 +1,13 @@
 import type { ChunkCoordinate, GridPosition, GridRect } from '@idle-city/shared';
 
 export type BuildingType = 'home' | 'workplace';
-export type CitizenActivity = 'home' | 'commuting-to-work' | 'work' | 'commuting-home';
+export type CitizenActivity =
+  | 'home'
+  | 'commuting-to-work'
+  | 'work'
+  | 'commuting-home'
+  | 'commuting-to-construction'
+  | 'constructing';
 export type DemandKind = 'living' | 'working' | 'services';
 export type DistrictSeedKind = 'living' | 'working' | 'services';
 export type ConstructionPhase = 'survey' | 'blueprint' | 'foundation' | 'frame' | 'completion';
@@ -74,6 +80,10 @@ export interface ConstructionProject {
   readonly entrance: GridPosition;
   readonly capacity: number;
   readonly phase: ConstructionPhase;
+  readonly phaseLaborCompleted: number;
+  readonly phaseLaborRequired: number;
+  readonly workerCount: number;
+  readonly paused: boolean;
   readonly phaseTicksRemaining: number;
   readonly phaseTicksElapsed: number;
   readonly totalTicksElapsed: number;
@@ -85,7 +95,7 @@ export interface ConstructionProject {
   readonly expectedAccessImprovement: number;
   readonly envelope?: GridRect;
   readonly connector?: readonly GridPosition[];
-  readonly stagingCells?: readonly GridPosition[];
+  readonly stagingCells: readonly GridPosition[];
 }
 
 export interface CitizenSnapshot {
@@ -100,6 +110,12 @@ export interface CitizenSnapshot {
   readonly routeIndex: number;
   /** Consecutive logical ticks for which this commuter's proposal was blocked. */
   readonly waitTicks: number;
+  /** The active project assignment, or null for ordinary citizens. */
+  readonly constructionProjectId: string | null;
+  /** The reserved project staging cell, or null for ordinary citizens. */
+  readonly constructionStagingCell: GridPosition | null;
+  /** The ordinary home/work destination saved before construction recruitment. */
+  readonly resumeDestinationBuildingId: string | null;
 }
 
 export interface DistrictSeed {
@@ -317,6 +333,14 @@ export interface SimulationStructuralCounters {
   readonly developmentPeakAnchorChecksPerTick: number;
   readonly developmentPeakFinalistValidationsPerTick: number;
   readonly developmentPeakCorridorExpansionsPerTick: number;
+  readonly constructionAssignmentsOffered: number;
+  readonly constructionAssignmentsAccepted: number;
+  readonly constructionCommutes: number;
+  readonly constructionWorkerArrivals: number;
+  readonly constructionLaborUnits: number;
+  readonly constructionPausedProjectTicks: number;
+  readonly constructionPhaseCompletions: number;
+  readonly constructionWorkerReleases: number;
 }
 
 export type ActivateChunkCommand = ChunkCoordinate;

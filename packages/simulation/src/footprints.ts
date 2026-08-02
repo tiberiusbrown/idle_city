@@ -80,6 +80,36 @@ export interface StagingCellOptions {
   readonly isRightOfWay?: (position: GridPosition) => boolean;
 }
 
+export interface ProjectStagingSelectionOptions extends StagingCellOptions {
+  readonly entrance: GridPosition;
+  readonly reserved?: ReadonlySet<string>;
+  readonly count?: number;
+}
+
+function ringPerimeterIndex(position: GridPosition, rect: GridRect): number {
+  const left = rect.x - 1;
+  const top = rect.y - 1;
+  const right = rect.x + rect.width;
+  const bottom = rect.y + rect.height;
+  if (position.y === top) return position.x - left;
+  if (position.x === right) return rect.width + 1 + (position.y - top - 1);
+  if (position.y === bottom) return rect.width + 1 + rect.height + (right - position.x);
+  if (position.x === left) {
+    return rect.width + 1 + rect.height + rect.width + (bottom - position.y - 1);
+  }
+  throw new Error('Perimeter distance requires a cell on the circulation envelope.');
+}
+
+function perimeterDistance(left: GridPosition, right: GridPosition, rect: GridRect): number {
+  const perimeterLength = 2 * (rect.width + rect.height + 2);
+  const difference = Math.abs(ringPerimeterIndex(left, rect) - ringPerimeterIndex(right, rect));
+  return Math.min(difference, perimeterLength - difference);
+}
+
+function positionKey(position: GridPosition): string {
+  return `${String(position.x)},${String(position.y)}`;
+}
+
 /**
  * A staging cell is an active, walkable envelope cell with at least one
  * walkable cell beyond the envelope. ROW cells are valid external circulation
@@ -111,6 +141,43 @@ export function stagingCapableEnvelopeCells(
     });
   });
 }
+
+/**
+ * Selects the exact stable staging set used by an active project. The caller
+ * may turn the selected cells into ROW in the same atomic project transition;
+ * selection itself never mutates spatial state.
+ */
+export function selectProjectStagingCells(
+  rect: GridRect,
+  options: ProjectStagingSelectionOptions,
+): GridPosition[] {
+  validateRect(rect);
+  if (!isExteriorEntrance(options.entrance, rect)) {
+    throw new Error('Project staging selection requires an exterior entrance.');
+  }
+  const reserved = options.reserved ?? new Set<string>();
+  const count = options.count ?? 3;
+  if (!Number.isSafeInteger(count) || count < 1) {
+    throw new Error(
+      `Project staging count must be a positive safe integer; received ${String(count)}.`,
+    );
+  }
+  const candidates = stagingCapableEnvelopeCells(rect, options)
+    .filter((candidate) => !reserved.has(positionKey(candidate)))
+    .sort((left, right) => {
+      const leftIsEntrance = left.x === options.entrance.x && left.y === options.entrance.y;
+      const rightIsEntrance = right.x === options.entrance.x && right.y === options.entrance.y;
+      if (leftIsEntrance !== rightIsEntrance) return leftIsEntrance ? -1 : 1;
+      const distanceDifference =
+        perimeterDistance(left, options.entrance, rect) -
+        perimeterDistance(right, options.entrance, rect);
+      if (distanceDifference !== 0) return distanceDifference;
+      return comparePositions(left, right);
+    });
+  return candidates.slice(0, count).map((candidate) => ({ ...candidate }));
+}
+
+export const selectStagingCells = selectProjectStagingCells;
 
 /** Alias used by callers that describe the envelope as a ring. */
 export const envelopeCells = circulationEnvelopeCells;

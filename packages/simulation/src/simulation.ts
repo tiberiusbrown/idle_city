@@ -15,7 +15,14 @@ import {
   validateChunkSize,
 } from './chunks';
 import { getDistrictSeedCost, isDistrictSeedKindUnlocked } from './balance-rules';
-import { nextConstructionPhase, validateConstructionPhaseDurations } from './construction';
+import {
+  compareConstructionAssignments,
+  constructionPhaseLaborRequired,
+  constructionPhaseMaxWorkers,
+  nextConstructionPhase,
+  validateConstructionPhaseDurations,
+  type ConstructionAssignmentCandidate,
+} from './construction';
 import { calculateDemandChunk } from './demand';
 import {
   compareDevelopmentCandidates,
@@ -36,6 +43,7 @@ import {
   footprintCells,
   isExteriorEntrance,
   isInsideFootprint,
+  selectProjectStagingCells,
   stagingCapableEnvelopeCells,
 } from './footprints';
 import { findGridPathDetailed } from './pathfinding';
@@ -101,6 +109,10 @@ interface CitizenState {
   routeIndex: number;
   tripStartedTick: number | null;
   waitTicks: number;
+  constructionProjectId: string | null;
+  constructionStagingCell: GridPosition | null;
+  resumeDestinationBuildingId: string | null;
+  resumeActivity: 'commuting-to-work' | 'commuting-home' | null;
 }
 
 interface DemandChunkState {
@@ -119,6 +131,10 @@ interface ConstructionProjectState {
   readonly entrance: GridPosition;
   readonly capacity: number;
   phase: ConstructionPhase;
+  phaseLaborCompleted: number;
+  phaseLaborRequired: number;
+  phaseWorkerCap: number;
+  paused: boolean;
   phaseTicksRemaining: number;
   phaseTicksElapsed: number;
   totalTicksElapsed: number;
@@ -131,6 +147,14 @@ interface ConstructionProjectState {
   readonly envelope: Building['footprint'];
   readonly connector: GridPosition[];
   readonly stagingCells: GridPosition[];
+}
+
+interface ConstructionRouteOffer {
+  readonly candidate: ConstructionAssignmentCandidate;
+  readonly citizenId: string;
+  readonly projectId: string;
+  readonly stagingIndex: number;
+  readonly route: readonly GridPosition[];
 }
 
 interface DevelopmentJobState {
@@ -600,6 +624,10 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     routeIndex: 0,
     tripStartedTick: null,
     waitTicks: 0,
+    constructionProjectId: null,
+    constructionStagingCell: null,
+    resumeDestinationBuildingId: null,
+    resumeActivity: null,
   });
   const citizens: CitizenState[] = Array.from({ length: initialPopulation }, (_, index) =>
     createCitizenState(`citizen-${String(index + 1)}`, homeBuilding, workplaceBuilding),
@@ -684,6 +712,14 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   let movementReplansAttempted = 0;
   let movementReplansSucceeded = 0;
   let movementDeadlockRecoveries = 0;
+  let constructionAssignmentsOffered = 0;
+  let constructionAssignmentsAccepted = 0;
+  let constructionCommutes = 0;
+  let constructionWorkerArrivals = 0;
+  let constructionLaborUnits = 0;
+  let constructionPausedProjectTicks = 0;
+  let constructionPhaseCompletions = 0;
+  let constructionWorkerReleases = 0;
   const deadlockPairStates = new Map<string, DeadlockPairState>();
   const demandChunks = new Map<string, DemandChunkState>();
   const demandCitizens = (): readonly {
@@ -986,9 +1022,12 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const snapshotMovingOccupancy = (): Map<string, string> => {
     const occupancy = new Map<string, string>();
     for (const citizen of sortedCitizens()) {
-      if (citizen.activity !== 'commuting-to-work' && citizen.activity !== 'commuting-home') {
-        continue;
-      }
+      const isExclusiveActivity =
+        citizen.activity === 'commuting-to-work' ||
+        citizen.activity === 'commuting-home' ||
+        citizen.activity === 'commuting-to-construction' ||
+        citizen.activity === 'constructing';
+      if (!isExclusiveActivity) continue;
       const key = coordinateKey(citizen.position);
       if (occupancy.has(key)) {
         throw new Error(`Moving citizens share exclusive cell ${key}.`);
@@ -1014,6 +1053,25 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     citizen.waitTicks = 0;
     clearDeadlockPairsForCitizen(citizen.id);
     completedTrips += 1;
+  };
+
+  const completeConstructionCommute = (citizen: CitizenState): void => {
+    if (citizen.activity !== 'commuting-to-construction') {
+      throw new Error(
+        `Citizen ${citizen.id} completed a non-construction commute as construction.`,
+      );
+    }
+    if (citizen.constructionProjectId === null || citizen.constructionStagingCell === null) {
+      throw new Error(`Construction commuter ${citizen.id} has no staging assignment.`);
+    }
+    if (!positionsEqual(citizen.position, citizen.constructionStagingCell)) {
+      throw new Error(`Construction commuter ${citizen.id} missed its staging cell.`);
+    }
+    citizen.activity = 'constructing';
+    citizen.tripStartedTick = null;
+    citizen.waitTicks = 0;
+    citizen.departurePending = false;
+    constructionWorkerArrivals += 1;
   };
 
   const startTrip = (
@@ -1113,6 +1171,35 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     }
     for (const project of constructionProjects) {
       for (const cell of footprintCells(project.footprint)) blockedCells.add(coordinateKey(cell));
+      if (project.stagingCells.length !== 3) {
+        throw new Error(
+          `Construction project ${project.id} must have exactly three staging cells.`,
+        );
+      }
+      const stagingKeys = new Set<string>();
+      for (const stagingCell of project.stagingCells) {
+        const stagingKey = coordinateKey(stagingCell);
+        if (stagingKeys.has(stagingKey)) {
+          throw new Error(`Construction project ${project.id} repeats a staging cell.`);
+        }
+        stagingKeys.add(stagingKey);
+        if (
+          isInsideFootprint(stagingCell, project.footprint) ||
+          !spatial.isRightOfWay(stagingCell) ||
+          !spatial.isPositionActive(stagingCell)
+        ) {
+          throw new Error(`Construction project ${project.id} has invalid staging.`);
+        }
+      }
+      if (
+        !Number.isSafeInteger(project.phaseLaborCompleted) ||
+        !Number.isSafeInteger(project.phaseLaborRequired) ||
+        project.phaseLaborRequired < 1 ||
+        project.phaseLaborCompleted < 0 ||
+        project.phaseLaborCompleted > project.phaseLaborRequired
+      ) {
+        throw new Error(`Construction project ${project.id} has invalid labor state.`);
+      }
     }
     for (const building of buildings) {
       const occupied = occupancy.get(building.id) ?? 0;
@@ -1128,6 +1215,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       'commuting-to-work',
       'work',
       'commuting-home',
+      'commuting-to-construction',
+      'constructing',
     ];
     const movingCells = new Map<string, string>();
     for (const citizen of citizens) {
@@ -1151,7 +1240,62 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (!Number.isSafeInteger(citizen.waitTicks) || citizen.waitTicks < 0) {
         throw new Error(`Citizen ${citizen.id} has invalid wait state.`);
       }
-      if (citizen.activity === 'commuting-to-work' || citizen.activity === 'commuting-home') {
+      const constructionProject =
+        citizen.constructionProjectId === null
+          ? undefined
+          : constructionProjects.find((project) => project.id === citizen.constructionProjectId);
+      if (citizen.constructionProjectId !== null && constructionProject === undefined) {
+        throw new Error(`Citizen ${citizen.id} references missing construction project.`);
+      }
+      if (citizen.constructionProjectId === null) {
+        if (citizen.constructionStagingCell !== null) {
+          throw new Error(`Citizen ${citizen.id} has a staging cell without a project.`);
+        }
+        if (citizen.resumeDestinationBuildingId !== null || citizen.resumeActivity !== null) {
+          throw new Error(`Citizen ${citizen.id} has an orphaned resume destination.`);
+        }
+      } else {
+        const constructionStagingCell = citizen.constructionStagingCell;
+        if (constructionStagingCell === null) {
+          throw new Error(`Citizen ${citizen.id} has a project without a staging cell.`);
+        }
+        if (citizen.resumeDestinationBuildingId === null || citizen.resumeActivity === null) {
+          throw new Error(`Citizen ${citizen.id} has no saved construction resume destination.`);
+        }
+        if (
+          !constructionProject?.stagingCells.some((cell) =>
+            positionsEqual(cell, constructionStagingCell),
+          )
+        ) {
+          throw new Error(`Citizen ${citizen.id} has an invalid construction staging cell.`);
+        }
+        if (
+          citizen.activity !== 'commuting-to-construction' &&
+          citizen.activity !== 'constructing'
+        ) {
+          throw new Error(`Citizen ${citizen.id} has an invalid construction activity.`);
+        }
+        if (
+          citizen.activity === 'constructing' &&
+          !positionsEqual(citizen.position, constructionStagingCell)
+        ) {
+          throw new Error(`Constructing citizen ${citizen.id} is away from staging.`);
+        }
+      }
+      if (
+        (citizen.activity === 'commuting-to-work' ||
+          citizen.activity === 'commuting-home' ||
+          citizen.activity === 'commuting-to-construction') &&
+        citizen.route.length === 0
+      ) {
+        throw new Error(`Commuter ${citizen.id} has an empty route.`);
+      }
+      if (
+        citizen.activity === 'commuting-to-work' ||
+        citizen.activity === 'commuting-home' ||
+        citizen.activity === 'commuting-to-construction' ||
+        citizen.activity === 'constructing'
+      ) {
         const movingCell = coordinateKey(citizen.position);
         if (movingCells.has(movingCell)) {
           throw new Error(`Moving citizens share exclusive cell ${movingCell}.`);
@@ -1197,6 +1341,16 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         if (previous !== undefined && manhattanDistance(previous, position) !== 1) {
           throw new Error(`Citizen ${citizen.id} route contains a non-adjacent move.`);
         }
+      }
+    }
+    for (const project of constructionProjects) {
+      const workers = constructionWorkers(project.id);
+      const constructingWorkers = workers.filter((worker) => worker.activity === 'constructing');
+      if (workers.length > constructionPhaseMaxWorkers(project.phase)) {
+        throw new Error(`Construction project ${project.id} exceeds its worker cap.`);
+      }
+      if (project.paused !== (constructingWorkers.length === 0)) {
+        throw new Error(`Construction project ${project.id} has an invalid paused state.`);
       }
     }
   };
@@ -1388,17 +1542,28 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       developmentFootprintsRejected += 1;
       return undefined;
     }
-    const staging = stagingCapableEnvelopeCells(footprint, {
+    const stagingCandidates = stagingCapableEnvelopeCells(footprint, {
       isActive: (position) => spatial.isPositionActive(position),
       isWalkable: (position) => spatial.isWalkable(position),
       isRightOfWay: (position) => spatial.isRightOfWay(position),
     });
-    if (staging.length < 3) {
+    if (stagingCandidates.length < 3) {
       developmentEntrancesRejected += 1;
       return undefined;
     }
-    const entrance = staging.find((cell) => isExteriorEntrance(cell, footprint));
+    const entrance = stagingCandidates.find((cell) => isExteriorEntrance(cell, footprint));
     if (entrance === undefined) return undefined;
+    const staging = selectProjectStagingCells(footprint, {
+      entrance,
+      isActive: (position) => spatial.isPositionActive(position),
+      isWalkable: (position) => spatial.isWalkable(position),
+      isRightOfWay: (position) => spatial.isRightOfWay(position),
+      count: 3,
+    });
+    if (staging.length !== 3) {
+      developmentEntrancesRejected += 1;
+      return undefined;
+    }
     const localMatchingDemand = demandValueAt(anchor, buildingType);
     const seedInfluence = matchingSeedInfluenceAt(anchor, buildingType);
     const complementaryUse = complementaryUseFactor(anchor, buildingType);
@@ -1515,14 +1680,65 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const capacityForDevelopment = (buildingType: BuildingType): number =>
     buildingType === 'home' ? developmentHomeCapacity : developmentWorkplaceCapacity;
 
+  const reservedConstructionStagingCells = (): ReadonlySet<string> => {
+    const reserved = new Set<string>();
+    for (const citizen of citizens) {
+      if (citizen.constructionProjectId === null || citizen.constructionStagingCell === null) {
+        continue;
+      }
+      reserved.add(coordinateKey(citizen.constructionStagingCell));
+    }
+    return reserved;
+  };
+
+  const selectConstructionStaging = (
+    candidate: DevelopmentCandidate,
+  ): GridPosition[] | undefined => {
+    if (candidate.stagingCells?.length !== 3) {
+      return undefined;
+    }
+    const reserved = reservedConstructionStagingCells();
+    const capableCells = new Set(
+      stagingCapableEnvelopeCells(candidate.footprint, {
+        isActive: (position) => spatial.isPositionActive(position),
+        isWalkable: (position) => spatial.isWalkable(position),
+        isRightOfWay: (position) => spatial.isRightOfWay(position),
+      }).map(coordinateKey),
+    );
+    const keys = new Set<string>();
+    for (const [index, stagingCell] of candidate.stagingCells.entries()) {
+      const key = coordinateKey(stagingCell);
+      if (
+        keys.has(key) ||
+        reserved.has(key) ||
+        !capableCells.has(key) ||
+        (index === 0 && !positionsEqual(stagingCell, candidate.entrance))
+      ) {
+        return undefined;
+      }
+      keys.add(key);
+    }
+    return candidate.stagingCells.map(copyPosition);
+  };
+
   const startConstruction = (
     candidate: DevelopmentCandidate,
     connector: readonly GridPosition[],
-  ): void => {
+  ): boolean => {
+    const stagingCells = selectConstructionStaging(candidate);
+    if (stagingCells === undefined) {
+      developmentEntrancesRejected += 1;
+      return false;
+    }
     const footprint = footprintCells(candidate.footprint);
+    const rowCells = [...connector, ...stagingCells];
+    for (const cell of rowCells) {
+      if (!spatial.isPositionActive(cell) || !spatial.isWalkable(cell)) return false;
+      if (isInsideFootprint(cell, candidate.footprint)) return false;
+    }
     spatial.blockMany(footprint);
-    const newRightOfWayCells = connector.filter((cell) => !spatial.isRightOfWay(cell));
-    spatial.markRightOfWayMany(connector);
+    const newRightOfWayCells = rowCells.filter((cell) => !spatial.isRightOfWay(cell));
+    spatial.markRightOfWayMany(rowCells);
     rightOfWayCellsAdded += newRightOfWayCells.length;
     rightOfWayRevisionChanges += newRightOfWayCells.length;
     for (const cell of circulationEnvelopeCells(candidate.footprint)) {
@@ -1536,6 +1752,10 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       entrance: copyPosition(candidate.entrance),
       capacity: capacityForDevelopment(candidate.buildingType),
       phase: 'survey',
+      phaseLaborCompleted: 0,
+      phaseLaborRequired: constructionPhaseLaborRequired('survey', constructionPhaseDurations),
+      phaseWorkerCap: constructionPhaseMaxWorkers('survey'),
+      paused: true,
       phaseTicksRemaining: constructionPhaseDurations.survey,
       phaseTicksElapsed: 0,
       totalTicksElapsed: 0,
@@ -1547,13 +1767,14 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       expectedAccessImprovement: candidate.expectedAccessImprovement,
       envelope: circulationEnvelope(candidate.footprint),
       connector: connector.map(copyPosition),
-      stagingCells: (candidate.stagingCells ?? []).map(copyPosition),
+      stagingCells: stagingCells.map(copyPosition),
     };
     constructionProjects.push(project);
     nextConstructionProjectId += 1;
     constructionProjectsStarted += 1;
     developmentStateVersion += 1;
     replanAffectedRoutes(project.footprint);
+    return true;
   };
 
   const completeConstructionProject = (project: ConstructionProjectState): void => {
@@ -1583,23 +1804,91 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     markAllDemandChunksDirty();
   };
 
+  const constructionWorkers = (projectId: string): CitizenState[] =>
+    sortedCitizens().filter((citizen) => citizen.constructionProjectId === projectId);
+
+  const releaseConstructionWorker = (citizen: CitizenState): void => {
+    const destinationId = citizen.resumeDestinationBuildingId;
+    const resumeActivity = citizen.resumeActivity;
+    if (destinationId === null || resumeActivity === null) {
+      throw new Error(`Construction worker ${citizen.id} has no saved resume destination.`);
+    }
+    citizen.constructionProjectId = null;
+    citizen.constructionStagingCell = null;
+    citizen.resumeDestinationBuildingId = null;
+    citizen.resumeActivity = null;
+    citizen.route = [];
+    citizen.routeIndex = 0;
+    citizen.waitTicks = 0;
+    citizen.tripStartedTick = null;
+    constructionWorkerReleases += 1;
+    startTrip(citizen, resumeActivity, destinationId);
+  };
+
+  const retainConstructionWorkers = (
+    project: ConstructionProjectState,
+    maximumWorkers: number,
+  ): void => {
+    const workers = constructionWorkers(project.id);
+    for (const worker of workers.slice(maximumWorkers)) releaseConstructionWorker(worker);
+  };
+
   const advanceConstructionProjects = (): void => {
-    for (let index = constructionProjects.length - 1; index >= 0; index -= 1) {
-      const project = constructionProjects[index];
-      if (project === undefined) continue;
-      project.phaseTicksRemaining -= 1;
+    const completedProjectIds: string[] = [];
+    for (const project of [...constructionProjects].sort((left, right) =>
+      left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+    )) {
       project.phaseTicksElapsed += 1;
       project.totalTicksElapsed += 1;
-      if (project.phaseTicksRemaining > 0) continue;
+      const workers = constructionWorkers(project.id);
+      const constructingWorkers = workers.filter((worker) => worker.activity === 'constructing');
+      project.paused = constructingWorkers.length === 0;
+      if (project.paused) constructionPausedProjectTicks += 1;
+
+      const remainingLabor = project.phaseLaborRequired - project.phaseLaborCompleted;
+      const labor = Math.min(remainingLabor, constructingWorkers.length);
+      if (labor > 0) {
+        project.phaseLaborCompleted += labor;
+        constructionLaborUnits += labor;
+      }
+      if (project.phaseLaborCompleted < project.phaseLaborRequired) {
+        project.phaseTicksRemaining = Math.max(
+          1,
+          Math.ceil(
+            (project.phaseLaborRequired - project.phaseLaborCompleted) / project.phaseWorkerCap,
+          ),
+        );
+        continue;
+      }
+
+      constructionPhaseCompletions += 1;
       const nextPhase = nextConstructionPhase(project.phase);
       if (nextPhase === undefined) {
+        for (const worker of constructionWorkers(project.id)) releaseConstructionWorker(worker);
         completeConstructionProject(project);
-        constructionProjects.splice(index, 1);
+        completedProjectIds.push(project.id);
         continue;
       }
       project.phase = nextPhase;
+      project.phaseLaborCompleted = 0;
+      project.phaseLaborRequired = constructionPhaseLaborRequired(
+        nextPhase,
+        constructionPhaseDurations,
+      );
+      project.phaseWorkerCap = constructionPhaseMaxWorkers(nextPhase);
+      project.paused = constructionWorkers(project.id).every(
+        (worker) => worker.activity !== 'constructing',
+      );
       project.phaseTicksRemaining = constructionPhaseDurations[nextPhase];
       project.phaseTicksElapsed = 0;
+      retainConstructionWorkers(project, project.phaseWorkerCap);
+      project.paused = constructionWorkers(project.id).every(
+        (worker) => worker.activity !== 'constructing',
+      );
+    }
+    for (const projectId of completedProjectIds) {
+      const index = constructionProjects.findIndex((project) => project.id === projectId);
+      if (index >= 0) constructionProjects.splice(index, 1);
     }
   };
 
@@ -1997,15 +2286,123 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     }
   };
 
+  const findConstructionRoute = (
+    citizen: CitizenState,
+    stagingCell: GridPosition,
+  ): readonly GridPosition[] | undefined => {
+    const reservedStaging = reservedConstructionStagingCells();
+    const goalKey = coordinateKey(stagingCell);
+    const result = findGridPathDetailed(
+      {
+        chunkSize,
+        activeChunks: spatial.getActiveChunks(),
+        isWalkable: (position) =>
+          isCirculationWalkable(position) &&
+          (coordinateKey(position) === goalKey || !reservedStaging.has(coordinateKey(position))),
+        maxNodes: pathSearchBudget,
+      },
+      citizen.position,
+      stagingCell,
+    );
+    pathNodesExpanded += result.nodesExpanded;
+    pathChunksTouched += result.chunksTouched;
+    return result.status === 'found' ? result.path.map(copyPosition) : undefined;
+  };
+
+  const assignConstructionWorkers = (movingOccupancy: Map<string, string>): void => {
+    if (constructionProjects.length === 0) return;
+    const eligibleCitizens = sortedCitizens().filter(
+      (citizen) =>
+        citizen.constructionProjectId === null &&
+        citizen.constructionStagingCell === null &&
+        citizen.resumeDestinationBuildingId === null &&
+        (citizen.activity === 'home' || citizen.activity === 'work') &&
+        citizen.departurePending &&
+        citizen.activityTicksRemaining === 0,
+    );
+    if (eligibleCitizens.length === 0) return;
+
+    const offers: ConstructionRouteOffer[] = [];
+    const projectCounts = new Map<string, number>();
+    const reservedStaging = reservedConstructionStagingCells();
+    for (const project of [...constructionProjects].sort((left, right) =>
+      left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+    )) {
+      const currentWorkerCount = constructionWorkers(project.id).length;
+      projectCounts.set(project.id, currentWorkerCount);
+      if (currentWorkerCount >= constructionPhaseMaxWorkers(project.phase)) continue;
+      for (let stagingIndex = 0; stagingIndex < project.stagingCells.length; stagingIndex += 1) {
+        const stagingCell = project.stagingCells[stagingIndex];
+        if (stagingCell === undefined || reservedStaging.has(coordinateKey(stagingCell))) continue;
+        for (const citizen of eligibleCitizens) {
+          const route = findConstructionRoute(citizen, stagingCell);
+          if (route === undefined) continue;
+          offers.push({
+            candidate: {
+              projectId: project.id,
+              routeLength: route.length - 1,
+              stagingIndex,
+              citizenId: citizen.id,
+            },
+            citizenId: citizen.id,
+            projectId: project.id,
+            stagingIndex,
+            route,
+          });
+        }
+      }
+    }
+    constructionAssignmentsOffered += offers.length;
+    offers.sort((left, right) => compareConstructionAssignments(left.candidate, right.candidate));
+    const assignedCitizens = new Set<string>();
+    const assignedStaging = new Set<string>(reservedStaging);
+    for (const offer of offers) {
+      if (assignedCitizens.has(offer.citizenId)) continue;
+      const project = constructionProjects.find((candidate) => candidate.id === offer.projectId);
+      const stagingCell = project?.stagingCells[offer.stagingIndex];
+      if (project === undefined || stagingCell === undefined) continue;
+      const projectWorkerCount = projectCounts.get(project.id) ?? 0;
+      if (projectWorkerCount >= constructionPhaseMaxWorkers(project.phase)) continue;
+      const stagingKey = coordinateKey(stagingCell);
+      if (assignedStaging.has(stagingKey)) continue;
+      const citizen = citizensById.get(offer.citizenId);
+      if (citizen === undefined)
+        throw new Error(`Construction offer references ${offer.citizenId}.`);
+      const originKey = coordinateKey(citizen.position);
+      if (movingOccupancy.has(originKey)) continue;
+      citizen.constructionProjectId = project.id;
+      citizen.constructionStagingCell = copyPosition(stagingCell);
+      citizen.resumeDestinationBuildingId =
+        citizen.activity === 'home' ? citizen.workplaceBuildingId : citizen.homeBuildingId;
+      citizen.resumeActivity = citizen.activity === 'home' ? 'commuting-to-work' : 'commuting-home';
+      citizen.activity = 'commuting-to-construction';
+      citizen.departurePending = false;
+      citizen.route = offer.route.map(copyPosition);
+      citizen.routeIndex = 0;
+      citizen.tripStartedTick = tick;
+      citizen.waitTicks = 0;
+      assignedCitizens.add(citizen.id);
+      assignedStaging.add(stagingKey);
+      projectCounts.set(project.id, projectWorkerCount + 1);
+      movingOccupancy.set(originKey, citizen.id);
+      constructionAssignmentsAccepted += 1;
+    }
+  };
+
   const advanceCitizenSchedules = (movingOccupancy: Map<string, string>): void => {
+    const boundaryCitizens: CitizenState[] = [];
     for (const citizen of sortedCitizens()) {
       if (citizen.activity !== 'home' && citizen.activity !== 'work') continue;
       if (citizen.activityTicksRemaining > 0) citizen.activityTicksRemaining -= 1;
       if (citizen.activityTicksRemaining > 0) continue;
       if (!citizen.departurePending) {
         citizen.departurePending = true;
-        if (citizen.activity === 'work') completedActivities += 1;
       }
+      boundaryCitizens.push(citizen);
+    }
+    assignConstructionWorkers(movingOccupancy);
+    for (const citizen of boundaryCitizens) {
+      if (citizen.constructionProjectId !== null) continue;
       const originKey = coordinateKey(citizen.position);
       if (movingOccupancy.has(originKey)) continue;
       const activity: CitizenActivity =
@@ -2015,6 +2412,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (startTrip(citizen, activity, destinationId)) {
         movingOccupancy.set(originKey, citizen.id);
       }
+      if (activity === 'commuting-home') completedActivities += 1;
     }
   };
 
@@ -2022,20 +2420,43 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     citizen: CitizenState,
     movingOccupancy: ReadonlyMap<string, string>,
   ): boolean => {
-    const destinationId =
-      citizen.activity === 'commuting-to-work'
+    const isConstructionCommute = citizen.activity === 'commuting-to-construction';
+    const destinationId = isConstructionCommute
+      ? citizen.constructionProjectId
+      : citizen.activity === 'commuting-to-work'
         ? citizen.workplaceBuildingId
         : citizen.homeBuildingId;
-    const destination = buildingById(destinationId);
+    if (destinationId === null) {
+      throw new Error(`Construction commuter ${citizen.id} has no project destination.`);
+    }
+    const project = isConstructionCommute
+      ? constructionProjects.find((candidate) => candidate.id === destinationId)
+      : undefined;
+    if (
+      isConstructionCommute &&
+      (project === undefined || citizen.constructionStagingCell === null)
+    ) {
+      throw new Error(`Construction commuter ${citizen.id} has an invalid project assignment.`);
+    }
+    const constructionDestination =
+      project === undefined || citizen.constructionStagingCell === null
+        ? undefined
+        : citizen.constructionStagingCell;
+    const destination = constructionDestination ?? buildingById(destinationId).entrance;
     const temporaryBlocked = new Set(movingOccupancy.keys());
     temporaryBlocked.delete(coordinateKey(citizen.position));
-    temporaryBlocked.delete(coordinateKey(destination.entrance));
+    temporaryBlocked.delete(coordinateKey(destination));
+    if (isConstructionCommute) {
+      for (const reserved of reservedConstructionStagingCells()) {
+        if (reserved !== coordinateKey(destination)) temporaryBlocked.add(reserved);
+      }
+    }
     movementReplansAttempted += 1;
     const result = replanMovementRoute({
       chunkSize,
       activeChunks: spatial.getActiveChunks(),
       start: citizen.position,
-      goal: destination.entrance,
+      goal: destination,
       currentRoute: citizen.route,
       currentRouteIndex: citizen.routeIndex,
       temporaryBlocked,
@@ -2075,9 +2496,11 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
 
     const candidates: MovementCandidate[] = [];
     for (const citizen of sortedCitizens()) {
-      if (citizen.activity !== 'commuting-to-work' && citizen.activity !== 'commuting-home') {
-        continue;
-      }
+      const isCommute =
+        citizen.activity === 'commuting-to-work' ||
+        citizen.activity === 'commuting-home' ||
+        citizen.activity === 'commuting-to-construction';
+      if (!isCommute) continue;
       // A newly scheduled trip claims its origin for this tick and becomes
       // proposal-eligible on the next tick, preserving a distinct trip start.
       if (!initiallyMovingCitizenIds.has(citizen.id)) continue;
@@ -2134,6 +2557,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       }
       citizen.position = copyPosition(move.to);
       citizen.routeIndex += 1;
+      if (citizen.activity === 'commuting-to-construction') constructionCommutes += 1;
       traffic.recordCommittedMove(move.from, move.to);
     }
     for (const blocked of resolution.blocked) {
@@ -2154,11 +2578,15 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (citizen === undefined)
         throw new Error(`Committed movement references ${move.citizenId}.`);
       if (citizen.routeIndex !== citizen.route.length - 1) continue;
-      const destinationId =
-        citizen.activity === 'commuting-to-work'
-          ? citizen.workplaceBuildingId
-          : citizen.homeBuildingId;
-      completeTrip(citizen, destinationId);
+      if (citizen.activity === 'commuting-to-construction') {
+        completeConstructionCommute(citizen);
+      } else {
+        const destinationId =
+          citizen.activity === 'commuting-to-work'
+            ? citizen.workplaceBuildingId
+            : citizen.homeBuildingId;
+        completeTrip(citizen, destinationId);
+      }
     }
 
     if (resolution.accepted.length > 0) clearAllDeadlockPairs();
@@ -2288,6 +2716,14 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       developmentPeakAnchorChecksPerTick,
       developmentPeakFinalistValidationsPerTick,
       developmentPeakCorridorExpansionsPerTick,
+      constructionAssignmentsOffered,
+      constructionAssignmentsAccepted,
+      constructionCommutes,
+      constructionWorkerArrivals,
+      constructionLaborUnits,
+      constructionPausedProjectTicks,
+      constructionPhaseCompletions,
+      constructionWorkerReleases,
     };
     return {
       chunkSize,
@@ -2352,6 +2788,12 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         route: citizen.route.map(copyPosition),
         routeIndex: citizen.routeIndex,
         waitTicks: citizen.waitTicks,
+        constructionProjectId: citizen.constructionProjectId,
+        constructionStagingCell:
+          citizen.constructionStagingCell === null
+            ? null
+            : copyPosition(citizen.constructionStagingCell),
+        resumeDestinationBuildingId: citizen.resumeDestinationBuildingId,
       })),
       developmentCandidates: lastDevelopmentCandidates.map((candidate) => ({
         ...candidate,
@@ -2374,6 +2816,10 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         entrance: copyPosition(project.entrance),
         capacity: project.capacity,
         phase: project.phase,
+        phaseLaborCompleted: project.phaseLaborCompleted,
+        phaseLaborRequired: project.phaseLaborRequired,
+        workerCount: constructionWorkers(project.id).length,
+        paused: project.paused,
         phaseTicksRemaining: project.phaseTicksRemaining,
         phaseTicksElapsed: project.phaseTicksElapsed,
         totalTicksElapsed: project.totalTicksElapsed,

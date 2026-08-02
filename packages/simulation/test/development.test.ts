@@ -165,7 +165,11 @@ describe('deterministic developer evaluation and construction', () => {
       initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
       homePosition: { x: 0, y: 0 },
       workplacePosition: { x: 8, y: 8 },
-      citizenCount: 1,
+      citizenCount: 3,
+      housingCapacity: 3,
+      workplaceCapacity: 3,
+      populationCap: 3,
+      activityDurationTicks: 1,
       startingData: DISTRICT_SEED_COSTS.living,
       developmentEvaluationIntervalTicks: 1,
       constructionPhaseDurations: {
@@ -186,14 +190,19 @@ describe('deterministic developer evaluation and construction', () => {
     expect(project.phase).toBe('survey');
     expect(reserved.structural.allocatedOccupancyBuffers).toBeGreaterThan(0);
     const phases: string[] = [project.phase];
-    for (let index = 0; index < CONSTRUCTION_PHASE_ORDER.length - 1; index += 1) {
+    let previousPhase = project.phase;
+    for (let index = 0; index < 200; index += 1) {
       simulation.step();
       const next = simulation.getSnapshot();
       const nextProject = next.constructionProjects[0];
-      if (nextProject !== undefined) phases.push(nextProject.phase);
+      if (nextProject === undefined) break;
+      if (nextProject.phase !== previousPhase) {
+        phases.push(nextProject.phase);
+        expect(nextProject.phaseLaborCompleted).toBe(0);
+        previousPhase = nextProject.phase;
+      }
     }
-    expect(phases).toEqual(['survey', 'blueprint', 'foundation', 'frame', 'completion']);
-    simulation.step();
+    expect(phases).toEqual([...CONSTRUCTION_PHASE_ORDER]);
     const completed = simulation.getSnapshot();
     expect(completed.structural.constructionProjectsCompleted).toBeGreaterThanOrEqual(1);
     expect(completed.buildings).toContainEqual({
@@ -266,5 +275,5 @@ describe('deterministic developer evaluation and construction', () => {
         isExteriorEntrance(building.entrance, building.footprint),
       ),
     ).toBe(true);
-  });
+  }, 15_000);
 });

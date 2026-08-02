@@ -21,6 +21,7 @@ export interface CitizenLayer {
 
 interface CitizenVisual {
   readonly root: TransformNode;
+  readonly body: ReturnType<typeof CreateBox>;
 }
 
 export function createCitizenLayer(
@@ -44,7 +45,7 @@ export function createCitizenLayer(
     head.position.y = 0.58;
     head.material = materials.citizenAccent;
     head.isPickable = false;
-    return { root };
+    return { root, body };
   };
 
   const updateVisual = (visual: CitizenVisual, citizen: CitizenSnapshot, interpolation: number) => {
@@ -55,6 +56,9 @@ export function createCitizenLayer(
     );
     visual.root.position = logicalToWorld(logicalPosition, cellWorldScale);
     visual.root.position.y = 0.04;
+    const constructionAssigned =
+      citizen.activity === 'commuting-to-construction' || citizen.activity === 'constructing';
+    visual.body.material = constructionAssigned ? materials.constructionCitizen : materials.citizen;
   };
 
   const reconcile = (

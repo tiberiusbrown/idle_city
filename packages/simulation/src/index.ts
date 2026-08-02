@@ -32,7 +32,10 @@ export {
   circulationEnvelopeCells,
   envelopeCells,
   stagingCapableEnvelopeCells,
+  selectProjectStagingCells,
+  selectStagingCells,
   type EntranceSelectionOptions,
+  type ProjectStagingSelectionOptions,
   type StagingCellOptions,
 } from './footprints';
 export { SeededRandom } from './random';
@@ -66,8 +69,15 @@ export {
 export {
   CONSTRUCTION_PHASE_ORDER,
   DEFAULT_CONSTRUCTION_PHASE_DURATIONS,
+  CONSTRUCTION_PHASE_DEFINITIONS,
+  constructionPhaseFullStaffDuration,
+  constructionPhaseLaborRequired,
+  constructionPhaseMaxWorkers,
+  compareConstructionAssignments,
   nextConstructionPhase,
   validateConstructionPhaseDurations,
+  type ConstructionAssignmentCandidate,
+  type ConstructionPhaseDefinition,
 } from './construction';
 export {
   compareDevelopmentCandidates,
