@@ -195,6 +195,15 @@ export interface ActiveChunkSnapshot {
   readonly occupancyBufferAllocated: boolean;
 }
 
+export interface TrafficEdgeSnapshot {
+  readonly key: string;
+  readonly a: GridPosition;
+  readonly b: GridPosition;
+  readonly aToB: number;
+  readonly bToA: number;
+  readonly total: number;
+}
+
 export interface SimulationStructuralCounters {
   readonly activeChunks: number;
   readonly allocatedChunks: number;
@@ -211,6 +220,11 @@ export interface SimulationStructuralCounters {
   readonly developmentEntrancesRejected: number;
   readonly constructionProjectsStarted: number;
   readonly constructionProjectsCompleted: number;
+  readonly activeTrafficEdges: number;
+  readonly trafficTraversalEventsRecorded: number;
+  readonly trafficExpiredTraversalEvents: number;
+  readonly trafficExpiredBuckets: number;
+  readonly trafficPeakActiveEdges: number;
 }
 
 export type ActivateChunkCommand = ChunkCoordinate;
@@ -275,6 +289,10 @@ export interface SimulationConfig {
   readonly developmentHomeCapacity?: number;
   readonly developmentWorkplaceCapacity?: number;
   readonly constructionPhaseDurations?: Partial<Record<ConstructionPhase, number>>;
+  /** Logical ticks retained by internal movement telemetry; defaults to exactly 256. */
+  readonly trafficHistoryWindowTicks?: number;
+  /** Alias for trafficHistoryWindowTicks used by focused telemetry scenarios. */
+  readonly trafficWindowTicks?: number;
 }
 
 export interface SimulationSnapshot {
@@ -284,6 +302,7 @@ export interface SimulationSnapshot {
   readonly seed: number;
   readonly tick: number;
   readonly randomState: number;
+  readonly trafficHistoryWindowTicks: number;
   readonly populationCap: number;
   readonly populationGrowthCadenceTicks: number;
   readonly completedTrips: number;
@@ -293,6 +312,7 @@ export interface SimulationSnapshot {
   readonly averageTripDurationTicks: number;
   readonly metrics: CityMetrics;
   readonly demand: CityDemand;
+  readonly traffic: readonly TrafficEdgeSnapshot[];
   readonly structural: SimulationStructuralCounters;
   readonly seeds: readonly DistrictSeed[];
   readonly buildings: readonly Building[];

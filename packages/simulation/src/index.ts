@@ -57,6 +57,17 @@ export {
 } from './developer';
 export { createSimulation } from './simulation';
 export {
+  canonicalTrafficEdge,
+  createTrafficTelemetry,
+  DEFAULT_TRAFFIC_HISTORY_WINDOW_TICKS,
+  trafficEdgeKey,
+  tryCanonicalTrafficEdge,
+  type TrafficEdgeIdentity,
+  type TrafficTelemetry,
+  type TrafficTelemetryCounters,
+  type TrafficTelemetryOptions,
+} from './traffic';
+export {
   findNearestCompatiblePair,
   type PopulationAssignment,
   type PopulationAssignmentInput,
@@ -100,6 +111,7 @@ export type {
   SimulationConfig,
   SimulationSnapshot,
   SimulationStructuralCounters,
+  TrafficEdgeSnapshot,
 } from './types';
 export type {
   DemandCalculationInput,

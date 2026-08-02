@@ -63,8 +63,8 @@ All random decisions use an explicit `SeededRandom` instance. Never use `Math.ra
 
 ## Current limitations
 
-The slice uses a finite active-chunk set, multi-cell buildings and construction projects, exterior entrances, deterministic population growth over compatible home/work capacity, entrance-distance assignment, a simple alternating home/work schedule, deterministic A* routes, mouse/touch Living and Working district seed placement, chunked demand influence, deterministic developer scoring, staged survey/blueprint/foundation/frame/completion phases, deterministic Data plus Space/Access/Activity indicators, and dynamic stable-ID renderer reconciliation for buildings, citizens, projects, and seeds. There is no automatic expansion policy, services behavior, traffic measurement, collision avoidance, backend, audio, or wrapper packaging yet.
+The slice uses a finite active-chunk set, multi-cell buildings and construction projects, exterior entrances, deterministic population growth over compatible home/work capacity, entrance-distance assignment, a simple alternating home/work schedule, deterministic A* routes, bounded internal traffic telemetry, mouse/touch Living and Working district seed placement, chunked demand influence, deterministic developer scoring, staged survey/blueprint/foundation/frame/completion phases, deterministic Data plus Space/Access/Activity indicators, and dynamic stable-ID renderer reconciliation for buildings, citizens, projects, and seeds. There is no automatic expansion policy, services behavior, congestion response, player-facing traffic overlay, collision avoidance, backend, audio, or wrapper packaging yet.
 
 ## Recommended next steps
 
-The next focused slice is traffic measurement: deterministic bounded route-use history that can later support congestion-aware routing without changing the authoritative-state boundary.
+The next focused slice is deterministic movement reservations: proposal, conflict resolution, simultaneous commit, and bounded deadlock recovery without turning citizen positions into permanent global pathfinding obstacles.

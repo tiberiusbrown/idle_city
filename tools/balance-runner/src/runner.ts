@@ -2,6 +2,7 @@ import {
   CONSTRUCTION_PHASE_ORDER,
   chunkCoordinateForPosition,
   chunkKey,
+  canonicalTrafficEdge,
   compareChunks,
   createSimulation,
   DISTRICT_SEED_COSTS,
@@ -17,6 +18,7 @@ import {
   type SimulationConfig,
   type SimulationSnapshot,
   type SimulationStructuralCounters,
+  type TrafficEdgeSnapshot,
 } from '@idle-city/simulation';
 
 export const balanceScenarioNames = [
@@ -31,6 +33,12 @@ export const balanceScenarioNames = [
   'extent',
   'localized-demand',
   'long-route',
+  'one-commuter',
+  'two-opposite-direction-commuters',
+  'shared-corridor',
+  'narrow-passage',
+  'multi-chunk-commute',
+  'long-running-repeated-commute',
   'living-led',
   'working-led',
   'equal-score',
@@ -73,6 +81,15 @@ function linearActivations(
     tick: index,
     command: axis === 'x' ? { x: index + 1, y: 0 } : { x: 0, y: index + 1 },
   }));
+}
+
+function trafficScenarioConfig(overrides: SimulationConfig): SimulationConfig {
+  return {
+    activityDurationTicks: 1,
+    populationGrowthCadenceTicks: 1_000_000,
+    developmentEvaluationIntervalTicks: 1_000_000,
+    ...overrides,
+  };
 }
 
 const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition> = {
@@ -172,6 +189,91 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
       workplacePosition: { x: 100, y: 8 },
       pathSearchBudget: 50_000,
     },
+    commands: [],
+    activations: [],
+  },
+  'one-commuter': {
+    config: trafficScenarioConfig({
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 18, y: 10 },
+      citizenCount: 1,
+      housingCapacity: 1,
+      workplaceCapacity: 1,
+      populationCap: 1,
+    }),
+    commands: [],
+    activations: [],
+  },
+  'two-opposite-direction-commuters': {
+    config: trafficScenarioConfig({
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 18, y: 10 },
+      citizenCount: 2,
+      housingCapacity: 2,
+      workplaceCapacity: 2,
+      populationCap: 2,
+    }),
+    commands: [],
+    activations: [],
+  },
+  'shared-corridor': {
+    config: trafficScenarioConfig({
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 18, y: 10 },
+      citizenCount: 6,
+      housingCapacity: 6,
+      workplaceCapacity: 6,
+      populationCap: 6,
+    }),
+    commands: [],
+    activations: [],
+  },
+  'narrow-passage': {
+    config: trafficScenarioConfig({
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 1 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 0 },
+      citizenCount: 1,
+      housingCapacity: 1,
+      workplaceCapacity: 1,
+      populationCap: 1,
+    }),
+    commands: [],
+    activations: [],
+  },
+  'multi-chunk-commute': {
+    config: trafficScenarioConfig({
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 24, y: 24 },
+      citizenCount: 1,
+      housingCapacity: 1,
+      workplaceCapacity: 1,
+      populationCap: 1,
+      pathSearchBudget: 50_000,
+    }),
+    commands: [],
+    activations: [],
+  },
+  'long-running-repeated-commute': {
+    config: trafficScenarioConfig({
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      homePosition: { x: 2, y: 2 },
+      workplacePosition: { x: 18, y: 10 },
+      citizenCount: 4,
+      housingCapacity: 4,
+      workplaceCapacity: 4,
+      populationCap: 4,
+    }),
     commands: [],
     activations: [],
   },
@@ -381,8 +483,18 @@ export interface BalanceSummary {
   readonly demandTotals: DemandTotals;
   readonly seeds: readonly DistrictSeed[];
   readonly activeChunkCount: number;
+  readonly traffic: readonly TrafficEdgeSnapshot[];
+  readonly activeTrafficEdges: number;
+  /** Current-window sum of all per-edge directional counters. */
+  readonly directionalTraversals: number;
+  /** Current-window sum of all per-edge total counters. */
+  readonly totalTraversals: number;
+  readonly trafficTraversalEventsRecorded: number;
+  readonly expiredTraversalEvents: number;
+  readonly peakActiveEdges: number;
   readonly structuralCounters: SimulationStructuralCounters;
   readonly snapshotChunkSummaries: number;
+  readonly snapshotTrafficSummaries: number;
   readonly commandResults: readonly BalanceCommandResult[];
   readonly activationResults: readonly BalanceActivationResult[];
   readonly buildingCount: number;
@@ -409,6 +521,10 @@ function adjacent(
   right: { readonly x: number; readonly y: number },
 ): boolean {
   return Math.abs(left.x - right.x) + Math.abs(left.y - right.y) === 1;
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string[] {
@@ -540,6 +656,51 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     ) {
       fail('global demand total is invalid');
     }
+  }
+
+  let previousTrafficKey: string | undefined;
+  let currentWindowTrafficEvents = 0;
+  for (const edge of snapshot.traffic) {
+    if (previousTrafficKey !== undefined && compareStrings(edge.key, previousTrafficKey) <= 0) {
+      fail('traffic edges are not stably ordered');
+    }
+    previousTrafficKey = edge.key;
+    try {
+      const canonical = canonicalTrafficEdge(edge.a, edge.b);
+      if (canonical.key !== edge.key) fail(`traffic edge key mismatch ${edge.key}`);
+    } catch {
+      fail(`traffic edge ${edge.key} is invalid`);
+    }
+    if (
+      !Number.isSafeInteger(edge.aToB) ||
+      !Number.isSafeInteger(edge.bToA) ||
+      !Number.isSafeInteger(edge.total) ||
+      edge.aToB < 0 ||
+      edge.bToA < 0 ||
+      edge.total < 1 ||
+      edge.aToB + edge.bToA !== edge.total
+    ) {
+      fail(`traffic edge ${edge.key} has invalid counts`);
+    }
+    currentWindowTrafficEvents += edge.total;
+  }
+  if (snapshot.structural.activeTrafficEdges !== snapshot.traffic.length) {
+    fail('active traffic edge count mismatch');
+  }
+  if (
+    snapshot.structural.trafficTraversalEventsRecorded !==
+    currentWindowTrafficEvents + snapshot.structural.trafficExpiredTraversalEvents
+  ) {
+    fail('traffic traversal counts do not reconcile');
+  }
+  if (snapshot.structural.trafficPeakActiveEdges < snapshot.structural.activeTrafficEdges) {
+    fail('traffic peak active edge count is below the active count');
+  }
+  if (
+    snapshot.structural.trafficExpiredTraversalEvents < 0 ||
+    snapshot.structural.trafficExpiredBuckets < 0
+  ) {
+    fail('traffic expiry counters are negative');
   }
 
   const citizenIds = new Set<string>();
@@ -718,6 +879,11 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     recordInvariantFailures(`tick ${String(tick + 1)}`, simulation.getSnapshot());
   }
   const snapshot = simulation.getSnapshot();
+  const directionalTraversals = snapshot.traffic.reduce(
+    (total, edge) => total + edge.aToB + edge.bToA,
+    0,
+  );
+  const totalTraversals = snapshot.traffic.reduce((total, edge) => total + edge.total, 0);
   return {
     scenario,
     seed: options.seed,
@@ -734,8 +900,16 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     demandTotals: snapshot.demand.totals,
     seeds: snapshot.seeds,
     activeChunkCount: snapshot.activeChunkCount,
+    traffic: snapshot.traffic,
+    activeTrafficEdges: snapshot.structural.activeTrafficEdges,
+    directionalTraversals,
+    totalTraversals,
+    trafficTraversalEventsRecorded: snapshot.structural.trafficTraversalEventsRecorded,
+    expiredTraversalEvents: snapshot.structural.trafficExpiredTraversalEvents,
+    peakActiveEdges: snapshot.structural.trafficPeakActiveEdges,
     structuralCounters: snapshot.structural,
     snapshotChunkSummaries: snapshot.structural.snapshotChunkSummaries,
+    snapshotTrafficSummaries: snapshot.traffic.length,
     commandResults,
     activationResults,
     buildingCount: snapshot.buildings.length,

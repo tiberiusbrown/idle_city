@@ -18,6 +18,12 @@ The client measures elapsed wall-clock time and accumulates it. Every accumulate
 
 Each simulation step copies a citizen's current logical position into `previousPosition` before applying at most one adjacent route move. At render time, the client linearly interpolates between the two logical positions using a centralized logical-cell scale. Interpolation and camera state never feed back into simulation state, including when a citizen crosses a chunk boundary or has negative coordinates.
 
+## Deterministic traffic telemetry
+
+The simulation records internal route usage only when a citizen successfully commits an adjacent logical-cell move. Physical edges are canonicalized by endpoint order `(y, x)` and expose directional `aToB`/`bToA` counts plus `total`. Route planning, blocked or rejected attempts, spawning, reset, and activity transitions do not record traffic.
+
+Traffic history uses a ring of per-tick sparse edge-delta buckets with a default 256 logical-tick window. Expiry runs only as logical ticks advance; expired bucket deltas are subtracted from aggregate edge counters and empty edges are removed. Snapshot traffic summaries are detached, nonzero, and sorted by canonical key. The raw ring buckets remain simulation-private, and traffic does not affect A* costs, route selection, or replanning.
+
 ## Deterministic paths and expansion
 
 Pathfinding uses deterministic A* with a Manhattan heuristic, integer movement cost, fixed neighbor order, coordinate/sequence tie-breaking, and an explicit node-expansion budget. The grid seam accepts active-chunk storage and a walkability callback; `findGridPathDetailed` exposes found/no-path/budget-exhausted status plus expanded-node and touched-chunk counts. Current citizen positions are not permanent obstacles. The path API keeps a chunk-level seam available for future hierarchical routing without introducing a portal framework now.
@@ -85,8 +91,8 @@ Renderer structural counters expose visible/rendered chunks, visible/rendered ci
 
 Snapshots scale with active chunk metadata and active entities, not coordinate extent. They contain no inactive chunks, empty bounding-box cells, or ordinary full demand fields. Detailed demand payloads are bounded and opt-in.
 
-The headless balance runner reports active/allocated chunks, optional occupancy and demand buffers, demand dirty/evaluation counts, path nodes expanded, path chunks touched, snapshot chunk summaries, invariant failures, and a determinism hash. Structural scenarios exercise sparse outward activation, coordinate extent beyond `1000 × 1000` without filling the box, localized demand dirtying, and long multi-chunk routes.
+The headless balance runner reports active/allocated chunks, optional occupancy and demand buffers, demand dirty/evaluation counts, path nodes expanded, path chunks touched, bounded traffic edge summaries and counters, snapshot chunk summaries, invariant failures, and a determinism hash. Structural scenarios exercise sparse outward activation, coordinate extent beyond `1000 × 1000` without filling the box, localized demand dirtying, long multi-chunk routes, and repeated traffic corridors.
 
 ## Deferred systems
 
-This step intentionally does not add movement reservations, congestion costs, roads, transit, chunk removal, player-facing expansion controls, polygon footprints, detailed voxel meshing, services, demolition, conversion, redevelopment, construction bots, or traffic measurement.
+This step intentionally does not add movement reservations, congestion costs, roads, transit, chunk removal, player-facing expansion controls, polygon footprints, detailed voxel meshing, services, demolition, conversion, redevelopment, construction bots, a Travel Flow overlay, Traffic Analysis research state, or traffic-dependent routing.

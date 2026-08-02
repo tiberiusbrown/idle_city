@@ -80,6 +80,45 @@ describe('balance runner', () => {
     expect(route.invariantFailures).toEqual([]);
   });
 
+  it('reports deterministic internal traffic for the required movement scenarios', () => {
+    const scenarios = [
+      'one-commuter',
+      'two-opposite-direction-commuters',
+      'shared-corridor',
+      'narrow-passage',
+      'multi-chunk-commute',
+      'long-running-repeated-commute',
+    ] as const;
+    const summaries = new Map<(typeof scenarios)[number], ReturnType<typeof runBalance>>();
+    for (const scenario of scenarios) {
+      const first = runBalance({ seed: 2026, ticks: 180, scenario });
+      const second = runBalance({ seed: 2026, ticks: 180, scenario });
+      summaries.set(scenario, first);
+      expect(first).toEqual(second);
+      expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+      expect(first.invariantFailures).toEqual([]);
+      expect(first.trafficTraversalEventsRecorded).toBeGreaterThan(0);
+      expect(first.activeTrafficEdges).toBe(first.traffic.length);
+      expect(first.directionalTraversals).toBe(first.totalTraversals);
+      expect(first.trafficTraversalEventsRecorded).toBe(
+        first.totalTraversals + first.expiredTraversalEvents,
+      );
+      expect(first.peakActiveEdges).toBeGreaterThanOrEqual(first.activeTrafficEdges);
+      expect(first.determinismHash).toMatch(/^[0-9a-f]{8}$/);
+    }
+    expect(
+      summaries
+        .get('two-opposite-direction-commuters')
+        ?.traffic.some(({ aToB, bToA }) => aToB > 0 && bToA > 0),
+    ).toBe(true);
+    expect(summaries.get('shared-corridor')?.totalTraversals).toBeGreaterThan(
+      summaries.get('one-commuter')?.totalTraversals ?? 0,
+    );
+    expect(summaries.get('multi-chunk-commute')?.activeTrafficEdges).toBeGreaterThan(
+      summaries.get('narrow-passage')?.activeTrafficEdges ?? 0,
+    );
+  }, 30_000);
+
   it('reports occupancy-aware housing and workplace surplus scenarios', () => {
     const housingSurplus = runBalance({ seed: 7, ticks: 30, scenario: 'housing-surplus' });
     const workplaceSurplus = runBalance({ seed: 7, ticks: 30, scenario: 'workplace-surplus' });

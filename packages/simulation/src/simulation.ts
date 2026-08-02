@@ -34,6 +34,7 @@ import {
 import { findGridPathDetailed } from './pathfinding';
 import { findNearestCompatiblePair } from './population';
 import { SeededRandom } from './random';
+import { createTrafficTelemetry, DEFAULT_TRAFFIC_HISTORY_WINDOW_TICKS } from './traffic';
 import type {
   ActivateChunkCommand,
   ActiveChunkSnapshot,
@@ -133,6 +134,7 @@ const defaults = {
   developmentCandidateSnapshotLimit: 64,
   developmentHomeCapacity: 4,
   developmentWorkplaceCapacity: 6,
+  trafficHistoryWindowTicks: DEFAULT_TRAFFIC_HISTORY_WINDOW_TICKS,
 } as const;
 
 const zeroTotals = (): DemandTotals => ({ living: 0, working: 0, services: 0 });
@@ -277,6 +279,12 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     'pathSearchBudget',
     config.pathSearchBudget ?? Math.max(10_000, chunkSize * chunkSize),
   );
+  const trafficHistoryWindowTicks = positiveInteger(
+    'trafficHistoryWindowTicks',
+    config.trafficHistoryWindowTicks ??
+      config.trafficWindowTicks ??
+      defaults.trafficHistoryWindowTicks,
+  );
   const region = resolveRegion(config);
   const initialChunks = enumerateChunkRegion(region);
   if (initialChunks.length > activeChunkLimit) {
@@ -346,6 +354,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     config.constructionPhaseDurations,
   );
   const random = new SeededRandom(seed);
+  const traffic = createTrafficTelemetry({ historyWindowTicks: trafficHistoryWindowTicks });
   const initialMinX = region.minX * chunkSize;
   const initialMinY = region.minY * chunkSize;
   const defaultHomeOrigin = {
@@ -1259,7 +1268,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       throw new Error(`Citizen ${citizen.id} route contains a non-adjacent move.`);
     }
     if (!spatial.isWalkable(next)) throw new Error(`Citizen ${citizen.id} entered a blocked cell.`);
+    const from = citizen.position;
     citizen.position = copyPosition(next);
+    traffic.recordCommittedMove(from, citizen.position);
     citizen.routeIndex = nextIndex;
     if (citizen.routeIndex === citizen.route.length - 1) {
       const destinationId =
@@ -1322,6 +1333,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     assertPopulationInvariants();
     const { metrics, averageTripDurationTicks } = calculateMetrics();
     const demand = demandSnapshot();
+    const trafficSnapshot = traffic.getSnapshot();
+    const trafficCounters = traffic.getCounters();
     const structural: SimulationStructuralCounters = {
       activeChunks: demand.activeChunks.length,
       allocatedChunks: demand.activeChunks.length,
@@ -1340,6 +1353,11 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       developmentEntrancesRejected,
       constructionProjectsStarted,
       constructionProjectsCompleted,
+      activeTrafficEdges: trafficCounters.activeEdges,
+      trafficTraversalEventsRecorded: trafficCounters.traversalEventsRecorded,
+      trafficExpiredTraversalEvents: trafficCounters.expiredTraversalEvents,
+      trafficExpiredBuckets: trafficCounters.expiredBuckets,
+      trafficPeakActiveEdges: trafficCounters.peakActiveEdges,
     };
     return {
       chunkSize,
@@ -1348,6 +1366,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       seed,
       tick,
       randomState: random.getState(),
+      trafficHistoryWindowTicks,
       populationCap,
       populationGrowthCadenceTicks,
       completedTrips,
@@ -1364,6 +1383,14 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
           totals: copyTotals(chunk.totals),
         })),
       },
+      traffic: trafficSnapshot.map((edge) => ({
+        key: edge.key,
+        a: copyPosition(edge.a),
+        b: copyPosition(edge.b),
+        aToB: edge.aToB,
+        bToA: edge.bToA,
+        total: edge.total,
+      })),
       structural,
       seeds: seeds.map((districtSeed) => ({
         ...districtSeed,
@@ -1418,6 +1445,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       const metricsBefore = calculateMetrics().metrics;
       const activitiesBefore = completedActivities;
       tick += 1;
+      traffic.advanceToTick(tick);
       for (const citizen of citizens) advanceCitizen(citizen);
       advanceConstructionProjects();
       const populationGrew = tick % populationGrowthCadenceTicks === 0 ? growPopulation() : false;
