@@ -5,13 +5,14 @@ import {
   type CommandRejectionReason,
   type DistrictSeedPlacementInfo,
   type DistrictSeedKind,
+  type ResearchFocus,
   type SimulationSnapshot,
 } from '@idle-city/simulation';
 import { registerSW } from 'virtual:pwa-register';
 import './style.css';
 import { updateSimulationView } from './view-update';
 
-type PlaceableDistrictSeedKind = Extract<DistrictSeedKind, 'living' | 'working'>;
+type PlaceableDistrictSeedKind = Extract<DistrictSeedKind, 'living' | 'working' | 'services'>;
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game-canvas');
 const tickElement = document.querySelector<HTMLElement>('[data-testid="tick"]');
@@ -26,6 +27,14 @@ const buildingCountElement = document.querySelector<HTMLElement>('[data-testid="
 const projectCountElement = document.querySelector<HTMLElement>('[data-testid="project-count"]');
 const buildButton = document.querySelector<HTMLButtonElement>('[data-action="build"]');
 const buildPanel = document.querySelector<HTMLElement>('[data-testid="build-panel"]');
+const researchButton = document.querySelector<HTMLButtonElement>('[data-action="research"]');
+const researchPanel = document.querySelector<HTMLElement>('[data-testid="research-panel"]');
+const coreStatusElement = document.querySelector<HTMLElement>('[data-testid="core-status"]');
+const coreCostElement = document.querySelector<HTMLElement>('[data-testid="core-cost"]');
+const coreRequirementsElement = document.querySelector<HTMLElement>(
+  '[data-testid="core-requirements"]',
+);
+const confirmCoreButton = document.querySelector<HTMLButtonElement>('[data-action="confirm-core"]');
 const placementStatusElement = document.querySelector<HTMLElement>(
   '[data-testid="placement-status"]',
 );
@@ -51,6 +60,7 @@ const cancelPlacementButton = document.querySelector<HTMLButtonElement>(
 );
 const livingCostElement = document.querySelector<HTMLElement>('[data-testid="living-cost"]');
 const workingCostElement = document.querySelector<HTMLElement>('[data-testid="working-cost"]');
+const servicesCostElement = document.querySelector<HTMLElement>('[data-testid="services-cost"]');
 const buildKindButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-build-kind]')];
 const speedButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-speed]')];
 const resetButton = document.querySelector<HTMLButtonElement>('[data-action="reset"]');
@@ -69,6 +79,12 @@ if (
   projectCountElement === null ||
   buildButton === null ||
   buildPanel === null ||
+  researchButton === null ||
+  researchPanel === null ||
+  coreStatusElement === null ||
+  coreCostElement === null ||
+  coreRequirementsElement === null ||
+  confirmCoreButton === null ||
   placementStatusElement === null ||
   placementCostElement === null ||
   placementRadiusElement === null ||
@@ -80,6 +96,7 @@ if (
   cancelPlacementButton === null ||
   livingCostElement === null ||
   workingCostElement === null ||
+  servicesCostElement === null ||
   resetButton === null
 ) {
   throw new Error('Required game shell elements are missing.');
@@ -98,6 +115,12 @@ const buildingCountDisplay = buildingCountElement;
 const projectCountDisplay = projectCountElement;
 const buildToggle = buildButton;
 const buildMenu = buildPanel;
+const researchToggle = researchButton;
+const researchMenu = researchPanel;
+const coreStatusDisplay = coreStatusElement;
+const coreCostDisplay = coreCostElement;
+const coreRequirementsDisplay = coreRequirementsElement;
+const confirmCorePurchaseButton = confirmCoreButton;
 const placementStatusDisplay = placementStatusElement;
 const placementCostDisplay = placementCostElement;
 const placementRadiusDisplay = placementRadiusElement;
@@ -108,6 +131,7 @@ const buildDataDisplay = buildDataElement;
 const confirmButton = confirmPlacementButton;
 const livingCostDisplay = livingCostElement;
 const workingCostDisplay = workingCostElement;
+const servicesCostDisplay = servicesCostElement;
 const cancelButton = cancelPlacementButton;
 
 const configuration = {
@@ -129,9 +153,11 @@ let accumulator = 0;
 let previousTime = performance.now();
 let speed = 1;
 let buildOpen = false;
+let researchOpen = false;
 let placementKind: PlaceableDistrictSeedKind | undefined;
 let placementCandidate: DistrictSeedPlacementInfo | undefined;
 let placementLocked = false;
+let researchFocus: ResearchFocus | undefined;
 const dragThresholdCssPixels = 8;
 interface PrimaryPointerGesture {
   readonly pointerId: number;
@@ -144,7 +170,7 @@ let primaryPointerGesture: PrimaryPointerGesture | undefined;
 function isPlaceableDistrictSeedKind(
   value: string | undefined,
 ): value is PlaceableDistrictSeedKind {
-  return value === 'living' || value === 'working';
+  return value === 'living' || value === 'working' || value === 'services';
 }
 
 function formatData(value: number): string {
@@ -239,7 +265,11 @@ function clearPlacementSelection(): void {
   placementCoordinatesDisplay.textContent = '—';
   activeCoveredCountDisplay.textContent = '—';
   placementReasonDisplay.textContent = '—';
-  setPlacementStatus('Choose Living or Working to enter placement mode.');
+  setPlacementStatus(
+    simulation.getServicesCoreState().unlocked
+      ? 'Choose Living, Working, or Services to enter placement mode.'
+      : 'Choose Living or Working to enter placement mode.',
+  );
   gameCanvas.setAttribute('aria-label', 'Idle City 3D simulation');
 }
 
@@ -252,7 +282,78 @@ function setBuildOpen(open: boolean): void {
   if (!open) clearPlacementSelection();
 }
 
+function coreRejectionMessage(reason: string): string {
+  switch (reason) {
+    case 'invalid-focus':
+      return 'Choose one research focus before installing the Core.';
+    case 'already-purchased':
+      return 'Services Core is already installed.';
+    case 'missing-prerequisites':
+      return 'The city has not met every Services Core requirement.';
+    case 'insufficient-data':
+      return 'Not enough Data to install Services Core.';
+    default:
+      return 'Services Core cannot be installed yet.';
+  }
+}
+
+function displayResearchFocus(focus: ResearchFocus | null | undefined): string {
+  if (focus === 'space') return 'Space';
+  if (focus === 'access') return 'Access';
+  if (focus === 'activity') return 'Activity';
+  return 'None';
+}
+
+function setResearchOpen(open: boolean): void {
+  researchOpen = open;
+  researchMenu.hidden = !open;
+  researchToggle.setAttribute('aria-expanded', String(open));
+  researchToggle.setAttribute('aria-label', open ? 'Close Research menu' : 'Open Research menu');
+  researchToggle.classList.toggle('active', open);
+  if (open) renderResearch(simulation.getSnapshot());
+}
+
+function renderResearch(snapshot: SimulationSnapshot): void {
+  const core = snapshot.servicesCore;
+  coreCostDisplay.textContent = `${String(core.cost)} Data`;
+  coreRequirementsDisplay.textContent = core.requirements
+    .map(
+      (requirement) =>
+        `${requirement.label}: ${String(Math.min(requirement.current, requirement.required))}/${String(requirement.required)}${requirement.met ? ' ✓' : ' — missing'}`,
+    )
+    .join(' · ');
+  const focusButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-research-focus]')];
+  focusButtons.forEach((button) => {
+    const focus = button.dataset.researchFocus;
+    const selected = focus === researchFocus;
+    button.setAttribute('aria-pressed', String(selected));
+    button.disabled = core.purchased;
+  });
+  if (core.purchased) {
+    coreStatusDisplay.textContent = `Installed — ${displayResearchFocus(core.focus)} focus`;
+    confirmCorePurchaseButton.disabled = true;
+    confirmCorePurchaseButton.textContent = 'Services Core installed';
+    return;
+  }
+  const info = simulation.getCorePurchaseInfo('services');
+  coreStatusDisplay.textContent =
+    info.missingRequirements.length > 0
+      ? 'Needs prerequisites'
+      : snapshot.data < core.cost
+        ? 'Requirements met — earn more Data'
+        : 'Ready when a focus is selected';
+  confirmCorePurchaseButton.disabled = !info.eligible || researchFocus === undefined;
+  confirmCorePurchaseButton.textContent =
+    researchFocus === undefined
+      ? 'Choose a focus to install Services Core'
+      : `Install Services Core — ${displayResearchFocus(researchFocus)} focus`;
+}
+
 function beginPlacement(kind: PlaceableDistrictSeedKind): void {
+  if (!simulation.getDistrictSeedDefinition(kind).unlocked) {
+    statusDisplay.textContent = 'Services is locked until Services Core is installed.';
+    return;
+  }
   setBuildOpen(true);
   clearPrimaryPointerGesture();
   placementCandidate = undefined;
@@ -405,10 +506,18 @@ function renderHud(snapshot: SimulationSnapshot): void {
   projectCountDisplay.textContent = `${String(snapshot.constructionProjects.length)} project${snapshot.constructionProjects.length === 1 ? '' : 's'}`;
   livingCostDisplay.textContent = `${String(simulation.getCurrentDistrictSeedCost('living'))} Data`;
   workingCostDisplay.textContent = `${String(simulation.getCurrentDistrictSeedCost('working'))} Data`;
+  servicesCostDisplay.textContent = `${String(simulation.getCurrentDistrictSeedCost('services'))} Data`;
+  const servicesBuildButton = buildKindButtons.find(
+    (button) => button.dataset.buildKind === 'services',
+  );
+  if (servicesBuildButton !== undefined) {
+    servicesBuildButton.hidden = !snapshot.servicesCore.unlocked;
+  }
   buildDataDisplay.textContent = `Data available: ${formatData(snapshot.data)}`;
   if (placementKind !== undefined) {
     placementCostDisplay.textContent = `Current cost: ${String(simulation.getCurrentDistrictSeedCost(placementKind))} Data`;
   }
+  if (researchOpen) renderResearch(snapshot);
 }
 
 speedButtons.forEach((button) => {
@@ -423,8 +532,15 @@ buildToggle.addEventListener('click', () => {
     statusDisplay.textContent = 'Build menu closed.';
   } else {
     setBuildOpen(true);
-    statusDisplay.textContent = 'Build menu open. Choose Living or Working.';
+    statusDisplay.textContent = simulation.getServicesCoreState().unlocked
+      ? 'Build menu open. Choose Living, Working, or Services.'
+      : 'Build menu open. Choose Living or Working.';
   }
+});
+
+researchToggle.addEventListener('click', () => {
+  setResearchOpen(!researchOpen);
+  statusDisplay.textContent = researchOpen ? 'Research menu open.' : 'Research menu closed.';
 });
 
 buildKindButtons.forEach((button) => {
@@ -433,6 +549,36 @@ buildKindButtons.forEach((button) => {
     if (!isPlaceableDistrictSeedKind(kind)) return;
     beginPlacement(kind);
   });
+});
+
+document.querySelectorAll<HTMLButtonElement>('[data-research-focus]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const focus = button.dataset.researchFocus;
+    if (focus !== 'space' && focus !== 'access' && focus !== 'activity') return;
+    researchFocus = focus;
+    renderResearch(simulation.getSnapshot());
+  });
+});
+
+confirmCorePurchaseButton.addEventListener('click', () => {
+  if (researchFocus === undefined) {
+    statusDisplay.textContent = 'Choose Space, Access, or Activity before confirming.';
+    return;
+  }
+  const result = simulation.purchaseCore({ core: 'services', focus: researchFocus });
+  if (!result.accepted) {
+    statusDisplay.textContent = coreRejectionMessage(result.reason);
+  } else {
+    statusDisplay.textContent = `Services Core installed with ${displayResearchFocus(result.focus)} focus.`;
+    researchFocus = undefined;
+  }
+  const snapshot = simulation.getSnapshot();
+  updateSimulationView(
+    snapshot,
+    1,
+    (currentSnapshot, interpolation) => city.update(currentSnapshot, interpolation),
+    renderHud,
+  );
 });
 
 cancelButton.addEventListener('click', () => {
@@ -498,7 +644,9 @@ resetButton.addEventListener('click', () => {
   simulation = createSimulation(configuration);
   accumulator = 0;
   previousTime = performance.now();
+  researchFocus = undefined;
   setBuildOpen(false);
+  setResearchOpen(false);
   const snapshot = simulation.getSnapshot();
   updateSimulationView(
     snapshot,
@@ -533,6 +681,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 setBuildOpen(false);
+setResearchOpen(false);
 renderHud(initialSnapshot);
 setSpeed(1);
 registerSW({ immediate: true });

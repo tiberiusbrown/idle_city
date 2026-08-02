@@ -7,6 +7,7 @@ export interface CityMaterials {
   readonly alternateGround: PBRMaterial;
   readonly home: PBRMaterial;
   readonly workplace: PBRMaterial;
+  readonly service: PBRMaterial;
   readonly window: PBRMaterial;
   readonly citizen: PBRMaterial;
   readonly constructionCitizen: PBRMaterial;
@@ -59,6 +60,7 @@ export function createCityMaterials(scene: Scene): CityMaterials {
     ),
     home: createMaterial(scene, 'home-material', living, 0.1),
     workplace: createMaterial(scene, 'workplace-material', working, 0.12),
+    service: createMaterial(scene, 'service-material', services, 0.2),
     window: createMaterial(scene, 'window-material', cyan, 0.7),
     citizen: createMaterial(scene, 'citizen-material', new Color3(0.98, 0.65, 0.27), 0.18),
     constructionCitizen: createMaterial(

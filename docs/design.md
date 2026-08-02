@@ -148,7 +148,7 @@ Demand:
 
 ### 4.5 Developer projects — Implemented foundation
 
-Developer scoring is deterministic and currently supports homes and workplaces.
+Developer scoring is deterministic and currently supports homes, workplaces, and Services buildings.
 
 The implemented normalized score is:
 
@@ -271,14 +271,14 @@ Future visual sub-stages may exist inside renderer animation, but they must not 
 
 The complete planned catalog contains exactly six district seed types.
 
-| Contract ID          | Seed          | Status                              | Base cost | Unlock                              |
-| -------------------- | ------------- | ----------------------------------- | --------: | ----------------------------------- |
-| `SEED-LIVING`        | Living        | Implemented                         |   10 Data | Bootstrap                           |
-| `SEED-WORKING`       | Working       | Implemented                         |   12 Data | Bootstrap                           |
-| `SEED-SERVICES`      | Services      | Implemented domain; locked behavior |   20 Data | Services Core                       |
-| `SEED-LEARNING`      | Learning      | Contracted                          |   40 Data | Choose Learning specialization      |
-| `SEED-INDUSTRY`      | Industry      | Contracted                          |   45 Data | Choose Industry specialization      |
-| `SEED-ENTERTAINMENT` | Entertainment | Contracted                          |   40 Data | Choose Entertainment specialization |
+| Contract ID          | Seed          | Status      | Base cost | Unlock                              |
+| -------------------- | ------------- | ----------- | --------: | ----------------------------------- |
+| `SEED-LIVING`        | Living        | Implemented |   10 Data | Bootstrap                           |
+| `SEED-WORKING`       | Working       | Implemented |   12 Data | Bootstrap                           |
+| `SEED-SERVICES`      | Services      | Implemented |   20 Data | Services Core                       |
+| `SEED-LEARNING`      | Learning      | Contracted  |   40 Data | Choose Learning specialization      |
+| `SEED-INDUSTRY`      | Industry      | Contracted  |   45 Data | Choose Industry specialization      |
+| `SEED-ENTERTAINMENT` | Entertainment | Contracted  |   40 Data | Choose Entertainment specialization |
 
 There are no Transit or Research district seeds.
 
@@ -485,6 +485,7 @@ Initial implemented categories:
 
 - Home
 - Workplace
+- Services building
 
 Contracted categories:
 

@@ -43,7 +43,10 @@ async function openBuild(page: Page): Promise<void> {
   await expect(page.getByTestId('build-panel')).toBeVisible();
 }
 
-async function findValidMapPoint(page: Page, kind: 'Living' | 'Working'): Promise<MapPoint> {
+async function findValidMapPoint(
+  page: Page,
+  kind: 'Living' | 'Working' | 'Services',
+): Promise<MapPoint> {
   const canvas = page.locator('#game-canvas');
   const bounds = await canvas.boundingBox();
   if (bounds === null) throw new Error('The game canvas is not measurable.');
@@ -108,7 +111,10 @@ async function findMapPointWithStatus(page: Page, message: string): Promise<MapP
   throw new Error(`No map point with status ${message} was found.`);
 }
 
-async function placeWithMouse(page: Page, kind: 'Living' | 'Working'): Promise<MapPoint> {
+async function placeWithMouse(
+  page: Page,
+  kind: 'Living' | 'Working' | 'Services',
+): Promise<MapPoint> {
   await openBuild(page);
   await page.getByRole('button', { name: `Choose ${kind} district seed` }).click();
   await expect(page.getByTestId('placement-status')).toContainText(`${kind} placement mode`);
@@ -127,11 +133,16 @@ test('Build opens and closes with only Living and Working seed choices', async (
   await openBuild(page);
   await expect(page.getByRole('button', { name: 'Choose Living district seed' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Choose Working district seed' })).toBeVisible();
-  await expect(page.getByRole('button', { name: /Services/ })).toHaveCount(0);
+  await expect(page.locator('[data-build-kind="services"]')).toBeHidden();
   await expect(page.getByTestId('living-cost')).toHaveText('10 Data');
   await expect(page.getByTestId('working-cost')).toHaveText('12 Data');
   await page.getByRole('button', { name: 'Close Build menu' }).click();
   await expect(page.getByTestId('build-panel')).toBeHidden();
+  await page.getByRole('button', { name: 'Open Research menu' }).click();
+  await expect(page.getByTestId('services-core-card')).toBeVisible();
+  await expect(page.getByTestId('core-status')).toHaveText('Needs prerequisites');
+  await expect(page.locator('[data-action="confirm-core"]')).toBeDisabled();
+  await page.getByRole('button', { name: 'Close Research menu' }).click();
 });
 
 test('mouse placement previews, charges the exact cost, rejects duplicates and insufficient Data, and cancels', async ({
@@ -262,6 +273,64 @@ test('accepted seed renders autonomous construction and population growth, then 
   await expect(page.getByTestId('citizen-count')).toHaveText('10');
 });
 
+test('Services Core unlocks mouse and touch Services placement', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await placeWithMouse(page, 'Living');
+
+  await page.getByRole('button', { name: 'Choose Working district seed' }).click();
+  const workingPoint = await findValidMapPoint(page, 'Working');
+  await page.mouse.click(workingPoint.x, workingPoint.y);
+  await page.locator('[data-action="confirm-placement"]').click();
+  await expect(page.getByTestId('status')).toContainText('Working seed accepted');
+  await page.getByRole('button', { name: 'Close Build menu' }).click();
+
+  await page.getByRole('button', { name: 'Run at fast speed' }).click();
+  await page.getByRole('button', { name: 'Open Research menu' }).click();
+  await expect(page.getByTestId('research-panel')).toBeVisible();
+  await expect(page.getByTestId('core-requirements')).toContainText('Population: 20/20', {
+    timeout: 120_000,
+  });
+  await expect(page.getByTestId('core-requirements')).toContainText(
+    'Completed work activities: 40/40',
+    { timeout: 120_000 },
+  );
+  await expect
+    .poll(() => metric(page, 'data-metric'), { timeout: 120_000 })
+    .toBeGreaterThanOrEqual(50);
+
+  await page.locator('[data-research-focus="activity"]').click();
+  await expect(page.locator('[data-action="confirm-core"]')).toBeEnabled();
+  await page.locator('[data-action="confirm-core"]').click();
+  await expect(page.getByTestId('core-status')).toContainText('Installed');
+  await expect(page.getByTestId('core-status')).toContainText('Activity');
+
+  await expect
+    .poll(() => metric(page, 'data-metric'), { timeout: 120_000 })
+    .toBeGreaterThanOrEqual(20);
+  await page.getByRole('button', { name: 'Open Build menu' }).click();
+  await expect(page.getByRole('button', { name: 'Choose Services district seed' })).toBeVisible();
+  await expect(page.getByTestId('services-cost')).toHaveText('20 Data');
+  await page.getByRole('button', { name: 'Choose Services district seed' }).click();
+  const mouseServicesPoint = await findValidMapPoint(page, 'Services');
+  await page.mouse.click(mouseServicesPoint.x, mouseServicesPoint.y);
+  await expect(page.locator('[data-action="confirm-placement"]')).toBeEnabled();
+  await page.locator('[data-action="confirm-placement"]').click();
+  await expect(page.getByTestId('status')).toContainText('Services seed accepted');
+
+  await expect
+    .poll(() => metric(page, 'data-metric'), { timeout: 120_000 })
+    .toBeGreaterThanOrEqual(25);
+  await page.getByRole('button', { name: 'Choose Services district seed' }).click();
+  const touchServicesPoint = await findValidMapPoint(page, 'Services');
+  await dispatchTouchPointer(page, 'pointerdown', touchServicesPoint, 901);
+  await dispatchTouchPointer(page, 'pointerup', touchServicesPoint, 901);
+  await expect(page.locator('[data-action="confirm-placement"]')).toBeEnabled();
+  await page.locator('[data-action="confirm-placement"]').click();
+  await expect(page.getByTestId('status')).toContainText('Services seed accepted');
+});
+
 test.describe('touch viewport', () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 
@@ -271,10 +340,8 @@ test.describe('touch viewport', () => {
     await openBuild(page);
     await page.getByRole('button', { name: 'Choose Working district seed' }).tap();
     const point = await findValidMapPoint(page, 'Working');
-    const canvas = page.locator('#game-canvas');
-    const bounds = await canvas.boundingBox();
-    if (bounds === null) throw new Error('The game canvas is not measurable.');
-    await canvas.tap({ position: { x: point.x - bounds.x, y: point.y - bounds.y } });
+    await dispatchTouchPointer(page, 'pointerdown', point, 706);
+    await dispatchTouchPointer(page, 'pointerup', point, 706);
     const confirmButton = page.locator('[data-action="confirm-placement"]');
     await expect(confirmButton).toBeEnabled();
     await confirmButton.tap();

@@ -1,5 +1,9 @@
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
-import { createSimulation, type SimulationSnapshot } from '@idle-city/simulation';
+import {
+  createSimulation,
+  type ConstructionProject,
+  type SimulationSnapshot,
+} from '@idle-city/simulation';
 import { describe, expect, it } from 'vitest';
 import { createCityScene, logicalToWorld } from '../src/index';
 
@@ -275,6 +279,82 @@ describe('visible chunk city scene', () => {
     );
     expect(city.scene.getTransformNodeByName(`construction-${project.id}`)).toBeNull();
     expect(city.scene.getTransformNodeByName(`building-${building.id}`)).not.toBeNull();
+    city.dispose();
+    engine.dispose();
+  });
+
+  it('reconciles a distinct Services building and construction visual by stable ID', () => {
+    const engine = new NullEngine();
+    const initial = createSimulation({ citizenCount: 0 }).getSnapshot();
+    const serviceBuilding = {
+      id: 'service-2',
+      type: 'service' as const,
+      footprint: { x: 6, y: 6, width: 4, height: 4 },
+      entrance: { x: 6, y: 5 },
+      capacity: 8,
+    };
+    const serviceProject: ConstructionProject = {
+      id: 'construction-service-1',
+      buildingType: 'service',
+      footprint: { x: 10, y: 6, width: 4, height: 4 },
+      entrance: { x: 10, y: 5 },
+      capacity: 8,
+      phase: 'foundation',
+      phaseLaborCompleted: 2,
+      phaseLaborRequired: 8,
+      workerCount: 0,
+      paused: true,
+      phaseTicksRemaining: 1,
+      phaseTicksElapsed: 1,
+      totalTicksElapsed: 1,
+      startedTick: 0,
+      score: 0.5,
+      primaryReason: {
+        code: 'local-matching-demand',
+        text: 'Local demand for service building capacity is high.',
+        scoreContribution: 0.3,
+      },
+      seedInfluence: 0.5,
+      spatialFactor: 0.5,
+      expectedAccessImprovement: 0.5,
+      envelope: { x: 9, y: 5, width: 6, height: 6 },
+      connector: [
+        { x: 8, y: 5 },
+        { x: 8, y: 6 },
+        { x: 9, y: 5 },
+        { x: 9, y: 6 },
+      ],
+      stagingCells: [
+        { x: 10, y: 5 },
+        { x: 9, y: 6 },
+        { x: 11, y: 5 },
+      ],
+    };
+    const city = createCityScene(engine, initial, { visibleChunks: [{ x: 0, y: 0 }] });
+    const serviceSnapshot = replaceSnapshot(initial, {
+      buildings: [...initial.buildings, serviceBuilding],
+      constructionProjects: [serviceProject],
+    });
+    city.update(serviceSnapshot, 1);
+    const serviceBody = city.scene.getMeshByName(`${serviceBuilding.id}-body`);
+    if (serviceBody === null) throw new Error('The Services building body is required.');
+    expect(serviceBody.material?.name).toBe('service-material');
+    expect(serviceBody.scaling.x).toBeCloseTo(1);
+    expect(serviceBody.scaling.z).toBeCloseTo(1);
+    expect(city.scene.getMeshByName(`${serviceProject.id}-foundation`)).not.toBeNull();
+    expect(city.scene.getMeshByName(`${serviceProject.id}-foundation`)?.material?.name).toBe(
+      'construction-paused-material',
+    );
+
+    city.update(
+      replaceSnapshot(serviceSnapshot, {
+        buildings: [...initial.buildings, serviceBuilding],
+        constructionProjects: [],
+      }),
+      1,
+    );
+    expect(city.scene.getTransformNodeByName(`construction-${serviceProject.id}`)).toBeNull();
+    expect(city.scene.getTransformNodeByName(`building-${serviceBuilding.id}`)).not.toBeNull();
     city.dispose();
     engine.dispose();
   });

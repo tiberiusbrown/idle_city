@@ -17,7 +17,7 @@ interface BuildingVisual {
 }
 
 export function buildingVisualHeight(type: Building['type']): number {
-  return type === 'home' ? 0.9 : 1.8;
+  return type === 'home' ? 0.9 : type === 'workplace' ? 1.8 : 1.35;
 }
 
 function setBoxDimensions(
@@ -31,7 +31,11 @@ function setBoxDimensions(
 }
 
 function materialForBuilding(type: Building['type'], materials: CityMaterials) {
-  return type === 'home' ? materials.home : materials.workplace;
+  return type === 'home'
+    ? materials.home
+    : type === 'workplace'
+      ? materials.workplace
+      : materials.service;
 }
 
 export function createBuildingLayer(

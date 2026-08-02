@@ -299,4 +299,81 @@ describe('balance runner', () => {
     ).toBeGreaterThan(0);
     expect(summaries.get('off-screen-construction')?.construction.laborUnits).toBeGreaterThan(0);
   }, 30_000);
+
+  it('covers the Services Core progression and generic Services scenarios', () => {
+    const scenarios = [
+      'services-core-progression',
+      'no-service-shortage',
+      'one-service-near-homes',
+      'one-service-near-workplaces',
+      'competing-services',
+      'service-capacity-bottleneck',
+      'services-seed-development',
+      'dense-service-commute',
+    ] as const;
+    const summaries = new Map<(typeof scenarios)[number], ReturnType<typeof runBalance>>();
+    for (const scenario of scenarios) {
+      const ticks = scenario === 'dense-service-commute' ? 2_200 : 1_400;
+      const summary = runBalance({ seed: 2026, ticks, scenario });
+      summaries.set(scenario, summary);
+      expect(summary.invariantFailures).toEqual([]);
+      expect(summary.determinismHash).toMatch(/^[0-9a-f]{8}$/);
+      expect(summary.corePurchaseResults).toHaveLength(1);
+      expect(summary.corePurchaseResults[0]?.result).toEqual({
+        accepted: true,
+        core: 'services',
+        focus: 'activity',
+        cost: 50,
+      });
+      expect(summary.servicesCore.purchased).toBe(true);
+      expect(summary.researchFocus).toBe('activity');
+      expect(summary.completedActivities).toBe(
+        summary.completedWorkActivities + summary.completedServiceActivities,
+      );
+      expect(summary.dataBySource.work).toBeGreaterThan(0);
+    }
+
+    const noShortage = summaries.get('no-service-shortage');
+    expect(noShortage?.serviceCount).toBe(0);
+    expect(noShortage?.serviceUses).toBe(0);
+    expect(noShortage?.failedServiceDestinationAttempts).toBeGreaterThan(0);
+
+    for (const scenario of [
+      'one-service-near-homes',
+      'one-service-near-workplaces',
+      'competing-services',
+      'service-capacity-bottleneck',
+    ] as const) {
+      const summary = summaries.get(scenario);
+      expect(
+        summary?.commandResults.some(
+          ({ command, result }) => command.kind === 'services' && result.accepted,
+        ),
+      ).toBe(true);
+      expect(summary?.serviceCount).toBeGreaterThan(0);
+      expect(summary?.serviceUses).toBeGreaterThan(0);
+      expect(summary?.dataBySource.service).toBeGreaterThan(0);
+    }
+
+    const bottleneck = summaries.get('service-capacity-bottleneck');
+    expect(bottleneck?.failedServiceDestinationAttempts).toBeGreaterThan(0);
+    expect(bottleneck?.serviceWaitTicks).toBeGreaterThan(0);
+
+    for (const scenario of ['services-seed-development', 'dense-service-commute'] as const) {
+      const first = runBalance({
+        seed: 2026,
+        ticks: 2_200,
+        scenario,
+      });
+      const second = runBalance({
+        seed: 2026,
+        ticks: 2_200,
+        scenario,
+      });
+      expect(first).toEqual(second);
+      expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+      expect(first.constructionProjectsStarted).toBeGreaterThan(0);
+      expect(first.serviceUses).toBeGreaterThan(0);
+    }
+  }, 60_000);
 });

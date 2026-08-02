@@ -5,7 +5,11 @@ import type {
   DevelopmentReasonCode,
 } from './types';
 
-export const DEVELOPMENT_BUILDING_TYPE_ORDER: readonly BuildingType[] = ['home', 'workplace'];
+export const DEVELOPMENT_BUILDING_TYPE_ORDER: readonly BuildingType[] = [
+  'home',
+  'workplace',
+  'service',
+];
 
 export const DEVELOPMENT_SCORE_PRECISION = 1_000_000;
 
@@ -63,7 +67,14 @@ function normalized(name: string, value: number): number {
 }
 
 function noun(buildingType: BuildingType): string {
-  return buildingType === 'home' ? 'home' : 'workplace';
+  switch (buildingType) {
+    case 'home':
+      return 'home';
+    case 'workplace':
+      return 'workplace';
+    case 'service':
+      return 'service building';
+  }
 }
 
 function reasonText(code: DevelopmentReasonCode, buildingType: BuildingType): string {

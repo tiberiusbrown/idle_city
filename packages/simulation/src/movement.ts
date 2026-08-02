@@ -265,9 +265,22 @@ export function buildMovementProposals(input: MovementProposalInput): readonly M
 function chooseTargetWinners(
   proposals: readonly MovementProposal[],
 ): ReadonlyMap<string, MovementProposal> {
+  const validProposals = proposals.filter((proposal) => proposal.valid);
+  const reciprocalProposalIds = new Set<string>();
+  for (const proposal of validProposals) {
+    if (
+      validProposals.some(
+        (other) =>
+          other.citizenId !== proposal.citizenId &&
+          positionsEqual(other.from, proposal.to) &&
+          positionsEqual(other.to, proposal.from),
+      )
+    ) {
+      reciprocalProposalIds.add(proposal.citizenId);
+    }
+  }
   const byTarget = new Map<string, MovementProposal[]>();
-  for (const proposal of proposals) {
-    if (!proposal.valid) continue;
+  for (const proposal of validProposals) {
     const targetKey = coordinateKey(proposal.to);
     const group = byTarget.get(targetKey);
     if (group === undefined) byTarget.set(targetKey, [proposal]);
@@ -275,7 +288,12 @@ function chooseTargetWinners(
   }
   const winners = new Map<string, MovementProposal>();
   for (const group of byTarget.values()) {
-    group.sort(compareMovementProposals);
+    group.sort((left, right) => {
+      const leftIsReciprocal = reciprocalProposalIds.has(left.citizenId);
+      const rightIsReciprocal = reciprocalProposalIds.has(right.citizenId);
+      if (leftIsReciprocal !== rightIsReciprocal) return leftIsReciprocal ? -1 : 1;
+      return compareMovementProposals(left, right);
+    });
     const winner = group[0];
     if (winner !== undefined) winners.set(winner.citizenId, winner);
   }

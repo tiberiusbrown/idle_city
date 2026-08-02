@@ -4,6 +4,7 @@ import type { BuildingType } from './types';
 export const BUILDING_FOOTPRINTS = {
   home: { width: 3, height: 3 },
   workplace: { width: 5, height: 5 },
+  service: { width: 4, height: 4 },
 } as const satisfies Readonly<Record<BuildingType, { width: number; height: number }>>;
 
 const directions: readonly GridPosition[] = [

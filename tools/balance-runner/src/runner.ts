@@ -13,10 +13,15 @@ import {
   type CityMetrics,
   type ChunkActivationResult,
   type CommandResult,
+  type CorePurchaseInfo,
+  type CorePurchaseResult,
+  type BuildingType,
   type DemandTotals,
   type DistrictSeed,
   type DistrictSeedPlacementInfo,
   type PlaceDistrictSeedCommand,
+  type PurchaseCoreCommand,
+  type ResearchFocus,
   type SimulationConfig,
   type SimulationSnapshot,
   type SimulationStructuralCounters,
@@ -78,6 +83,14 @@ export const balanceScenarioNames = [
   'construction-dense-commute',
   'off-screen-construction',
   'repeated-deterministic-construction',
+  'services-core-progression',
+  'no-service-shortage',
+  'one-service-near-homes',
+  'one-service-near-workplaces',
+  'competing-services',
+  'service-capacity-bottleneck',
+  'services-seed-development',
+  'dense-service-commute',
 ] as const;
 
 export type BalanceScenarioName = (typeof balanceScenarioNames)[number];
@@ -94,10 +107,17 @@ export interface ScheduledChunkActivationCommand {
   readonly command: ActivateChunkCommand;
 }
 
+export interface ScheduledCorePurchaseCommand {
+  /** The simulation tick at which this purchase is applied; tick 0 is pre-step. */
+  readonly tick: number;
+  readonly command: PurchaseCoreCommand;
+}
+
 interface BalanceScenarioDefinition {
   readonly config: SimulationConfig;
   readonly commands: readonly ScheduledDistrictSeedCommand[];
   readonly activations: readonly ScheduledChunkActivationCommand[];
+  readonly corePurchases?: readonly ScheduledCorePurchaseCommand[];
 }
 
 function linearActivations(
@@ -119,12 +139,41 @@ function trafficScenarioConfig(overrides: SimulationConfig): SimulationConfig {
   };
 }
 
+function servicesScenarioConfig(overrides: SimulationConfig): SimulationConfig {
+  return {
+    chunkSize: 8,
+    initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+    homePosition: { x: 0, y: 0 },
+    workplacePosition: { x: 8, y: 8 },
+    citizenCount: 20,
+    housingCapacity: 20,
+    workplaceCapacity: 20,
+    populationCap: 20,
+    activityDurationTicks: 1,
+    populationGrowthCadenceTicks: 1_000_000,
+    developmentEvaluationIntervalTicks: 10,
+    startingData: 400,
+    ...overrides,
+  };
+}
+
+function servicesCorePurchase(tick = 1_000): ScheduledCorePurchaseCommand {
+  return { tick, command: { core: 'services', focus: 'activity' } };
+}
+
+function servicesSeedCommand(
+  tick: number,
+  position: { readonly x: number; readonly y: number },
+): ScheduledDistrictSeedCommand {
+  return { tick, command: { kind: 'services', position } };
+}
+
 const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition> = {
   baseline: { config: {}, commands: [], activations: [] },
   'long-commute': {
     config: {
       chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 6, height: 6 },
+      initialChunkRegion: { minX: 0, minY: 0, width: 5, height: 5 },
       homePosition: { x: 2, y: 2 },
       workplacePosition: { x: 70, y: 70 },
     },
@@ -813,6 +862,85 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
     activations: [],
   },
+  'services-core-progression': {
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 1_000 }),
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
+    ],
+    activations: [],
+    corePurchases: [servicesCorePurchase()],
+  },
+  'no-service-shortage': {
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 1_000 }),
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
+    ],
+    activations: [],
+    corePurchases: [servicesCorePurchase()],
+  },
+  'one-service-near-homes': {
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 10 }),
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
+      servicesSeedCommand(1_001, { x: 4, y: 4 }),
+    ],
+    activations: [],
+    corePurchases: [servicesCorePurchase()],
+  },
+  'one-service-near-workplaces': {
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 10 }),
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
+      servicesSeedCommand(1_001, { x: 14, y: 8 }),
+    ],
+    activations: [],
+    corePurchases: [servicesCorePurchase()],
+  },
+  'competing-services': {
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 10 }),
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
+      servicesSeedCommand(1_001, { x: 4, y: 4 }),
+      servicesSeedCommand(1_002, { x: 14, y: 8 }),
+    ],
+    activations: [],
+    corePurchases: [servicesCorePurchase()],
+  },
+  'service-capacity-bottleneck': {
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 10 }),
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
+      servicesSeedCommand(1_001, { x: 4, y: 4 }),
+    ],
+    activations: [],
+    corePurchases: [servicesCorePurchase()],
+  },
+  'services-seed-development': {
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 1 }),
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
+      servicesSeedCommand(1_001, { x: 4, y: 4 }),
+    ],
+    activations: [],
+    corePurchases: [servicesCorePurchase()],
+  },
+  'dense-service-commute': {
+    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 1 }),
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
+      servicesSeedCommand(1_001, { x: 4, y: 4 }),
+    ],
+    activations: [],
+    corePurchases: [servicesCorePurchase()],
+  },
 };
 
 export function isBalanceScenarioName(value: string): value is BalanceScenarioName {
@@ -841,6 +969,15 @@ export function getBalanceScenarioActivations(
   }));
 }
 
+export function getBalanceScenarioCorePurchases(
+  scenario: BalanceScenarioName,
+): readonly ScheduledCorePurchaseCommand[] {
+  return (scenarioDefinitions[scenario].corePurchases ?? []).map(({ tick, command }) => ({
+    tick,
+    command: { ...command },
+  }));
+}
+
 export interface BalanceOptions {
   readonly seed: number;
   readonly ticks: number;
@@ -851,6 +988,7 @@ export interface BalanceOptions {
   readonly scenario?: BalanceScenarioName;
   readonly commands?: readonly ScheduledDistrictSeedCommand[];
   readonly activations?: readonly ScheduledChunkActivationCommand[];
+  readonly corePurchases?: readonly ScheduledCorePurchaseCommand[];
 }
 
 export interface BalanceCommandResult {
@@ -864,6 +1002,13 @@ export interface BalanceActivationResult {
   readonly tick: number;
   readonly command: ActivateChunkCommand;
   readonly result: ChunkActivationResult;
+}
+
+export interface BalanceCorePurchaseResult {
+  readonly tick: number;
+  readonly command: PurchaseCoreCommand;
+  readonly info: CorePurchaseInfo & { readonly reason?: string };
+  readonly result: CorePurchaseResult;
 }
 
 export interface BalanceMovementSummary {
@@ -901,8 +1046,19 @@ export interface BalanceSummary {
   readonly populationGrowthCadenceTicks: number;
   readonly completedTrips: number;
   readonly completedActivities: number;
+  readonly completedWorkActivities: number;
+  readonly completedServiceActivities: number;
+  readonly serviceTrips: number;
+  readonly serviceUses: number;
+  readonly failedServiceDestinationAttempts: number;
+  readonly serviceWaitTicks: number;
   readonly data: number;
   readonly dataGeneratedThisTick: number;
+  readonly dataGeneratedThisTickBySource: SimulationSnapshot['dataGeneratedThisTickBySource'];
+  readonly dataBySource: SimulationSnapshot['dataBySource'];
+  readonly core: SimulationSnapshot['core'];
+  readonly servicesCore: SimulationSnapshot['servicesCore'];
+  readonly researchFocus: ResearchFocus | null;
   readonly averageTripDurationTicks: number;
   readonly metrics: CityMetrics;
   readonly demandTotals: DemandTotals;
@@ -924,9 +1080,11 @@ export interface BalanceSummary {
   readonly snapshotTrafficSummaries: number;
   readonly commandResults: readonly BalanceCommandResult[];
   readonly activationResults: readonly BalanceActivationResult[];
+  readonly corePurchaseResults: readonly BalanceCorePurchaseResult[];
   readonly buildingCount: number;
   readonly homeCount: number;
   readonly workplaceCount: number;
+  readonly serviceCount: number;
   readonly activeConstructionProjects: number;
   readonly constructionProjectsStarted: number;
   readonly constructionProjectsCompleted: number;
@@ -1024,12 +1182,14 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
   const occupiedCells = new Set<string>();
   const reservedCells = new Set<string>();
   const circulationCells = new Set<string>(rowKeys);
-  const capacityByType = new Map<'home' | 'workplace', number>([
+  const capacityByType = new Map<BuildingType, number>([
     ['home', 0],
     ['workplace', 0],
+    ['service', 0],
   ]);
   const homeOccupancy = new Map<string, number>();
   const workplaceOccupancy = new Map<string, number>();
+  const serviceOccupancy = new Map<string, number>();
   for (const building of snapshot.buildings) {
     if (buildingIds.has(building.id)) fail(`duplicate building id ${building.id}`);
     buildingIds.add(building.id);
@@ -1038,6 +1198,12 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     else capacityByType.set(building.type, typeCapacity + building.capacity);
     if (!Number.isSafeInteger(building.capacity) || building.capacity < 0) {
       fail(`building ${building.id} has invalid capacity`);
+    }
+    if (building.type === 'service') {
+      if (building.footprint.width !== 4 || building.footprint.height !== 4) {
+        fail(`service building ${building.id} does not have a 4x4 footprint`);
+      }
+      if (building.capacity !== 8) fail(`service building ${building.id} does not have capacity 8`);
     }
     if (!isExteriorEntrance(building.entrance, building.footprint)) {
       fail(`building ${building.id} entrance is not exterior`);
@@ -1111,6 +1277,12 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
       project.workerCount < 0
     ) {
       fail(`construction project ${project.id} has invalid labor state`);
+    }
+    if (project.buildingType === 'service') {
+      if (project.footprint.width !== 4 || project.footprint.height !== 4) {
+        fail(`service project ${project.id} does not have a 4x4 footprint`);
+      }
+      if (project.capacity !== 8) fail(`service project ${project.id} does not have capacity 8`);
     }
     if (project.stagingCells.length !== 3) {
       fail(`construction project ${project.id} does not have exactly three staging cells`);
@@ -1258,6 +1430,8 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     'commuting-to-work',
     'work',
     'commuting-home',
+    'commuting-to-service',
+    'service',
     'commuting-to-construction',
     'constructing',
   ]);
@@ -1286,6 +1460,34 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
       if (workplace.type !== 'workplace') fail(`citizen ${citizen.id} workplace has invalid type`);
       workplaceOccupancy.set(workplace.id, (workplaceOccupancy.get(workplace.id) ?? 0) + 1);
     }
+    if (
+      citizen.serviceNeed < 0 ||
+      !Number.isSafeInteger(citizen.serviceNeed) ||
+      citizen.serviceNeed > 4
+    ) {
+      fail(`citizen ${citizen.id} has invalid service need`);
+    }
+    if (!Number.isSafeInteger(citizen.serviceWaitTicks) || citizen.serviceWaitTicks < 0) {
+      fail(`citizen ${citizen.id} has invalid service wait state`);
+    }
+    if (citizen.serviceDestinationBuildingId !== null) {
+      const service = snapshot.buildings.find(
+        ({ id }) => id === citizen.serviceDestinationBuildingId,
+      );
+      if (service?.type !== 'service') {
+        fail(`citizen ${citizen.id} has invalid service destination`);
+      } else {
+        serviceOccupancy.set(service.id, (serviceOccupancy.get(service.id) ?? 0) + 1);
+        if (
+          (citizen.activity === 'service' || citizen.activity === 'commuting-to-service') &&
+          !isExteriorEntrance(service.entrance, service.footprint)
+        ) {
+          fail(`citizen ${citizen.id} service destination has invalid entrance`);
+        }
+      }
+    } else if (citizen.activity === 'service' || citizen.activity === 'commuting-to-service') {
+      fail(`citizen ${citizen.id} has a service activity without a destination`);
+    }
     if (!validActivities.has(citizen.activity)) fail(`citizen ${citizen.id} has invalid activity`);
     if (
       !Number.isSafeInteger(citizen.activityTicksRemaining) ||
@@ -1299,6 +1501,7 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     if (
       citizen.activity === 'commuting-to-work' ||
       citizen.activity === 'commuting-home' ||
+      citizen.activity === 'commuting-to-service' ||
       citizen.activity === 'commuting-to-construction' ||
       citizen.activity === 'constructing'
     ) {
@@ -1369,7 +1572,9 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     const occupied =
       building.type === 'home'
         ? (homeOccupancy.get(building.id) ?? 0)
-        : (workplaceOccupancy.get(building.id) ?? 0);
+        : building.type === 'workplace'
+          ? (workplaceOccupancy.get(building.id) ?? 0)
+          : (serviceOccupancy.get(building.id) ?? 0);
     if (occupied > building.capacity) fail(`building ${building.id} exceeds capacity`);
   }
   for (const project of snapshot.constructionProjects) {
@@ -1399,6 +1604,45 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
   if (!Number.isFinite(snapshot.data) || snapshot.data < 0) fail('Data is invalid');
   if (snapshot.completedTrips < 0 || snapshot.completedActivities < 0) {
     fail('completed counters are negative');
+  }
+  if (
+    snapshot.completedActivities !==
+    snapshot.completedWorkActivities + snapshot.completedServiceActivities
+  ) {
+    fail('completed activity counters do not reconcile');
+  }
+  for (const [name, value] of Object.entries({
+    completedWorkActivities: snapshot.completedWorkActivities,
+    completedServiceActivities: snapshot.completedServiceActivities,
+    serviceTrips: snapshot.serviceTrips,
+    serviceUses: snapshot.serviceUses,
+    failedServiceDestinationAttempts: snapshot.failedServiceDestinationAttempts,
+    serviceWaitTicks: snapshot.serviceWaitTicks,
+    workData: snapshot.dataBySource.work,
+    serviceData: snapshot.dataBySource.service,
+  })) {
+    if (!Number.isSafeInteger(value) && name.endsWith('Activities')) {
+      fail(`${name} is not an integer`);
+    }
+    if (!Number.isFinite(value) || value < 0) fail(`${name} is invalid`);
+  }
+  if (
+    snapshot.dataGeneratedThisTick !==
+    snapshot.dataGeneratedThisTickBySource.work + snapshot.dataGeneratedThisTickBySource.service
+  ) {
+    fail('per-tick Data source counters do not reconcile');
+  }
+  if (
+    snapshot.servicesCore.purchased !== snapshot.core.servicesCore.purchased ||
+    snapshot.servicesCore.unlocked !== snapshot.core.servicesCore.unlocked ||
+    snapshot.servicesCore.focus !== snapshot.core.servicesCore.focus ||
+    snapshot.servicesCore.selectedFocus !== snapshot.core.servicesCore.selectedFocus
+  ) {
+    fail('core and services-core snapshot views diverge');
+  }
+  if (snapshot.servicesCore.cost !== 50) fail('Services Core cost is not 50');
+  if (snapshot.servicesCore.purchased !== snapshot.servicesCore.unlocked) {
+    fail('Services Core purchase and unlock state diverge');
   }
   if (
     snapshot.structural.constructionProjectsCompleted + snapshot.constructionProjects.length !==
@@ -1437,7 +1681,15 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     ...getBalanceScenarioActivations(scenario),
     ...(options.activations ?? []),
   ].map((scheduled, index) => ({ ...scheduled, order: index }));
-  for (const scheduled of [...scheduledCommands, ...scheduledActivations]) {
+  const scheduledCorePurchases = [
+    ...getBalanceScenarioCorePurchases(scenario),
+    ...(options.corePurchases ?? []),
+  ].map((scheduled, index) => ({ ...scheduled, order: index }));
+  for (const scheduled of [
+    ...scheduledCommands,
+    ...scheduledActivations,
+    ...scheduledCorePurchases,
+  ]) {
     if (!Number.isSafeInteger(scheduled.tick) || scheduled.tick < 0) {
       throw new Error(
         `Schedule tick must be a non-negative safe integer; received ${String(scheduled.tick)}.`,
@@ -1446,6 +1698,7 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
   }
   scheduledCommands.sort((left, right) => left.tick - right.tick || left.order - right.order);
   scheduledActivations.sort((left, right) => left.tick - right.tick || left.order - right.order);
+  scheduledCorePurchases.sort((left, right) => left.tick - right.tick || left.order - right.order);
   const simulation = createSimulation({
     ...scenarioConfig,
     seed: options.seed,
@@ -1461,11 +1714,13 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
   const invariantFailures = new Set<string>();
   const commandResults: BalanceCommandResult[] = [];
   const activationResults: BalanceActivationResult[] = [];
+  const corePurchaseResults: BalanceCorePurchaseResult[] = [];
   let observedWaitTicks = 0;
   let observedWaitSamples = 0;
   let observedMaxWaitTicks = 0;
   let nextScheduledCommand = 0;
   let nextScheduledActivation = 0;
+  let nextScheduledCorePurchase = 0;
   const applyScheduled = (): void => {
     const currentTick = simulation.getSnapshot().tick;
     while (nextScheduledActivation < scheduledActivations.length) {
@@ -1478,6 +1733,18 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
         result: simulation.activateChunk(command),
       });
       nextScheduledActivation += 1;
+    }
+    while (nextScheduledCorePurchase < scheduledCorePurchases.length) {
+      const scheduled = scheduledCorePurchases[nextScheduledCorePurchase];
+      if (scheduled === undefined || scheduled.tick > currentTick) break;
+      const command = { ...scheduled.command };
+      corePurchaseResults.push({
+        tick: currentTick,
+        command,
+        info: simulation.previewCorePurchase(command),
+        result: simulation.purchaseCore(command),
+      });
+      nextScheduledCorePurchase += 1;
     }
     while (nextScheduledCommand < scheduledCommands.length) {
       const scheduled = scheduledCommands[nextScheduledCommand];
@@ -1554,8 +1821,19 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     populationGrowthCadenceTicks: snapshot.populationGrowthCadenceTicks,
     completedTrips: snapshot.completedTrips,
     completedActivities: snapshot.completedActivities,
+    completedWorkActivities: snapshot.completedWorkActivities,
+    completedServiceActivities: snapshot.completedServiceActivities,
+    serviceTrips: snapshot.serviceTrips,
+    serviceUses: snapshot.serviceUses,
+    failedServiceDestinationAttempts: snapshot.failedServiceDestinationAttempts,
+    serviceWaitTicks: snapshot.serviceWaitTicks,
     data: snapshot.data,
     dataGeneratedThisTick: snapshot.dataGeneratedThisTick,
+    dataGeneratedThisTickBySource: snapshot.dataGeneratedThisTickBySource,
+    dataBySource: snapshot.dataBySource,
+    core: snapshot.core,
+    servicesCore: snapshot.servicesCore,
+    researchFocus: snapshot.researchFocus,
     averageTripDurationTicks: snapshot.averageTripDurationTicks,
     metrics: snapshot.metrics,
     demandTotals: snapshot.demand.totals,
@@ -1575,9 +1853,11 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     snapshotTrafficSummaries: snapshot.traffic.length,
     commandResults,
     activationResults,
+    corePurchaseResults,
     buildingCount: snapshot.buildings.length,
     homeCount: snapshot.buildings.filter((building) => building.type === 'home').length,
     workplaceCount: snapshot.buildings.filter((building) => building.type === 'workplace').length,
+    serviceCount: snapshot.buildings.filter((building) => building.type === 'service').length,
     activeConstructionProjects: snapshot.constructionProjects.length,
     constructionProjectsStarted: snapshot.structural.constructionProjectsStarted,
     constructionProjectsCompleted: snapshot.structural.constructionProjectsCompleted,

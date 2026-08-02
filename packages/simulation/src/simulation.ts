@@ -14,7 +14,13 @@ import {
   enumerateChunkRegion,
   validateChunkSize,
 } from './chunks';
-import { getDistrictSeedCost, isDistrictSeedKindUnlocked } from './balance-rules';
+import {
+  getDistrictSeedCost,
+  isDistrictSeedKindUnlocked,
+  SERVICES_CORE_COST,
+  SERVICES_CORE_MINIMUM_POPULATION,
+  SERVICES_CORE_MINIMUM_WORK_ACTIVITIES,
+} from './balance-rules';
 import {
   compareConstructionAssignments,
   constructionPhaseLaborRequired,
@@ -34,7 +40,6 @@ import {
   districtSeedInfluenceRadius,
   enumerateDistrictSeedInfluenceCells,
   getDistrictSeedDefinition,
-  getDistrictSeedDefinitions,
 } from './district-seeds';
 import {
   buildingFootprint,
@@ -50,10 +55,20 @@ import { findGridPathDetailed } from './pathfinding';
 import { findNearestCompatiblePair } from './population';
 import { SeededRandom } from './random';
 import { enumerateAdjacentCorridorPairs, findTwoCellConnector } from './right-of-way';
+import {
+  SERVICE_BUILDING_CAPACITY,
+  SERVICE_NEED_MAX,
+  SERVICE_NEED_THRESHOLD,
+  SERVICE_USE_DURATION_TICKS,
+  scoreServiceDestination,
+  selectServiceDestination,
+  type ServiceDestinationCandidate,
+} from './services';
 import { createTrafficTelemetry, DEFAULT_TRAFFIC_HISTORY_WINDOW_TICKS } from './traffic';
 import {
   buildMovementProposals,
   findDirectMovementSwapPairs,
+  MOVEMENT_DEADLOCK_RECOVERY_BLOCKED_TICKS,
   isMovementDeadlockRecoveryDue,
   isMovementReplanDue,
   resolveMovementReservations,
@@ -76,6 +91,11 @@ import type {
   ConstructionProject,
   CommandRejectionReason,
   CommandResult,
+  CoreProtocol,
+  CorePurchaseRejectionReason,
+  CorePurchaseInfo,
+  CorePurchaseResult,
+  CoreState,
   DemandCell,
   DemandChunkSnapshot,
   DemandRegionQuery,
@@ -94,6 +114,9 @@ import type {
   SimulationConfig,
   SimulationSnapshot,
   SimulationStructuralCounters,
+  ResearchFocus,
+  ServicesCoreState,
+  PurchaseCoreCommand,
 } from './types';
 
 interface CitizenState {
@@ -109,6 +132,10 @@ interface CitizenState {
   routeIndex: number;
   tripStartedTick: number | null;
   waitTicks: number;
+  serviceNeed: number;
+  serviceDestinationBuildingId: string | null;
+  serviceDestinationReason: string | null;
+  serviceWaitTicks: number;
   constructionProjectId: string | null;
   constructionStagingCell: GridPosition | null;
   resumeDestinationBuildingId: string | null;
@@ -624,6 +651,10 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     routeIndex: 0,
     tripStartedTick: null,
     waitTicks: 0,
+    serviceNeed: 0,
+    serviceDestinationBuildingId: null,
+    serviceDestinationReason: null,
+    serviceWaitTicks: 0,
     constructionProjectId: null,
     constructionStagingCell: null,
     resumeDestinationBuildingId: null,
@@ -638,11 +669,21 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   let tick = 0;
   let completedTrips = 0;
   let completedActivities = 0;
+  let completedWorkActivities = 0;
+  let completedServiceActivities = 0;
+  let serviceTrips = 0;
+  let serviceUses = 0;
+  let failedServiceDestinationAttempts = 0;
+  let serviceWaitTicks = 0;
   let totalTripDurationTicks = 0;
   let data = startingData;
   let dataGeneratedThisTick = 0;
+  let dataGeneratedThisTickBySource = { work: 0, service: 0 };
+  let dataBySource = { work: 0, service: 0 };
   const seeds: DistrictSeed[] = [];
   const constructionProjects: ConstructionProjectState[] = [];
+  let servicesCorePurchased = false;
+  let selectedResearchFocus: ResearchFocus | null = null;
   const circulationCells = new Set<string>();
   for (const building of buildings) {
     for (const cell of circulationEnvelopeCells(building.footprint)) {
@@ -656,6 +697,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const nextBuildingSequence: Record<BuildingType, number> = {
     home: 2,
     workplace: 2,
+    service: 1,
   };
   let lastDevelopmentCandidates: DevelopmentCandidate[] = [];
   let developmentEvaluations = 0;
@@ -725,11 +767,17 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const demandCitizens = (): readonly {
     readonly homeBuildingId: string;
     readonly workplaceBuildingId: string;
+    readonly serviceNeed: number;
+    readonly serviceBuildingId: string | null;
   }[] =>
-    citizens.map(({ homeBuildingId, workplaceBuildingId }) => ({
-      homeBuildingId,
-      workplaceBuildingId,
-    }));
+    citizens.map(
+      ({ homeBuildingId, workplaceBuildingId, serviceNeed, serviceDestinationBuildingId }) => ({
+        homeBuildingId,
+        workplaceBuildingId,
+        serviceNeed,
+        serviceBuildingId: serviceDestinationBuildingId,
+      }),
+    );
 
   const isDistrictSeedKind = (value: unknown): value is DistrictSeedKind =>
     value === 'living' || value === 'working' || value === 'services';
@@ -740,9 +788,112 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const currentDistrictSeedCost = (kind: DistrictSeedKind): number =>
     getDistrictSeedCost(kind, activeSameTypeSeedCount(kind));
 
+  const isResearchFocus = (value: unknown): value is ResearchFocus =>
+    value === 'space' || value === 'access' || value === 'activity';
+
+  const servicesCoreRequirements = (): ServicesCoreState['requirements'] => [
+    {
+      key: 'living-seed',
+      label: 'One Living seed',
+      current: activeSameTypeSeedCount('living'),
+      required: 1,
+      met: activeSameTypeSeedCount('living') >= 1,
+    },
+    {
+      key: 'working-seed',
+      label: 'One Working seed',
+      current: activeSameTypeSeedCount('working'),
+      required: 1,
+      met: activeSameTypeSeedCount('working') >= 1,
+    },
+    {
+      key: 'population',
+      label: 'Population',
+      current: citizens.length,
+      required: SERVICES_CORE_MINIMUM_POPULATION,
+      met: citizens.length >= SERVICES_CORE_MINIMUM_POPULATION,
+    },
+    {
+      key: 'completed-work-activities',
+      label: 'Completed work activities',
+      current: completedWorkActivities,
+      required: SERVICES_CORE_MINIMUM_WORK_ACTIVITIES,
+      met: completedWorkActivities >= SERVICES_CORE_MINIMUM_WORK_ACTIVITIES,
+    },
+  ];
+
+  const servicesCoreState = (): ServicesCoreState => {
+    const requirements = servicesCoreRequirements();
+    const missingRequirements = requirements
+      .filter((requirement) => !requirement.met)
+      .map((requirement) => requirement.key);
+    return {
+      core: 'services',
+      cost: SERVICES_CORE_COST,
+      purchased: servicesCorePurchased,
+      unlocked: servicesCorePurchased,
+      focus: selectedResearchFocus,
+      selectedFocus: selectedResearchFocus,
+      requirements: requirements.map((requirement) => ({ ...requirement })),
+      missingRequirements: [...missingRequirements],
+    };
+  };
+
+  const coreState = (): CoreState => ({ servicesCore: servicesCoreState() });
+
+  const corePurchaseInfo = (core: CoreProtocol = 'services'): CorePurchaseInfo => {
+    const state = servicesCoreState();
+    return {
+      core,
+      cost: SERVICES_CORE_COST,
+      eligible:
+        !state.purchased && state.missingRequirements.length === 0 && data >= SERVICES_CORE_COST,
+      focusRequired: !state.purchased,
+      missingRequirements: [...state.missingRequirements],
+    };
+  };
+
+  const purchaseCore = (command: PurchaseCoreCommand): CorePurchaseResult => {
+    const requestedCore: unknown = (command as { readonly core?: unknown }).core;
+    if (requestedCore !== undefined && requestedCore !== 'services') {
+      return { accepted: false, reason: 'invalid-focus' };
+    }
+    if (!isResearchFocus(command.focus)) {
+      return { accepted: false, reason: 'invalid-focus' };
+    }
+    if (servicesCorePurchased) return { accepted: false, reason: 'already-purchased' };
+    const info = corePurchaseInfo('services');
+    if (info.missingRequirements.length > 0) {
+      return { accepted: false, reason: 'missing-prerequisites' };
+    }
+    if (data < SERVICES_CORE_COST) return { accepted: false, reason: 'insufficient-data' };
+    data = roundData(data - SERVICES_CORE_COST);
+    servicesCorePurchased = true;
+    selectedResearchFocus = command.focus;
+    developmentStateVersion += 1;
+    markAllDemandChunksDirty();
+    refreshDirtyDemandChunks();
+    return {
+      accepted: true,
+      core: 'services',
+      focus: command.focus,
+      cost: SERVICES_CORE_COST,
+    };
+  };
+
   const validateDistrictSeedPlacement = (
     command: PlaceDistrictSeedCommand,
   ): DistrictSeedPlacementValidation => {
+    const requestedKind: unknown = command.kind;
+    if (!isDistrictSeedKind(requestedKind)) {
+      return { accepted: false, reason: 'invalid-kind' };
+    }
+    if (
+      !isDistrictSeedKindUnlocked(requestedKind) &&
+      !(requestedKind === 'services' && servicesCorePurchased)
+    ) {
+      return { accepted: false, reason: 'locked' };
+    }
     const requestedPosition = command.position;
     if (!Number.isSafeInteger(requestedPosition.x) || !Number.isSafeInteger(requestedPosition.y)) {
       return { accepted: false, reason: 'out-of-bounds' };
@@ -758,13 +909,6 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     }
     if (seeds.some((districtSeed) => positionsEqual(districtSeed.position, requestedPosition))) {
       return { accepted: false, reason: 'occupied' };
-    }
-    const requestedKind: unknown = command.kind;
-    if (!isDistrictSeedKind(requestedKind)) {
-      return { accepted: false, reason: 'invalid-kind' };
-    }
-    if (!isDistrictSeedKindUnlocked(requestedKind)) {
-      return { accepted: false, reason: 'locked' };
     }
     const cost = currentDistrictSeedCost(requestedKind);
     if (data < cost) return { accepted: false, reason: 'insufficient-data' };
@@ -799,6 +943,19 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       ...(validation.accepted ? {} : { reason: validation.reason }),
     };
   };
+
+  const simulationDistrictSeedDefinition = (kind: DistrictSeedKind): DistrictSeedDefinition => {
+    const definition = getDistrictSeedDefinition(kind);
+    return {
+      ...definition,
+      unlocked: kind === 'services' ? servicesCorePurchased : definition.unlocked,
+    };
+  };
+
+  const simulationDistrictSeedDefinitions = (): readonly DistrictSeedDefinition[] =>
+    (['living', 'working', 'services'] as const).map((kind) =>
+      simulationDistrictSeedDefinition(kind),
+    );
 
   const buildingById = (id: string): Building => {
     const building = buildingsById.get(id);
@@ -944,6 +1101,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         districtSeedInfluenceRadius('working'),
         districtSeedInfluenceRadius('services'),
       ),
+      servicesEnabled: servicesCorePurchased,
       seedInfluence: (position, kind) =>
         calculateDistrictSeedInfluence({
           seeds,
@@ -1025,6 +1183,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       const isExclusiveActivity =
         citizen.activity === 'commuting-to-work' ||
         citizen.activity === 'commuting-home' ||
+        citizen.activity === 'commuting-to-service' ||
         citizen.activity === 'commuting-to-construction' ||
         citizen.activity === 'constructing';
       if (!isExclusiveActivity) continue;
@@ -1051,8 +1210,56 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     citizen.departurePending = false;
     citizen.tripStartedTick = null;
     citizen.waitTicks = 0;
+    citizen.route = [];
+    citizen.routeIndex = 0;
+    citizen.serviceDestinationBuildingId = null;
+    citizen.serviceDestinationReason = null;
     clearDeadlockPairsForCitizen(citizen.id);
     completedTrips += 1;
+  };
+
+  const completeServiceTrip = (citizen: CitizenState, destinationId: string): void => {
+    const destination = buildingById(destinationId);
+    if (destination.type !== 'service') {
+      throw new Error(`Citizen ${citizen.id} has a non-service trip destination.`);
+    }
+    if (!positionsEqual(citizen.position, destination.entrance)) {
+      throw new Error(`Citizen ${citizen.id} did not reach service ${destination.id}.`);
+    }
+    if (citizen.tripStartedTick === null) {
+      throw new Error(`Citizen ${citizen.id} completed a service trip without a start tick.`);
+    }
+    totalTripDurationTicks += tick - citizen.tripStartedTick;
+    citizen.activity = 'service';
+    citizen.activityTicksRemaining = SERVICE_USE_DURATION_TICKS;
+    citizen.departurePending = false;
+    citizen.tripStartedTick = null;
+    citizen.waitTicks = 0;
+    citizen.route = [];
+    citizen.routeIndex = 0;
+    clearDeadlockPairsForCitizen(citizen.id);
+    completedTrips += 1;
+    serviceTrips += 1;
+  };
+
+  const completeServiceUse = (citizen: CitizenState): void => {
+    if (citizen.activity !== 'service' || citizen.serviceDestinationBuildingId === null) {
+      throw new Error(`Citizen ${citizen.id} completed an invalid service use.`);
+    }
+    if (citizen.serviceNeed < SERVICE_NEED_THRESHOLD) {
+      throw new Error(`Citizen ${citizen.id} completed service without sufficient need.`);
+    }
+    citizen.serviceNeed -= SERVICE_NEED_THRESHOLD;
+    citizen.activity = 'home';
+    citizen.activityTicksRemaining = activityDurationTicks;
+    citizen.departurePending = false;
+    citizen.serviceDestinationBuildingId = null;
+    citizen.serviceDestinationReason = null;
+    citizen.route = [];
+    citizen.routeIndex = 0;
+    completedServiceActivities += 1;
+    completedActivities += 1;
+    serviceUses += 1;
   };
 
   const completeConstructionCommute = (citizen: CitizenState): void => {
@@ -1105,7 +1312,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     citizen.waitTicks = 0;
     clearDeadlockPairsForCitizen(citizen.id);
     if (citizen.route.length === 1) {
-      completeTrip(citizen, destinationId);
+      if (activity === 'commuting-to-service') completeServiceTrip(citizen, destinationId);
+      else completeTrip(citizen, destinationId);
       return false;
     }
     return true;
@@ -1122,14 +1330,22 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       y: position.y - chunk.y * chunkSize,
     };
     const cell = cellFromState(state, local.y * chunkSize + local.x);
-    return buildingType === 'home' ? cell.living : cell.working;
+    switch (buildingType) {
+      case 'home':
+        return cell.living;
+      case 'workplace':
+        return cell.working;
+      case 'service':
+        return cell.services;
+    }
   };
 
   const matchingSeedInfluenceAt = (position: GridPosition, buildingType: BuildingType): number =>
     calculateDistrictSeedInfluence({
       seeds,
       position,
-      kind: buildingType === 'home' ? 'living' : 'working',
+      kind:
+        buildingType === 'home' ? 'living' : buildingType === 'workplace' ? 'working' : 'services',
     });
 
   const occupancyByBuilding = (): Map<string, number> => {
@@ -1140,6 +1356,12 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         citizen.workplaceBuildingId,
         (occupancy.get(citizen.workplaceBuildingId) ?? 0) + 1,
       );
+      if (citizen.serviceDestinationBuildingId !== null) {
+        occupancy.set(
+          citizen.serviceDestinationBuildingId,
+          (occupancy.get(citizen.serviceDestinationBuildingId) ?? 0) + 1,
+        );
+      }
     }
     return occupancy;
   };
@@ -1163,6 +1385,13 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     if (citizens.length > populationCap) {
       throw new Error('Population exceeds the configured population cap.');
     }
+    if (completedActivities !== completedWorkActivities + completedServiceActivities) {
+      throw new Error('Completed activity counters do not reconcile.');
+    }
+    if (dataBySource.work < 0 || dataBySource.service < 0) {
+      throw new Error('Data source counters cannot be negative.');
+    }
+    if (data < 0) throw new Error('Data cannot be negative.');
     const citizenIds = new Set<string>();
     const occupancy = occupancyByBuilding();
     const blockedCells = new Set<string>();
@@ -1215,6 +1444,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       'commuting-to-work',
       'work',
       'commuting-home',
+      'commuting-to-service',
+      'service',
       'commuting-to-construction',
       'constructing',
     ];
@@ -1239,6 +1470,41 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       }
       if (!Number.isSafeInteger(citizen.waitTicks) || citizen.waitTicks < 0) {
         throw new Error(`Citizen ${citizen.id} has invalid wait state.`);
+      }
+      if (
+        !Number.isSafeInteger(citizen.serviceNeed) ||
+        citizen.serviceNeed < 0 ||
+        citizen.serviceNeed > SERVICE_NEED_MAX
+      ) {
+        throw new Error(`Citizen ${citizen.id} has invalid service need.`);
+      }
+      if (!Number.isSafeInteger(citizen.serviceWaitTicks) || citizen.serviceWaitTicks < 0) {
+        throw new Error(`Citizen ${citizen.id} has invalid service wait state.`);
+      }
+      if (
+        (citizen.activity === 'commuting-to-service' || citizen.activity === 'service') &&
+        citizen.serviceDestinationBuildingId === null
+      ) {
+        throw new Error(`Citizen ${citizen.id} has a service activity without a destination.`);
+      }
+      if (
+        citizen.activity !== 'commuting-to-service' &&
+        citizen.activity !== 'service' &&
+        citizen.serviceDestinationBuildingId !== null
+      ) {
+        throw new Error(`Citizen ${citizen.id} retains a service destination outside service use.`);
+      }
+      if (citizen.serviceDestinationBuildingId !== null) {
+        const serviceBuilding = buildingById(citizen.serviceDestinationBuildingId);
+        if (serviceBuilding.type !== 'service') {
+          throw new Error(`Citizen ${citizen.id} has a non-service destination.`);
+        }
+        if (
+          citizen.activity === 'service' &&
+          !positionsEqual(citizen.position, serviceBuilding.entrance)
+        ) {
+          throw new Error(`Citizen ${citizen.id} is using a service away from its entrance.`);
+        }
       }
       const constructionProject =
         citizen.constructionProjectId === null
@@ -1285,6 +1551,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (
         (citizen.activity === 'commuting-to-work' ||
           citizen.activity === 'commuting-home' ||
+          citizen.activity === 'commuting-to-service' ||
           citizen.activity === 'commuting-to-construction') &&
         citizen.route.length === 0
       ) {
@@ -1293,6 +1560,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (
         citizen.activity === 'commuting-to-work' ||
         citizen.activity === 'commuting-home' ||
+        citizen.activity === 'commuting-to-service' ||
         citizen.activity === 'commuting-to-construction' ||
         citizen.activity === 'constructing'
       ) {
@@ -1381,10 +1649,15 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   };
 
   const complementaryUseFactor = (position: GridPosition, buildingType: BuildingType): number => {
-    const opposite = buildingType === 'home' ? 'workplace' : 'home';
+    const opposites: readonly BuildingType[] =
+      buildingType === 'home'
+        ? ['workplace']
+        : buildingType === 'workplace'
+          ? ['home']
+          : ['home', 'workplace'];
     let factor = 0;
     for (const building of buildings) {
-      if (building.type !== opposite) continue;
+      if (!opposites.includes(building.type)) continue;
       factor = Math.max(
         factor,
         normalizedDistance(distanceToRect(position, building.footprint), demandInfluenceRadius),
@@ -1397,10 +1670,15 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     entrance: GridPosition,
     buildingType: BuildingType,
   ): number => {
-    const opposite = buildingType === 'home' ? 'workplace' : 'home';
+    const opposites: readonly BuildingType[] =
+      buildingType === 'home'
+        ? ['workplace']
+        : buildingType === 'workplace'
+          ? ['home']
+          : ['home', 'workplace'];
     let factor = 0;
     for (const building of buildings) {
-      if (building.type !== opposite) continue;
+      if (!opposites.includes(building.type)) continue;
       factor = Math.max(
         factor,
         normalizedDistance(manhattanDistance(entrance, building.entrance), demandInfluenceRadius),
@@ -1454,7 +1732,13 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const movingExclusiveCells = (): ReadonlySet<string> => {
     const cells = new Set<string>();
     for (const citizen of citizens) {
-      if (citizen.activity !== 'commuting-to-work' && citizen.activity !== 'commuting-home')
+      if (
+        citizen.activity !== 'commuting-to-work' &&
+        citizen.activity !== 'commuting-home' &&
+        citizen.activity !== 'commuting-to-service' &&
+        citizen.activity !== 'commuting-to-construction' &&
+        citizen.activity !== 'constructing'
+      )
         continue;
       cells.add(coordinateKey(citizen.position));
     }
@@ -1467,8 +1751,12 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const relevantDevelopmentChunks = (): ChunkCoordinate[] => {
     const metrics = calculateMetrics().metrics;
     const capacityPressure = metrics.space < 1;
+    const servicePressure =
+      servicesCorePurchased &&
+      (citizens.some((citizen) => citizen.serviceNeed >= SERVICE_NEED_THRESHOLD) ||
+        !buildings.some((building) => building.type === 'service'));
     const activeChunks = spatial.getActiveChunks().sort(compareChunks);
-    if (capacityPressure) return activeChunks;
+    if (capacityPressure || servicePressure) return activeChunks;
     return activeChunks.filter((chunk) => {
       const origin = { x: chunk.x * chunkSize, y: chunk.y * chunkSize };
       const farCorner = { x: origin.x + chunkSize - 1, y: origin.y + chunkSize - 1 };
@@ -1506,6 +1794,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     buildingType: BuildingType,
     occupancy: ReadonlyMap<string, number>,
   ): DevelopmentCandidate | undefined => {
+    if (buildingType === 'service' && !servicesCorePurchased) return undefined;
     const footprint = buildingFootprint(anchor, buildingType);
     const envelope = circulationEnvelope(footprint);
     const reservedCirculation = existingBuildingCirculationCells();
@@ -1678,7 +1967,11 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   };
 
   const capacityForDevelopment = (buildingType: BuildingType): number =>
-    buildingType === 'home' ? developmentHomeCapacity : developmentWorkplaceCapacity;
+    buildingType === 'home'
+      ? developmentHomeCapacity
+      : buildingType === 'workplace'
+        ? developmentWorkplaceCapacity
+        : SERVICE_BUILDING_CAPACITY;
 
   const reservedConstructionStagingCells = (): ReadonlySet<string> => {
     const reserved = new Set<string>();
@@ -2084,7 +2377,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
 
   const startDevelopmentJob = (): void => {
     if (constructionProjects.length > 0) return;
-    if (seeds.length === 0 && calculateMetrics().metrics.space >= 1) {
+    if (seeds.length === 0 && calculateMetrics().metrics.space >= 1 && !servicesCorePurchased) {
       lastDevelopmentCandidates = [];
       lastDevelopmentProgress = {
         ...lastDevelopmentProgress,
@@ -2153,6 +2446,13 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
               ? {}
               : { stagingCells: candidate.stagingCells.map(copyPosition) }),
           }));
+        continue;
+      }
+      if (buildingType === 'service' && !servicesCorePurchased) {
+        job.buildingTypeIndex += 1;
+        job.chunkIndex = 0;
+        job.localX = 0;
+        job.localY = 0;
         continue;
       }
       const origin = { x: chunk.x * chunkSize, y: chunk.y * chunkSize };
@@ -2389,14 +2689,70 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     }
   };
 
+  const chooseServiceDestination = (
+    citizen: CitizenState,
+  ): ServiceDestinationCandidate | undefined => {
+    const occupancy = occupancyByBuilding();
+    const candidates: ServiceDestinationCandidate[] = [];
+    const serviceBuildings = buildings
+      .filter(
+        (building): building is Building & { readonly type: 'service' } =>
+          building.type === 'service',
+      )
+      .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+    for (const building of serviceBuildings) {
+      const occupied = occupancy.get(building.id) ?? 0;
+      if (occupied >= building.capacity) continue;
+      const route = findGridPathDetailed(
+        {
+          chunkSize,
+          activeChunks: spatial.getActiveChunks(),
+          isWalkable: (position) => isCirculationWalkable(position),
+          maxNodes: pathSearchBudget,
+        },
+        citizen.position,
+        building.entrance,
+      );
+      pathNodesExpanded += route.nodesExpanded;
+      pathChunksTouched += route.chunksTouched;
+      if (route.status !== 'found') continue;
+      const routeLength = route.path.length - 1;
+      const occupancyRatio =
+        building.capacity === 0 ? 1 : Math.max(0, Math.min(1, occupied / building.capacity));
+      const score = scoreServiceDestination({
+        serviceNeed: citizen.serviceNeed,
+        routeLength,
+        occupancyRatio,
+      });
+      candidates.push({
+        building,
+        routeLength,
+        occupancyRatio,
+        score: score.score,
+        primaryReason: score.primaryReason,
+      });
+    }
+    return selectServiceDestination(candidates);
+  };
+
   const advanceCitizenSchedules = (movingOccupancy: Map<string, string>): void => {
     const boundaryCitizens: CitizenState[] = [];
     for (const citizen of sortedCitizens()) {
+      if (citizen.activity === 'service') {
+        if (citizen.activityTicksRemaining > 0) citizen.activityTicksRemaining -= 1;
+        if (citizen.activityTicksRemaining === 0) completeServiceUse(citizen);
+        continue;
+      }
       if (citizen.activity !== 'home' && citizen.activity !== 'work') continue;
       if (citizen.activityTicksRemaining > 0) citizen.activityTicksRemaining -= 1;
       if (citizen.activityTicksRemaining > 0) continue;
       if (!citizen.departurePending) {
         citizen.departurePending = true;
+        if (citizen.activity === 'work') {
+          citizen.serviceNeed = Math.min(SERVICE_NEED_MAX, citizen.serviceNeed + 1);
+          completedWorkActivities += 1;
+          completedActivities += 1;
+        }
       }
       boundaryCitizens.push(citizen);
     }
@@ -2405,6 +2761,24 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (citizen.constructionProjectId !== null) continue;
       const originKey = coordinateKey(citizen.position);
       if (movingOccupancy.has(originKey)) continue;
+      if (
+        citizen.activity === 'home' &&
+        servicesCorePurchased &&
+        citizen.serviceNeed >= SERVICE_NEED_THRESHOLD
+      ) {
+        const service = chooseServiceDestination(citizen);
+        if (service !== undefined) {
+          citizen.serviceDestinationBuildingId = service.building.id;
+          citizen.serviceDestinationReason = service.primaryReason;
+          if (startTrip(citizen, 'commuting-to-service', service.building.id)) {
+            movingOccupancy.set(originKey, citizen.id);
+          }
+          continue;
+        }
+        failedServiceDestinationAttempts += 1;
+        serviceWaitTicks += 1;
+        citizen.serviceWaitTicks += 1;
+      }
       const activity: CitizenActivity =
         citizen.activity === 'home' ? 'commuting-to-work' : 'commuting-home';
       const destinationId =
@@ -2412,7 +2786,6 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (startTrip(citizen, activity, destinationId)) {
         movingOccupancy.set(originKey, citizen.id);
       }
-      if (activity === 'commuting-home') completedActivities += 1;
     }
   };
 
@@ -2425,7 +2798,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       ? citizen.constructionProjectId
       : citizen.activity === 'commuting-to-work'
         ? citizen.workplaceBuildingId
-        : citizen.homeBuildingId;
+        : citizen.activity === 'commuting-to-service'
+          ? citizen.serviceDestinationBuildingId
+          : citizen.homeBuildingId;
     if (destinationId === null) {
       throw new Error(`Construction commuter ${citizen.id} has no project destination.`);
     }
@@ -2499,6 +2874,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       const isCommute =
         citizen.activity === 'commuting-to-work' ||
         citizen.activity === 'commuting-home' ||
+        citizen.activity === 'commuting-to-service' ||
         citizen.activity === 'commuting-to-construction';
       if (!isCommute) continue;
       // A newly scheduled trip claims its origin for this tick and becomes
@@ -2526,10 +2902,17 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     const emergencySwapPairs = new Set<string>();
     for (const pair of directSwapPairs) {
       const previous = deadlockPairStates.get(pair.key);
+      const leftCitizen = citizensById.get(pair.leftId);
+      const rightCitizen = citizensById.get(pair.rightId);
+      if (leftCitizen === undefined || rightCitizen === undefined) {
+        throw new Error(`Movement swap references an unknown citizen ${pair.key}.`);
+      }
       if (
-        previous !== undefined &&
-        pairStateMatches(previous, pair) &&
-        isMovementDeadlockRecoveryDue(previous.blockedTicks, true)
+        (previous !== undefined &&
+          pairStateMatches(previous, pair) &&
+          isMovementDeadlockRecoveryDue(previous.blockedTicks, true)) ||
+        (leftCitizen.waitTicks >= MOVEMENT_DEADLOCK_RECOVERY_BLOCKED_TICKS - 1 &&
+          rightCitizen.waitTicks >= MOVEMENT_DEADLOCK_RECOVERY_BLOCKED_TICKS - 1)
       ) {
         emergencySwapPairs.add(pair.key);
       }
@@ -2565,6 +2948,10 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (citizen === undefined)
         throw new Error(`Blocked movement references ${blocked.citizenId}.`);
       citizen.waitTicks += 1;
+      if (citizen.activity === 'commuting-to-service') {
+        citizen.serviceWaitTicks += 1;
+        serviceWaitTicks += 1;
+      }
     }
     for (const move of resolution.accepted) {
       const citizen = citizensById.get(move.citizenId);
@@ -2584,13 +2971,22 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         const destinationId =
           citizen.activity === 'commuting-to-work'
             ? citizen.workplaceBuildingId
-            : citizen.homeBuildingId;
-        completeTrip(citizen, destinationId);
+            : citizen.activity === 'commuting-to-service'
+              ? citizen.serviceDestinationBuildingId
+              : citizen.homeBuildingId;
+        if (destinationId === null) {
+          throw new Error(`Citizen ${citizen.id} completed service commute without a destination.`);
+        }
+        if (citizen.activity === 'commuting-to-service') {
+          completeServiceTrip(citizen, destinationId);
+        } else {
+          completeTrip(citizen, destinationId);
+        }
       }
     }
 
-    if (resolution.accepted.length > 0) clearAllDeadlockPairs();
-    else updateDeadlockPairStates(resolution.directSwapPairs, emergencySwapPairs);
+    for (const move of resolution.accepted) clearDeadlockPairsForCitizen(move.citizenId);
+    updateDeadlockPairStates(resolution.directSwapPairs, emergencySwapPairs);
     const blockedIds = resolution.blocked.map(({ citizenId }) => citizenId);
     maybeReplanBlockedCitizens(blockedIds);
     if (resolution.accepted.length === 0 && blockedIds.length === 0) clearAllDeadlockPairs();
@@ -2724,7 +3120,12 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       constructionPausedProjectTicks,
       constructionPhaseCompletions,
       constructionWorkerReleases,
+      serviceTrips,
+      serviceUses,
+      failedServiceDestinationAttempts,
+      serviceWaitTicks,
     };
+    const currentCore = servicesCoreState();
     return {
       chunkSize,
       activeChunkCount: demand.activeChunks.length,
@@ -2737,10 +3138,31 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       populationGrowthCadenceTicks,
       completedTrips,
       completedActivities,
+      completedWorkActivities,
+      completedServiceActivities,
+      serviceTrips,
+      serviceUses,
+      failedServiceDestinationAttempts,
+      serviceWaitTicks,
       data,
       dataGeneratedThisTick,
+      dataGeneratedThisTickBySource: { ...dataGeneratedThisTickBySource },
+      dataBySource: { ...dataBySource },
       averageTripDurationTicks,
       metrics,
+      core: {
+        servicesCore: {
+          ...currentCore,
+          requirements: currentCore.requirements.map((requirement) => ({ ...requirement })),
+          missingRequirements: [...currentCore.missingRequirements],
+        },
+      },
+      servicesCore: {
+        ...currentCore,
+        requirements: currentCore.requirements.map((requirement) => ({ ...requirement })),
+        missingRequirements: [...currentCore.missingRequirements],
+      },
+      researchFocus: selectedResearchFocus,
       demand: {
         totals: { ...demand.demand.totals },
         chunks: demand.demand.chunks.map((chunk) => ({
@@ -2758,7 +3180,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         total: edge.total,
       })),
       structural,
-      districtSeedDefinitions: getDistrictSeedDefinitions().map((definition) => ({
+      districtSeedDefinitions: simulationDistrictSeedDefinitions().map((definition) => ({
         ...definition,
       })),
       rightOfWay: rightOfWaySnapshot().map((chunk) => ({
@@ -2785,6 +3207,10 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         workplaceBuildingId: citizen.workplaceBuildingId,
         activity: citizen.activity,
         activityTicksRemaining: citizen.activityTicksRemaining,
+        serviceNeed: citizen.serviceNeed,
+        serviceDestinationBuildingId: citizen.serviceDestinationBuildingId,
+        serviceDestinationReason: citizen.serviceDestinationReason,
+        serviceWaitTicks: citizen.serviceWaitTicks,
         route: citizen.route.map(copyPosition),
         routeIndex: citizen.routeIndex,
         waitTicks: citizen.waitTicks,
@@ -2836,37 +3262,61 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     };
   };
 
-  return {
+  const api: Simulation = {
     step(): void {
       const metricsBefore = calculateMetrics().metrics;
       const activitiesBefore = completedActivities;
+      const workActivitiesBefore = completedWorkActivities;
+      const serviceActivitiesBefore = completedServiceActivities;
+      const serviceTripsBefore = serviceTrips;
+      const serviceNeedBefore = citizens.reduce((total, citizen) => total + citizen.serviceNeed, 0);
+      const serviceReservationsBefore = citizens.reduce(
+        (total, citizen) => total + (citizen.serviceDestinationBuildingId === null ? 0 : 1),
+        0,
+      );
       tick += 1;
       traffic.advanceToTick(tick);
       advanceCitizens();
       advanceConstructionProjects();
       const populationGrew = tick % populationGrowthCadenceTicks === 0 ? growPopulation() : false;
       const metricsAfter = calculateMetrics().metrics;
-      if (populationGrew || !sameMetrics(metricsBefore, metricsAfter)) {
+      const serviceStateChanged =
+        serviceActivitiesBefore !== completedServiceActivities ||
+        serviceTripsBefore !== serviceTrips ||
+        serviceReservationsBefore !==
+          citizens.reduce(
+            (total, citizen) => total + (citizen.serviceDestinationBuildingId === null ? 0 : 1),
+            0,
+          ) ||
+        serviceNeedBefore !== citizens.reduce((total, citizen) => total + citizen.serviceNeed, 0);
+      if (populationGrew || serviceStateChanged || !sameMetrics(metricsBefore, metricsAfter)) {
         markAllDemandChunksDirty();
         if (populationGrew) developmentStateVersion += 1;
       }
       const activitiesCompletedThisTick = completedActivities - activitiesBefore;
+      const workActivitiesCompletedThisTick = completedWorkActivities - workActivitiesBefore;
+      const serviceActivitiesCompletedThisTick =
+        completedServiceActivities - serviceActivitiesBefore;
       dataGeneratedThisTick = 0;
-      if (activitiesCompletedThisTick > 0) {
-        dataGeneratedThisTick = roundData(
-          activitiesCompletedThisTick * dataEfficiency(metricsAfter),
-        );
-        data = roundData(data + dataGeneratedThisTick);
-      }
+      const efficiency = dataEfficiency(metricsAfter);
+      const workData = roundData(Math.max(0, workActivitiesCompletedThisTick) * efficiency);
+      const serviceData = roundData(Math.max(0, serviceActivitiesCompletedThisTick) * efficiency);
+      dataGeneratedThisTickBySource = { work: workData, service: serviceData };
+      dataGeneratedThisTick = roundData(workData + serviceData);
+      dataBySource = {
+        work: roundData(dataBySource.work + workData),
+        service: roundData(dataBySource.service + serviceData),
+      };
+      if (activitiesCompletedThisTick > 0) data = roundData(data + dataGeneratedThisTick);
       refreshDirtyDemandChunks();
       evaluateDevelopers(tick % developmentEvaluationIntervalTicks === 0);
       assertPopulationInvariants();
     },
     getDistrictSeedDefinitions(): readonly DistrictSeedDefinition[] {
-      return getDistrictSeedDefinitions().map((definition) => ({ ...definition }));
+      return simulationDistrictSeedDefinitions().map((definition) => ({ ...definition }));
     },
     getDistrictSeedDefinition(kind: DistrictSeedKind): DistrictSeedDefinition {
-      return getDistrictSeedDefinition(kind);
+      return simulationDistrictSeedDefinition(kind);
     },
     getDistrictSeedPlacementInfo(command: PlaceDistrictSeedCommand): DistrictSeedPlacementInfo {
       return districtSeedPlacementInfo(command);
@@ -2924,6 +3374,53 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     },
     getCurrentDistrictSeedCost(kind: DistrictSeedKind): number {
       return currentDistrictSeedCost(kind);
+    },
+    getCoreState(): CoreState {
+      const state = coreState();
+      return {
+        servicesCore: {
+          ...state.servicesCore,
+          requirements: state.servicesCore.requirements.map((requirement) => ({ ...requirement })),
+          missingRequirements: [...state.servicesCore.missingRequirements],
+        },
+      };
+    },
+    getServicesCoreState(): ServicesCoreState {
+      const state = servicesCoreState();
+      return {
+        ...state,
+        requirements: state.requirements.map((requirement) => ({ ...requirement })),
+        missingRequirements: [...state.missingRequirements],
+      };
+    },
+    getCorePurchaseInfo(core: CoreProtocol = 'services'): CorePurchaseInfo {
+      return corePurchaseInfo(core);
+    },
+    previewCorePurchase(command: PurchaseCoreCommand): CorePurchaseInfo & {
+      readonly reason?: CorePurchaseRejectionReason;
+    } {
+      const requestedCore: unknown = (command as { readonly core?: unknown }).core;
+      if (requestedCore !== undefined && requestedCore !== 'services') {
+        return { ...corePurchaseInfo(), reason: 'invalid-focus' };
+      }
+      const info = corePurchaseInfo();
+      if (!isResearchFocus(command.focus)) return { ...info, reason: 'invalid-focus' };
+      if (servicesCorePurchased) return { ...info, reason: 'already-purchased' };
+      if (info.missingRequirements.length > 0) {
+        return { ...info, reason: 'missing-prerequisites' };
+      }
+      if (data < SERVICES_CORE_COST) return { ...info, reason: 'insufficient-data' };
+      return { ...info };
+    },
+    purchaseCore(command: PurchaseCoreCommand): CorePurchaseResult {
+      return purchaseCore(command);
+    },
+    purchaseServicesCore(focusOrCommand: ResearchFocus | PurchaseCoreCommand): CorePurchaseResult {
+      return purchaseCore(
+        typeof focusOrCommand === 'string'
+          ? { core: 'services', focus: focusOrCommand }
+          : { ...focusOrCommand, core: 'services' },
+      );
     },
     getDemandChunk(chunk: ChunkCoordinate): DemandChunkSnapshot | undefined {
       if (!Number.isSafeInteger(chunk.x) || !Number.isSafeInteger(chunk.y)) return undefined;
@@ -2983,4 +3480,69 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       return stableHash(snapshot());
     },
   };
+  Object.defineProperties(api, {
+    getCoreState: {
+      value: () => {
+        const state = coreState();
+        return {
+          servicesCore: {
+            ...state.servicesCore,
+            requirements: state.servicesCore.requirements.map((requirement) => ({
+              ...requirement,
+            })),
+            missingRequirements: [...state.servicesCore.missingRequirements],
+          },
+        };
+      },
+      enumerable: false,
+    },
+    getServicesCoreState: {
+      value: () => {
+        const state = servicesCoreState();
+        return {
+          ...state,
+          requirements: state.requirements.map((requirement) => ({ ...requirement })),
+          missingRequirements: [...state.missingRequirements],
+        };
+      },
+      enumerable: false,
+    },
+    getCorePurchaseInfo: {
+      value: (core?: CoreProtocol) => corePurchaseInfo(core),
+      enumerable: false,
+    },
+    previewCorePurchase: {
+      value: (command: PurchaseCoreCommand) => {
+        const requestedCore: unknown = (command as { readonly core?: unknown }).core;
+        if (requestedCore !== undefined && requestedCore !== 'services') {
+          return { ...corePurchaseInfo(), reason: 'invalid-focus' as const };
+        }
+        const info = corePurchaseInfo();
+        if (!isResearchFocus(command.focus)) return { ...info, reason: 'invalid-focus' as const };
+        if (servicesCorePurchased) return { ...info, reason: 'already-purchased' as const };
+        if (info.missingRequirements.length > 0) {
+          return { ...info, reason: 'missing-prerequisites' as const };
+        }
+        if (data < SERVICES_CORE_COST) {
+          return { ...info, reason: 'insufficient-data' as const };
+        }
+        return { ...info };
+      },
+      enumerable: false,
+    },
+    purchaseCore: {
+      value: (command: PurchaseCoreCommand) => purchaseCore(command),
+      enumerable: false,
+    },
+    purchaseServicesCore: {
+      value: (focusOrCommand: ResearchFocus | PurchaseCoreCommand) =>
+        purchaseCore(
+          typeof focusOrCommand === 'string'
+            ? { core: 'services', focus: focusOrCommand }
+            : { ...focusOrCommand, core: 'services' },
+        ),
+      enumerable: false,
+    },
+  });
+  return api;
 }

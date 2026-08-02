@@ -36,6 +36,14 @@
           >
             Build
           </button>
+          <button
+            type="button"
+            data-action="research"
+            aria-label="Open Research menu"
+            aria-expanded="false"
+          >
+            Research
+          </button>
           <button type="button" data-speed="pause" aria-label="Pause simulation">Pause</button>
           <button type="button" data-speed="normal" aria-label="Run at normal speed" class="active">
             Normal
@@ -51,6 +59,46 @@
           <span data-testid="building-count">2 buildings</span>
           <span data-testid="project-count">0 projects</span>
         </p>
+        <section
+          class="research-panel"
+          data-testid="research-panel"
+          aria-labelledby="research-title"
+          hidden
+        >
+          <div class="panel-heading">
+            <h2 id="research-title">Research</h2>
+            <span class="panel-kicker">Core Protocols</span>
+          </div>
+          <p class="panel-copy">
+            Install the next core only when the city has earned its milestone.
+          </p>
+          <article class="research-card" data-testid="services-core-card">
+            <div class="research-card-heading">
+              <div>
+                <h3>Services Core</h3>
+                <p data-testid="core-status">Needs prerequisites</p>
+              </div>
+              <strong data-testid="core-cost">50 Data</strong>
+            </div>
+            <p class="research-requirements" data-testid="core-requirements">
+              Requirements are loading.
+            </p>
+            <div class="research-focuses" aria-label="Services Core focus">
+              <button type="button" data-research-focus="space" aria-pressed="false">
+                <span>Space</span><small>A space-focused path</small>
+              </button>
+              <button type="button" data-research-focus="access" aria-pressed="false">
+                <span>Access</span><small>An access-focused path</small>
+              </button>
+              <button type="button" data-research-focus="activity" aria-pressed="false">
+                <span>Activity</span><small>An activity-focused path</small>
+              </button>
+            </div>
+            <button type="button" data-action="confirm-core" class="confirm-button" disabled>
+              Choose a focus to install Services Core
+            </button>
+          </article>
+        </section>
         <section class="build-panel" data-testid="build-panel" aria-labelledby="build-title" hidden>
           <div class="panel-heading">
             <h2 id="build-title">Build</h2>
@@ -73,6 +121,15 @@
               aria-pressed="false"
             >
               <span>Working</span><small data-testid="working-cost">Data cost</small>
+            </button>
+            <button
+              type="button"
+              data-build-kind="services"
+              aria-label="Choose Services district seed"
+              aria-pressed="false"
+              hidden
+            >
+              <span>Services</span><small data-testid="services-cost">20 Data</small>
             </button>
           </div>
           <p

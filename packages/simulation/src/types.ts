@@ -1,16 +1,20 @@
 import type { ChunkCoordinate, GridPosition, GridRect } from '@idle-city/shared';
 
-export type BuildingType = 'home' | 'workplace';
+export type BuildingType = 'home' | 'workplace' | 'service';
 export type CitizenActivity =
   | 'home'
   | 'commuting-to-work'
   | 'work'
   | 'commuting-home'
+  | 'commuting-to-service'
+  | 'service'
   | 'commuting-to-construction'
   | 'constructing';
 export type DemandKind = 'living' | 'working' | 'services';
 export type DistrictSeedKind = 'living' | 'working' | 'services';
 export type ConstructionPhase = 'survey' | 'blueprint' | 'foundation' | 'frame' | 'completion';
+export type ResearchFocus = 'space' | 'access' | 'activity';
+export type CoreProtocol = 'services';
 
 export type DevelopmentReasonCode =
   | 'matching-seed-influence'
@@ -106,6 +110,14 @@ export interface CitizenSnapshot {
   readonly workplaceBuildingId: string;
   readonly activity: CitizenActivity;
   readonly activityTicksRemaining: number;
+  /** Need pressure is an integer in [0, 4] once the Services system is active. */
+  readonly serviceNeed: number;
+  /** Reserved or currently used Services building, if any. */
+  readonly serviceDestinationBuildingId: string | null;
+  /** Plain-language reason for the current service destination choice. */
+  readonly serviceDestinationReason: string | null;
+  /** Cumulative logical ticks this citizen has waited for service access. */
+  readonly serviceWaitTicks: number;
   readonly route: readonly GridPosition[];
   readonly routeIndex: number;
   /** Consecutive logical ticks for which this commuter's proposal was blocked. */
@@ -158,6 +170,59 @@ export type CommandRejectionReason =
   | 'right-of-way'
   | 'locked'
   | 'insufficient-data';
+
+export type CorePurchaseRejectionReason =
+  'invalid-focus' | 'already-purchased' | 'missing-prerequisites' | 'insufficient-data';
+
+export interface PurchaseCoreCommand {
+  readonly core?: CoreProtocol;
+  readonly focus: ResearchFocus;
+}
+
+export interface CoreRequirementProgress {
+  readonly key: 'living-seed' | 'working-seed' | 'population' | 'completed-work-activities';
+  readonly label: string;
+  readonly current: number;
+  readonly required: number;
+  readonly met: boolean;
+}
+
+export interface ServicesCoreState {
+  readonly core: CoreProtocol;
+  readonly cost: number;
+  readonly purchased: boolean;
+  readonly unlocked: boolean;
+  readonly focus: ResearchFocus | null;
+  readonly selectedFocus: ResearchFocus | null;
+  readonly requirements: readonly CoreRequirementProgress[];
+  readonly missingRequirements: readonly CoreRequirementProgress['key'][];
+}
+
+export interface CoreState {
+  readonly servicesCore: ServicesCoreState;
+}
+
+export interface CorePurchaseInfo {
+  readonly core: CoreProtocol;
+  readonly cost: number;
+  readonly eligible: boolean;
+  readonly focusRequired: boolean;
+  readonly missingRequirements: readonly CoreRequirementProgress['key'][];
+}
+
+export interface AcceptedCorePurchaseResult {
+  readonly accepted: true;
+  readonly core: CoreProtocol;
+  readonly focus: ResearchFocus;
+  readonly cost: number;
+}
+
+export interface RejectedCorePurchaseResult {
+  readonly accepted: false;
+  readonly reason: CorePurchaseRejectionReason;
+}
+
+export type CorePurchaseResult = AcceptedCorePurchaseResult | RejectedCorePurchaseResult;
 
 export interface ValidDistrictSeedPlacementPreview {
   readonly valid: true;
@@ -341,6 +406,10 @@ export interface SimulationStructuralCounters {
   readonly constructionPausedProjectTicks: number;
   readonly constructionPhaseCompletions: number;
   readonly constructionWorkerReleases: number;
+  readonly serviceTrips: number;
+  readonly serviceUses: number;
+  readonly failedServiceDestinationAttempts: number;
+  readonly serviceWaitTicks: number;
 }
 
 export type ActivateChunkCommand = ChunkCoordinate;
@@ -425,10 +494,21 @@ export interface SimulationSnapshot {
   readonly populationGrowthCadenceTicks: number;
   readonly completedTrips: number;
   readonly completedActivities: number;
+  readonly completedWorkActivities: number;
+  readonly completedServiceActivities: number;
+  readonly serviceTrips: number;
+  readonly serviceUses: number;
+  readonly failedServiceDestinationAttempts: number;
+  readonly serviceWaitTicks: number;
   readonly data: number;
   readonly dataGeneratedThisTick: number;
+  readonly dataGeneratedThisTickBySource: DataSourceAmounts;
+  readonly dataBySource: DataSourceAmounts;
   readonly averageTripDurationTicks: number;
   readonly metrics: CityMetrics;
+  readonly core: CoreState;
+  readonly servicesCore: ServicesCoreState;
+  readonly researchFocus: ResearchFocus | null;
   readonly demand: CityDemand;
   readonly traffic: readonly TrafficEdgeSnapshot[];
   readonly structural: SimulationStructuralCounters;
@@ -441,6 +521,11 @@ export interface SimulationSnapshot {
   readonly citizens: readonly CitizenSnapshot[];
   readonly developmentCandidates: readonly DevelopmentCandidate[];
   readonly constructionProjects: readonly ConstructionProject[];
+}
+
+export interface DataSourceAmounts {
+  readonly work: number;
+  readonly service: number;
 }
 
 export interface Simulation {
@@ -456,4 +541,12 @@ export interface Simulation {
   queryDemandRegion(region: DemandRegionQuery): DemandRegionSnapshot;
   getSnapshot(): SimulationSnapshot;
   getDeterminismHash(): string;
+  getCoreState(): CoreState;
+  getServicesCoreState(): ServicesCoreState;
+  getCorePurchaseInfo(core?: CoreProtocol): CorePurchaseInfo;
+  previewCorePurchase(command: PurchaseCoreCommand): CorePurchaseInfo & {
+    readonly reason?: CorePurchaseRejectionReason;
+  };
+  purchaseCore(command: PurchaseCoreCommand): CorePurchaseResult;
+  purchaseServicesCore(focusOrCommand: ResearchFocus | PurchaseCoreCommand): CorePurchaseResult;
 }

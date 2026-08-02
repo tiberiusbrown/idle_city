@@ -1,6 +1,11 @@
 import type { ChunkCoordinate, GridPosition, GridRect } from '@idle-city/shared';
 import { chunkKey, validateChunkSize } from './chunks';
 import { isInsideFootprint } from './footprints';
+import {
+  calculateServicesDemand,
+  SERVICES_LOCAL_CAPACITY_RADIUS,
+  SERVICE_NEED_MAX,
+} from './services';
 import type {
   Building,
   BuildingType,
@@ -16,6 +21,8 @@ import type {
 export interface DemandCitizen {
   readonly homeBuildingId: string;
   readonly workplaceBuildingId: string;
+  readonly serviceNeed?: number;
+  readonly serviceBuildingId?: string | null;
 }
 
 /** A normalized additive influence supplied by authoritative district seeds. */
@@ -28,6 +35,7 @@ export interface DemandCalculationInput {
   readonly citizens: readonly DemandCitizen[];
   readonly metrics: CityMetrics;
   readonly seedInfluence?: DemandSeedInfluence;
+  readonly servicesEnabled?: boolean;
 }
 
 export interface DemandChunkCalculationInput {
@@ -38,25 +46,32 @@ export interface DemandChunkCalculationInput {
   readonly metrics: CityMetrics;
   readonly seedInfluence?: DemandSeedInfluence;
   readonly seedInfluenceRadius?: number;
+  readonly servicesEnabled?: boolean;
   readonly revision?: number;
 }
 
 const demandKinds = ['living', 'working', 'services'] as const satisfies readonly DemandKind[];
-const buildingTypes = ['home', 'workplace'] as const satisfies readonly BuildingType[];
+const buildingTypes = ['home', 'workplace', 'service'] as const satisfies readonly BuildingType[];
 const demandPrecision = 1_000_000;
 
 interface PreparedDemand {
   readonly buildings: readonly Building[];
   readonly homeBuildings: readonly Building[];
   readonly workplaceBuildings: readonly Building[];
+  readonly serviceBuildings: readonly Building[];
   readonly homeOccupancy: ReadonlyMap<string, number>;
   readonly workplaceOccupancy: ReadonlyMap<string, number>;
+  readonly serviceOccupancy: ReadonlyMap<string, number>;
   readonly housingShortage: number;
   readonly workplaceShortage: number;
+  readonly serviceCapacityShortage: number;
+  readonly serviceNeedPressure: number;
   readonly accessPressure: number;
   readonly maxDistance: number;
   readonly metrics: CityMetrics;
   readonly seedInfluence: DemandSeedInfluence | undefined;
+  readonly servicesEnabled: boolean;
+  readonly population: number;
 }
 
 function finite(name: string, value: number): number {
@@ -193,12 +208,45 @@ function buildOccupancy(
   return occupancy;
 }
 
+function buildServiceOccupancy(
+  citizens: readonly DemandCitizen[],
+  buildingsById: ReadonlyMap<string, Building>,
+): Map<string, number> {
+  const occupancy = new Map<string, number>();
+  for (const citizen of citizens) {
+    const buildingId = citizen.serviceBuildingId;
+    if (buildingId === undefined || buildingId === null) continue;
+    const building = buildingsById.get(buildingId);
+    if (building === undefined)
+      throw new Error(`Citizen references missing service ${buildingId}.`);
+    if (building.type !== 'service') {
+      throw new Error(`Citizen references ${building.type} building ${buildingId} as service.`);
+    }
+    occupancy.set(building.id, (occupancy.get(building.id) ?? 0) + 1);
+  }
+  return occupancy;
+}
+
+function serviceNeedPressure(citizens: readonly DemandCitizen[]): number {
+  if (citizens.length === 0) return 0;
+  let total = 0;
+  for (const citizen of citizens) {
+    const need = citizen.serviceNeed ?? 0;
+    if (!Number.isSafeInteger(need) || need < 0 || need > SERVICE_NEED_MAX) {
+      throw new Error(`serviceNeed must be an integer in [0, ${String(SERVICE_NEED_MAX)}].`);
+    }
+    total += need / SERVICE_NEED_MAX;
+  }
+  return clampUnit('service need pressure', total / citizens.length);
+}
+
 function prepareDemand(
   buildingsInput: readonly Building[],
   citizens: readonly DemandCitizen[],
   metricsInput: CityMetrics,
   maxDistance: number,
   seedInfluence: DemandSeedInfluence | undefined,
+  servicesEnabled: boolean,
 ): PreparedDemand {
   const metrics = {
     space: bounded('space metric', metricsInput.space),
@@ -226,14 +274,23 @@ function prepareDemand(
     buildings,
     homeBuildings: buildings.filter((building) => building.type === 'home'),
     workplaceBuildings: buildings.filter((building) => building.type === 'workplace'),
+    serviceBuildings: buildings.filter((building) => building.type === 'service'),
     homeOccupancy: buildOccupancy(citizens, buildingsById, 'homeBuildingId'),
     workplaceOccupancy: buildOccupancy(citizens, buildingsById, 'workplaceBuildingId'),
+    serviceOccupancy: buildServiceOccupancy(citizens, buildingsById),
     housingShortage: normalizedShortage(citizens.length, totalCapacity(buildings, 'home')),
     workplaceShortage: normalizedShortage(citizens.length, totalCapacity(buildings, 'workplace')),
+    serviceCapacityShortage: normalizedShortage(
+      citizens.length,
+      totalCapacity(buildings, 'service'),
+    ),
+    serviceNeedPressure: serviceNeedPressure(citizens),
     accessPressure: clampUnit('access pressure', 1 - metrics.access),
     maxDistance: positiveInteger('demand maximum distance', Math.ceil(maxDistance)),
     metrics,
     seedInfluence,
+    servicesEnabled,
+    population: citizens.length,
   };
 }
 
@@ -284,9 +341,34 @@ function demandCell(position: GridPosition, prepared: PreparedDemand): DemandCel
       0.1 * travelPressure +
       0.15 * homeProximity,
   );
+  const localServiceCapacityCoverage = (() => {
+    let weightedAvailableCapacity = 0;
+    for (const building of prepared.serviceBuildings) {
+      const distance = distanceToRect(position, building.footprint);
+      const falloff = clampUnit(
+        'services local capacity falloff',
+        1 - distance / SERVICES_LOCAL_CAPACITY_RADIUS,
+      );
+      if (falloff === 0) continue;
+      const availableCapacity = Math.max(
+        0,
+        building.capacity - (prepared.serviceOccupancy.get(building.id) ?? 0),
+      );
+      weightedAvailableCapacity += availableCapacity * falloff;
+    }
+    return clampUnit(
+      'services local capacity coverage',
+      weightedAvailableCapacity / Math.max(1, prepared.population),
+    );
+  })();
   const servicesBase = finite(
     'services demand before influence',
-    0.55 * travelPressure + 0.45 * nearbyComplementaryUses,
+    calculateServicesDemand({
+      serviceNeedPressure: prepared.serviceNeedPressure,
+      serviceCapacityShortage: prepared.serviceCapacityShortage,
+      localCapacityCoverage: localServiceCapacityCoverage,
+      enabled: prepared.servicesEnabled,
+    }).value,
   );
   const influence = (kind: DemandKind): number => {
     if (prepared.seedInfluence === undefined) return 0;
@@ -341,6 +423,7 @@ export function calculateDemandChunk(input: DemandChunkCalculationInput): Demand
     input.metrics,
     maxDistance,
     input.seedInfluence,
+    input.servicesEnabled ?? true,
   );
   const origin = { x: input.chunk.x * chunkSize, y: input.chunk.y * chunkSize };
   const cells: DemandCell[] = [];
@@ -375,6 +458,7 @@ export function calculateCityDemand(input: DemandCalculationInput): LegacyCityDe
     input.metrics,
     Math.max(1, width + height - 2),
     input.seedInfluence,
+    input.servicesEnabled ?? true,
   );
   const cells: DemandCell[] = [];
   for (let y = 0; y < height; y += 1) {
