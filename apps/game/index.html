@@ -56,7 +56,7 @@
             <h2 id="build-title">Build</h2>
             <span class="panel-kicker">District seeds</span>
           </div>
-          <p class="panel-copy">Choose a district, then tap or click a visible active cell.</p>
+          <p class="panel-copy">Choose a district, preview a cell, then confirm the placement.</p>
           <div class="build-options" aria-label="District seed choices">
             <button
               type="button"
@@ -86,7 +86,34 @@
           <p class="placement-cost" data-testid="placement-cost">
             Select a district to see its cost.
           </p>
+          <dl class="placement-details" aria-label="Placement details">
+            <div>
+              <dt>Radius</dt>
+              <dd data-testid="placement-radius">—</dd>
+            </div>
+            <div>
+              <dt>Coordinates</dt>
+              <dd data-testid="placement-coordinates">—</dd>
+            </div>
+            <div>
+              <dt>Active coverage</dt>
+              <dd data-testid="active-covered-count">—</dd>
+            </div>
+            <div>
+              <dt>Reason</dt>
+              <dd data-testid="placement-reason">—</dd>
+            </div>
+          </dl>
           <p class="build-data" data-testid="build-data">Data available: 0</p>
+          <button
+            type="button"
+            class="confirm-button"
+            data-action="confirm-placement"
+            aria-label="Confirm district seed placement"
+            hidden
+          >
+            Place district seed
+          </button>
           <button
             type="button"
             class="cancel-button"

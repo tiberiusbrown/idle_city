@@ -23,7 +23,7 @@ function placeSeedSequence(kind: DistrictSeedKind, expectedCosts: readonly numbe
   });
   for (const [index, expectedCost] of expectedCosts.entries()) {
     expect(simulation.getCurrentDistrictSeedCost(kind)).toBe(expectedCost);
-    const position = { x: 6 + index, y: kind === 'living' ? 6 : 8 };
+    const position = { x: 5 + index, y: 1 };
     const preview = simulation.previewDistrictSeed({ kind, position });
     expect(preview).toEqual({ valid: true, cost: expectedCost });
     const result = simulation.placeDistrictSeed({ kind, position });
@@ -96,24 +96,24 @@ describe('post-Step-7 observation and pricing stability', () => {
   it('does not advance a same-type price after a rejected placement', () => {
     const simulation = createSimulation({ citizenCount: 0, startingData: 100 });
     expect(
-      simulation.placeDistrictSeed({ kind: 'living', position: { x: 6, y: 6 } }),
+      simulation.placeDistrictSeed({ kind: 'living', position: { x: 5, y: 1 } }),
     ).toMatchObject({ accepted: true, cost: 10 });
     expect(simulation.getCurrentDistrictSeedCost('living')).toBe(13);
-    expect(simulation.placeDistrictSeed({ kind: 'working', position: { x: 6, y: 6 } })).toEqual({
+    expect(simulation.placeDistrictSeed({ kind: 'working', position: { x: 5, y: 1 } })).toEqual({
       accepted: false,
       reason: 'occupied',
     });
     expect(simulation.getCurrentDistrictSeedCost('living')).toBe(13);
     expect(
-      simulation.placeDistrictSeed({ kind: 'living', position: { x: 7, y: 6 } }),
+      simulation.placeDistrictSeed({ kind: 'living', position: { x: 6, y: 1 } }),
     ).toMatchObject({ accepted: true, cost: 13 });
   });
 
   it('charges the same current cost that preview reports', () => {
     const simulation = createSimulation({ citizenCount: 0, startingData: 100 });
-    const preview = simulation.previewDistrictSeed({ kind: 'living', position: { x: 6, y: 6 } });
+    const preview = simulation.previewDistrictSeed({ kind: 'living', position: { x: 5, y: 1 } });
     expect(preview).toEqual({ valid: true, cost: 10 });
-    const result = simulation.placeDistrictSeed({ kind: 'living', position: { x: 6, y: 6 } });
+    const result = simulation.placeDistrictSeed({ kind: 'living', position: { x: 5, y: 1 } });
     expect(result).toMatchObject({ accepted: true, cost: preview.valid ? preview.cost : -1 });
   });
 });

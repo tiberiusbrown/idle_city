@@ -27,12 +27,12 @@ describe('authoritative district seed commands', () => {
     });
     const before = simulation.getSnapshot();
 
-    expect(simulation.placeDistrictSeed({ kind: 'living', position: { x: 1, y: 1 } })).toEqual({
+    expect(simulation.placeDistrictSeed({ kind: 'living', position: { x: 5, y: 1 } })).toEqual({
       accepted: true,
       seed: {
         id: 'district-seed-1',
         kind: 'living',
-        position: { x: 1, y: 1 },
+        position: { x: 5, y: 1 },
       },
       cost: DISTRICT_SEED_COSTS.living,
     });
@@ -40,7 +40,7 @@ describe('authoritative district seed commands', () => {
     const after = simulation.getSnapshot();
     expect(after.data).toBe(before.data - DISTRICT_SEED_COSTS.living);
     expect(after.seeds).toEqual([
-      { id: 'district-seed-1', kind: 'living', position: { x: 1, y: 1 } },
+      { id: 'district-seed-1', kind: 'living', position: { x: 5, y: 1 } },
     ]);
     expect(after.buildings).toEqual(before.buildings);
     expect(after.citizens).toEqual(before.citizens);
@@ -127,7 +127,7 @@ describe('authoritative district seed commands', () => {
     const left = createSimulation(configuration);
     const right = createSimulation(configuration);
     const commands: readonly PlaceDistrictSeedCommand[] = [
-      { kind: 'living', position: { x: 1, y: 1 } },
+      { kind: 'living', position: { x: 5, y: 1 } },
       { kind: 'working', position: { x: 8, y: 7 } },
     ];
 

@@ -28,7 +28,12 @@ export {
   isExteriorEntrance,
   isInsideFootprint,
   selectExteriorEntrance,
+  circulationEnvelope,
+  circulationEnvelopeCells,
+  envelopeCells,
+  stagingCapableEnvelopeCells,
   type EntranceSelectionOptions,
+  type StagingCellOptions,
 } from './footprints';
 export { SeededRandom } from './random';
 export { calculateCityDemand, calculateDemandChunk } from './demand';
@@ -38,7 +43,26 @@ export {
   getDistrictSeedCost,
   isDistrictSeedKindUnlocked,
 } from './balance-rules';
-export { calculateDistrictSeedInfluence, type DistrictSeedInfluenceInput } from './district-seeds';
+export {
+  calculateDistrictSeedInfluence,
+  districtSeedInfluenceRadius,
+  enumerateDistrictSeedInfluenceCells,
+  getDistrictSeedDefinition,
+  getDistrictSeedDefinitions,
+  DISTRICT_SEED_DEFINITIONS,
+  type DistrictSeedInfluenceInput,
+} from './district-seeds';
+export {
+  corridorPairKey,
+  corridorPairOrientation,
+  enumerateAdjacentCorridorPairs,
+  findTwoCellConnector,
+  type CorridorOrientation,
+  type CorridorPair,
+  type TwoCellConnectorInput,
+  type TwoCellConnectorResult,
+  type TwoCellConnectorStatus,
+} from './right-of-way';
 export {
   CONSTRUCTION_PHASE_ORDER,
   DEFAULT_CONSTRUCTION_PHASE_DURATIONS,
@@ -123,10 +147,14 @@ export type {
   DemandRegionSnapshot,
   DemandTotals,
   DevelopmentCandidate,
+  DevelopmentJobProgress,
+  DevelopmentJobStage,
   DevelopmentReason,
   DevelopmentReasonCode,
   DistrictSeed,
+  DistrictSeedDefinition,
   DistrictSeedKind,
+  DistrictSeedPlacementInfo,
   DistrictSeedPlacementPreview,
   LegacyCityDemand,
   PlaceDistrictSeedCommand,
@@ -136,6 +164,7 @@ export type {
   SimulationSnapshot,
   SimulationStructuralCounters,
   TrafficEdgeSnapshot,
+  RightOfWayChunkSnapshot,
 } from './types';
 export type {
   DemandCalculationInput,

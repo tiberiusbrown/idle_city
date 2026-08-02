@@ -242,6 +242,41 @@ button.active {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
+.placement-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 10px 0 0;
+}
+.placement-details div {
+  padding: 8px 9px;
+  border: 1px solid rgb(255 255 255 / 7%);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 3%);
+}
+.placement-details dt {
+  color: #8da1ba;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.placement-details dd {
+  margin: 3px 0 0;
+  color: #e9fff9;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.confirm-button {
+  width: 100%;
+  margin-top: 12px;
+  color: #06141c;
+  border-color: #72f6d3;
+  background: #72f6d3;
+}
+.confirm-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
 .cancel-button {
   width: 100%;
   margin-top: 12px;

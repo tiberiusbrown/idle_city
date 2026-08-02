@@ -13,7 +13,7 @@ shared <- simulation <- renderer <- game
 ```
 
 - `packages/shared` contains platform-neutral primitives and stable hashing.
-- `packages/simulation` owns authoritative state, lazy chunk storage, footprints, entrances, chunk-aware A*, schedules, and seeded randomness. It has no Babylon.js, DOM, or browser dependencies.
+- `packages/simulation` owns authoritative state, lazy chunk/ROW storage, footprints, circulation envelopes, entrances, chunk-aware A*, incremental developer jobs, schedules, and seeded randomness. It has no Babylon.js, DOM, or browser dependencies.
 - `packages/renderer` translates immutable simulation snapshots into Babylon.js scene state.
 - `apps/game` owns the fixed-step browser loop, controls, PWA shell, and DOM overlay.
 - `tools/balance-runner` steps the same simulation directly under Node and emits JSON.
@@ -55,7 +55,7 @@ npm run sim:run -- --seed 1234 --ticks 1000
 npm run sim:run -- --scenario long-commute --seed 1234 --ticks 1000
 ```
 
-The command prints one JSON object containing the scenario, seed, executed ticks, citizen count and population cap, completed trips and work activities, Data, demand totals, the three normalized city indicators, active/allocated chunk counters, demand dirty/evaluation counts, construction counts, path instrumentation, scheduled command results, invariant failures, and a stable final-state hash. Named scenarios also cover `sparse-expansion`, `extent`, `localized-demand`, `long-route`, `living-led`, `working-led`, `equal-score`, `obstacle-constrained`, `no-valid-footprint`, `long-run-construction`, `housing-surplus`, `workplace-surplus`, `balanced-expansion`, `tie`, `capped-growth`, and `long-run-city`. Omitting `--scenario` preserves the baseline command. Repeating identical inputs must produce byte-identical JSON and the same hash.
+The command prints one JSON object containing the scenario, seed, executed ticks, citizen count and population cap, completed trips and work activities, Data, demand totals, the three normalized city indicators, active/allocated chunk and ROW counters, demand dirty/evaluation counts, incremental developer job progress and budget peaks, construction counts, path instrumentation, scheduled command previews/results, invariant failures, and a stable final-state hash. Named scenarios also cover `sparse-expansion`, `extent`, `localized-demand`, `long-route`, `living-led`, `working-led`, `equal-score`, `obstacle-constrained`, `no-valid-footprint`, `long-run-construction`, `housing-surplus`, `workplace-surplus`, `balanced-expansion`, `tie`, `capped-growth`, `long-run-city`, `seed-boundary`, `multiple-same-type-seeds`, `sparse-development`, `two-connected-row-buildings`, `narrow-connector`, `dense-circulation`, `development-supersession`, `long-incremental-development`, and `step9-dense-movement`. Omitting `--scenario` preserves the baseline command. Repeating identical inputs must produce byte-identical JSON and the same hash.
 
 ## Determinism and timing
 
@@ -63,8 +63,8 @@ All random decisions use an explicit `SeededRandom` instance. Never use `Math.ra
 
 ## Current limitations
 
-The slice uses a finite active-chunk set, multi-cell buildings and construction projects, exterior entrances, deterministic population growth over compatible home/work capacity, entrance-distance assignment, a simple alternating home/work schedule, deterministic A* routes, bounded internal traffic telemetry, mouse/touch Living and Working district seed placement, chunked demand influence, deterministic developer scoring, staged survey/blueprint/foundation/frame/completion phases, deterministic Data plus Space/Access/Activity indicators, and dynamic stable-ID renderer reconciliation for buildings, citizens, projects, and seeds. There is no automatic expansion policy, services behavior, congestion response, player-facing traffic overlay, collision avoidance, backend, audio, or wrapper packaging yet.
+The slice uses a finite active-chunk set, fixed-radius Living/Working district seeds with exact preview and confirmation, compact public ROW, one-cell circulation envelopes, deterministic two-cell connectors, multi-cell buildings and construction projects, exterior entrances, deterministic population growth over compatible home/work capacity, entrance-distance assignment, a simple alternating home/work schedule, deterministic A* routes, bounded internal traffic telemetry, chunked demand influence, incremental deterministic developer scoring, staged survey/blueprint/foundation/frame/completion phases, deterministic Data plus Space/Access/Activity indicators, and dynamic stable-ID renderer reconciliation for buildings, citizens, projects, and seeds. There is no citizen construction labor, Services behavior, automatic expansion policy, congestion response, player-facing Traffic Analysis, paved roads or transit, demolition or ROW removal, backend, audio, or wrapper packaging yet.
 
 ## Recommended next steps
 
-The next focused slice is deterministic movement reservations: proposal, conflict resolution, simultaneous commit, and bounded deadlock recovery without turning citizen positions into permanent global pathfinding obstacles.
+The next focused slice is citizen-driven construction labor and project participation; the Step 9.5 developer/ROW foundation is intentionally autonomous until that work begins.

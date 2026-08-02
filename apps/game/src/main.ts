@@ -3,6 +3,7 @@ import { createCityScene, type PickedLogicalCell } from '@idle-city/renderer';
 import {
   createSimulation,
   type CommandRejectionReason,
+  type DistrictSeedPlacementInfo,
   type DistrictSeedKind,
   type SimulationSnapshot,
 } from '@idle-city/simulation';
@@ -29,7 +30,22 @@ const placementStatusElement = document.querySelector<HTMLElement>(
   '[data-testid="placement-status"]',
 );
 const placementCostElement = document.querySelector<HTMLElement>('[data-testid="placement-cost"]');
+const placementRadiusElement = document.querySelector<HTMLElement>(
+  '[data-testid="placement-radius"]',
+);
+const placementCoordinatesElement = document.querySelector<HTMLElement>(
+  '[data-testid="placement-coordinates"]',
+);
+const activeCoveredCountElement = document.querySelector<HTMLElement>(
+  '[data-testid="active-covered-count"]',
+);
+const placementReasonElement = document.querySelector<HTMLElement>(
+  '[data-testid="placement-reason"]',
+);
 const buildDataElement = document.querySelector<HTMLElement>('[data-testid="build-data"]');
+const confirmPlacementButton = document.querySelector<HTMLButtonElement>(
+  '[data-action="confirm-placement"]',
+);
 const cancelPlacementButton = document.querySelector<HTMLButtonElement>(
   '[data-action="cancel-placement"]',
 );
@@ -55,7 +71,12 @@ if (
   buildPanel === null ||
   placementStatusElement === null ||
   placementCostElement === null ||
+  placementRadiusElement === null ||
+  placementCoordinatesElement === null ||
+  activeCoveredCountElement === null ||
+  placementReasonElement === null ||
   buildDataElement === null ||
+  confirmPlacementButton === null ||
   cancelPlacementButton === null ||
   livingCostElement === null ||
   workingCostElement === null ||
@@ -79,7 +100,12 @@ const buildToggle = buildButton;
 const buildMenu = buildPanel;
 const placementStatusDisplay = placementStatusElement;
 const placementCostDisplay = placementCostElement;
+const placementRadiusDisplay = placementRadiusElement;
+const placementCoordinatesDisplay = placementCoordinatesElement;
+const activeCoveredCountDisplay = activeCoveredCountElement;
+const placementReasonDisplay = placementReasonElement;
 const buildDataDisplay = buildDataElement;
+const confirmButton = confirmPlacementButton;
 const livingCostDisplay = livingCostElement;
 const workingCostDisplay = workingCostElement;
 const cancelButton = cancelPlacementButton;
@@ -104,6 +130,8 @@ let previousTime = performance.now();
 let speed = 1;
 let buildOpen = false;
 let placementKind: PlaceableDistrictSeedKind | undefined;
+let placementCandidate: DistrictSeedPlacementInfo | undefined;
+let placementLocked = false;
 const dragThresholdCssPixels = 8;
 interface PrimaryPointerGesture {
   readonly pointerId: number;
@@ -123,8 +151,8 @@ function formatData(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-function displayKind(kind: PlaceableDistrictSeedKind): string {
-  return kind === 'living' ? 'Living' : 'Working';
+function displayKind(kind: DistrictSeedKind): string {
+  return kind === 'living' ? 'Living' : kind === 'working' ? 'Working' : 'Services';
 }
 
 function setPlacementStatus(
@@ -172,6 +200,8 @@ function rejectionMessage(reason: CommandRejectionReason): string {
       return 'That chunk is inactive. Choose a visible active chunk.';
     case 'occupied':
       return 'That cell already has a district seed.';
+    case 'right-of-way':
+      return 'That cell is protected public right-of-way.';
     case 'locked':
       return 'That district is locked.';
     case 'insufficient-data':
@@ -195,10 +225,20 @@ function setSpeed(nextSpeed: number): void {
 function clearPlacementSelection(): void {
   clearPrimaryPointerGesture();
   placementKind = undefined;
+  placementCandidate = undefined;
+  placementLocked = false;
   city.setPlacementPreview(undefined);
+  city.setSeedInfluenceVisibility({});
   buildKindButtons.forEach((button) => button.setAttribute('aria-pressed', 'false'));
   cancelButton.hidden = true;
+  confirmButton.hidden = true;
+  confirmButton.disabled = true;
+  confirmButton.textContent = 'Place district seed';
   placementCostDisplay.textContent = 'Select a district to see its cost.';
+  placementRadiusDisplay.textContent = '—';
+  placementCoordinatesDisplay.textContent = '—';
+  activeCoveredCountDisplay.textContent = '—';
+  placementReasonDisplay.textContent = '—';
   setPlacementStatus('Choose Living or Working to enter placement mode.');
   gameCanvas.setAttribute('aria-label', 'Idle City 3D simulation');
 }
@@ -215,14 +255,24 @@ function setBuildOpen(open: boolean): void {
 function beginPlacement(kind: PlaceableDistrictSeedKind): void {
   setBuildOpen(true);
   clearPrimaryPointerGesture();
+  placementCandidate = undefined;
+  placementLocked = false;
   city.setPlacementPreview(undefined);
+  city.setSeedInfluenceVisibility({ placing: true });
   placementKind = kind;
+  const definition = simulation.getDistrictSeedDefinition(kind);
   const cost = simulation.getCurrentDistrictSeedCost(kind);
   buildKindButtons.forEach((button) => {
     button.setAttribute('aria-pressed', String(button.dataset.buildKind === kind));
   });
   cancelButton.hidden = false;
+  confirmButton.hidden = true;
+  confirmButton.disabled = true;
   placementCostDisplay.textContent = `Current cost: ${String(cost)} Data`;
+  placementRadiusDisplay.textContent = `${String(definition.influenceRadius)} cells`;
+  placementCoordinatesDisplay.textContent = '—';
+  activeCoveredCountDisplay.textContent = '—';
+  placementReasonDisplay.textContent = 'Hover over a cell to preview.';
   setPlacementStatus(`${displayKind(kind)} placement mode: move over an active visible cell.`);
   gameCanvas.setAttribute(
     'aria-label',
@@ -230,25 +280,52 @@ function beginPlacement(kind: PlaceableDistrictSeedKind): void {
   );
 }
 
+function renderPlacementInfo(info: DistrictSeedPlacementInfo, locked: boolean): void {
+  const coordinates = `(${String(info.position.x)}, ${String(info.position.y)})`;
+  placementCandidate = info;
+  city.setPlacementPreview(info);
+  placementRadiusDisplay.textContent = `${String(info.radius)} cells`;
+  placementCoordinatesDisplay.textContent = coordinates;
+  activeCoveredCountDisplay.textContent = `${String(info.activeCoveredCellCount)} / ${String(info.coveredCellCount)} cells`;
+  placementReasonDisplay.textContent = info.valid
+    ? locked
+      ? 'Ready to confirm.'
+      : 'Valid candidate.'
+    : rejectionMessage(info.reason ?? 'invalid-kind');
+  placementCostDisplay.textContent = `Current cost: ${String(info.cost)} Data`;
+  confirmButton.textContent = `Place ${displayKind(info.kind)} for ${String(info.cost)} Data`;
+  confirmButton.setAttribute('aria-label', confirmButton.textContent);
+  confirmButton.hidden = !locked;
+  confirmButton.disabled = !locked || !info.valid;
+  const state = info.valid ? 'valid' : 'invalid';
+  setPlacementStatus(
+    info.valid
+      ? `${locked ? 'Selected' : 'Valid'} ${displayKind(info.kind)} placement at ${coordinates}.`
+      : `${rejectionMessage(info.reason ?? 'invalid-kind')} Cell ${coordinates}.`,
+    state,
+  );
+}
+
 function previewPlacementAt(picked: PickedLogicalCell | undefined): void {
   if (placementKind === undefined) return;
+  if (placementLocked) return;
   if (picked === undefined) {
+    placementCandidate = undefined;
     city.setPlacementPreview(undefined);
+    placementRadiusDisplay.textContent = `${String(simulation.getDistrictSeedDefinition(placementKind).influenceRadius)} cells`;
+    placementCoordinatesDisplay.textContent = '—';
+    activeCoveredCountDisplay.textContent = '—';
+    placementReasonDisplay.textContent = 'Hover over a cell to preview.';
+    confirmButton.hidden = true;
+    confirmButton.disabled = true;
     setPlacementStatus('Move over an active visible chunk to preview placement.');
     return;
   }
-
-  const preview = simulation.previewDistrictSeed({
+  const preview = simulation.getDistrictSeedPlacementInfo({
     kind: placementKind,
     position: picked.position,
   });
-  city.setPlacementPreview({ position: picked.position, valid: preview.valid });
-  const coordinates = `(${String(picked.position.x)}, ${String(picked.position.y)})`;
-  if (preview.valid) {
-    setPlacementStatus(`Valid ${displayKind(placementKind)} placement at ${coordinates}.`, 'valid');
-  } else {
-    setPlacementStatus(`${rejectionMessage(preview.reason)} Cell ${coordinates}.`, 'invalid');
-  }
+  renderPlacementInfo(preview, false);
 }
 
 function updatePlacementAt(clientX: number, clientY: number): void {
@@ -256,26 +333,56 @@ function updatePlacementAt(clientX: number, clientY: number): void {
   previewPlacementAt(city.pickLogicalCell(clientX, clientY));
 }
 
-function submitPlacement(clientX: number, clientY: number, event: PointerEvent): void {
+function lockPlacement(event: PointerEvent): void {
   if (placementKind === undefined) return;
   if (event.pointerType === 'mouse' && event.button !== 0) return;
   event.preventDefault();
-  const picked = city.pickLogicalCell(clientX, clientY);
+  const picked = city.pickLogicalCell(event.clientX, event.clientY);
   if (picked === undefined) {
     setPlacementStatus('Choose a cell in an active visible chunk.', 'invalid');
     return;
   }
-  const result = simulation.placeDistrictSeed({ kind: placementKind, position: picked.position });
-  const coordinates = `(${String(picked.position.x)}, ${String(picked.position.y)})`;
-  if (result.accepted) {
+  const info = simulation.getDistrictSeedPlacementInfo({
+    kind: placementKind,
+    position: picked.position,
+  });
+  placementLocked = true;
+  renderPlacementInfo(info, true);
+  statusDisplay.textContent = info.valid
+    ? 'Candidate locked. Confirm to spend Data.'
+    : `Candidate locked but invalid: ${rejectionMessage(info.reason ?? 'invalid-kind')}`;
+}
+
+function confirmPlacement(): void {
+  if (placementKind === undefined || !placementLocked || placementCandidate === undefined) return;
+  const candidate = placementCandidate;
+  const result = simulation.placeDistrictSeed({
+    kind: placementKind,
+    position: candidate.position,
+  });
+  const coordinates = `(${String(candidate.position.x)}, ${String(candidate.position.y)})`;
+  if (!result.accepted) {
+    const refreshed = simulation.getDistrictSeedPlacementInfo({
+      kind: placementKind,
+      position: candidate.position,
+    });
+    placementLocked = true;
+    renderPlacementInfo(refreshed, true);
+    statusDisplay.textContent = `${displayKind(placementKind)} placement rejected: ${rejectionMessage(result.reason)}`;
+  } else {
     statusDisplay.textContent = `${displayKind(placementKind)} seed accepted at ${coordinates}; spent ${String(result.cost)} Data.`;
+    placementCandidate = undefined;
+    placementLocked = false;
+    city.setPlacementPreview(undefined);
+    confirmButton.hidden = true;
+    confirmButton.disabled = true;
+    placementCoordinatesDisplay.textContent = '—';
+    activeCoveredCountDisplay.textContent = '—';
+    placementReasonDisplay.textContent = 'Choose another cell to preview.';
     setPlacementStatus(
       `${displayKind(placementKind)} seed placed at ${coordinates}. Choose another cell or cancel.`,
       'valid',
     );
-  } else {
-    statusDisplay.textContent = `${displayKind(placementKind)} seed rejected: ${rejectionMessage(result.reason)}`;
-    setPlacementStatus(`${rejectionMessage(result.reason)} Cell ${coordinates}.`, 'invalid');
   }
   const snapshot = simulation.getSnapshot();
   updateSimulationView(
@@ -284,7 +391,6 @@ function submitPlacement(clientX: number, clientY: number, event: PointerEvent):
     (currentSnapshot, interpolation) => city.update(currentSnapshot, interpolation),
     renderHud,
   );
-  updatePlacementAt(clientX, clientY);
 }
 
 function renderHud(snapshot: SimulationSnapshot): void {
@@ -334,6 +440,10 @@ cancelButton.addEventListener('click', () => {
   statusDisplay.textContent = 'Placement canceled.';
 });
 
+confirmButton.addEventListener('click', () => {
+  confirmPlacement();
+});
+
 gameCanvas.addEventListener('pointermove', (event) => {
   if (placementKind === undefined) return;
   if (primaryPointerGesture !== undefined && event.pointerId !== primaryPointerGesture.pointerId) {
@@ -371,7 +481,7 @@ gameCanvas.addEventListener('pointerup', (event) => {
     setPlacementStatus('Drag canceled; no district seed was placed.', 'neutral');
     return;
   }
-  submitPlacement(event.clientX, event.clientY, event);
+  lockPlacement(event);
 });
 gameCanvas.addEventListener('pointercancel', (event) => {
   if (primaryPointerGesture?.pointerId !== event.pointerId) return;

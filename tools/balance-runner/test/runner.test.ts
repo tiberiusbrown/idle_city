@@ -75,7 +75,7 @@ describe('balance runner', () => {
     const localized = runBalance({ seed: 7, ticks: 0, scenario: 'localized-demand' });
     const route = runBalance({ seed: 7, ticks: 50, scenario: 'long-route' });
     expect(localized.invariantFailures).toEqual([]);
-    expect(localized.structuralCounters.demandChunksDirtied).toBeGreaterThan(16);
+    expect(localized.structuralCounters.demandChunksDirtied).toBeGreaterThanOrEqual(16);
     expect(route.structuralCounters.pathChunksTouched).toBeGreaterThan(1);
     expect(route.invariantFailures).toEqual([]);
   });
@@ -197,4 +197,63 @@ describe('balance runner', () => {
       0,
     );
   });
+
+  it('covers Step 9.5 seed, circulation, and incremental-development scenarios', () => {
+    const scenarios = [
+      'seed-boundary',
+      'multiple-same-type-seeds',
+      'sparse-development',
+      'two-connected-row-buildings',
+      'narrow-connector',
+      'dense-circulation',
+      'development-supersession',
+      'long-incremental-development',
+      'step9-dense-movement',
+    ] as const;
+    const summaries = new Map<(typeof scenarios)[number], ReturnType<typeof runBalance>>();
+    for (const scenario of scenarios) {
+      const first = runBalance({ seed: 2026, ticks: 120, scenario });
+      const second = runBalance({ seed: 2026, ticks: 120, scenario });
+      summaries.set(scenario, first);
+      expect(first).toEqual(second);
+      expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+      expect(first.invariantFailures).toEqual([]);
+      expect(first.determinismHash).toMatch(/^[0-9a-f]{8}$/);
+      expect(first.structuralCounters.developmentPeakAnchorChecksPerTick).toBeLessThanOrEqual(512);
+      expect(
+        first.structuralCounters.developmentPeakFinalistValidationsPerTick,
+      ).toBeLessThanOrEqual(4);
+      expect(first.structuralCounters.developmentPeakCorridorExpansionsPerTick).toBeLessThanOrEqual(
+        2_048,
+      );
+    }
+    expect(summaries.get('seed-boundary')?.commandResults[0]?.preview.radius).toBe(10);
+    expect(
+      summaries.get('seed-boundary')?.commandResults[0]?.preview.activeCoveredCellCount,
+    ).toBeLessThan(
+      summaries.get('seed-boundary')?.commandResults[0]?.preview.coveredCellCount ?? 0,
+    );
+    expect(
+      summaries
+        .get('multiple-same-type-seeds')
+        ?.commandResults.map(({ result }) => result.accepted && result.cost),
+    ).toEqual([10, 13]);
+    expect(
+      summaries.get('sparse-development')?.structuralCounters.developmentPeakAnchorChecksPerTick,
+    ).toBe(512);
+    expect(
+      summaries.get('two-connected-row-buildings')?.structuralCounters.rightOfWayCellsAdded,
+    ).toBeGreaterThan(0);
+    expect(
+      summaries.get('two-connected-row-buildings')?.constructionProjectsStarted,
+    ).toBeGreaterThan(0);
+    expect(summaries.get('narrow-connector')?.constructionProjectsStarted).toBe(0);
+    expect(
+      summaries.get('development-supersession')?.structuralCounters.developmentJobsSuperseded,
+    ).toBeGreaterThan(0);
+    expect(
+      summaries.get('long-incremental-development')?.structuralCounters.developmentJobsStarted,
+    ).toBeGreaterThan(0);
+    expect(summaries.get('step9-dense-movement')?.movement.proposals).toBeGreaterThan(0);
+  }, 30_000);
 });

@@ -26,7 +26,8 @@ export interface ChunkGroundLayer {
 interface GroundChunk {
   readonly chunk: ChunkCoordinate;
   readonly key: string;
-  readonly revision: number;
+  readonly occupancyRevision: number;
+  readonly staticTopologyRevision: number;
   readonly mesh: ReturnType<typeof CreateBox>;
 }
 
@@ -72,7 +73,8 @@ export function createChunkGroundLayer(
     return {
       chunk: { ...summary.chunk },
       key: summary.key,
-      revision: summary.occupancyRevision,
+      occupancyRevision: summary.occupancyRevision,
+      staticTopologyRevision: summary.staticTopologyRevision,
       mesh,
     };
   };
@@ -114,7 +116,11 @@ export function createChunkGroundLayer(
       const summary = summariesByKey.get(key);
       if (summary === undefined) continue;
       const current = groundChunks.get(key);
-      if (current?.revision === summary.occupancyRevision) continue;
+      if (
+        current?.occupancyRevision === summary.occupancyRevision &&
+        current.staticTopologyRevision === summary.staticTopologyRevision
+      )
+        continue;
       current?.mesh.dispose();
       groundChunks.set(key, createGroundChunk(snapshot, summary));
     }

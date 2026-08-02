@@ -52,6 +52,69 @@ export function footprintCells(rect: GridRect): GridPosition[] {
   return cells;
 }
 
+/**
+ * The protected circulation envelope is the one-cell ring around a building
+ * footprint. Its interior is intentionally not returned by envelopeCells.
+ */
+export function circulationEnvelope(rect: GridRect): GridRect {
+  validateRect(rect);
+  return { x: rect.x - 1, y: rect.y - 1, width: rect.width + 2, height: rect.height + 2 };
+}
+
+/** Envelope cells are returned in stable row-major order. */
+export function circulationEnvelopeCells(rect: GridRect): GridPosition[] {
+  const envelope = circulationEnvelope(rect);
+  const cells: GridPosition[] = [];
+  for (let y = envelope.y; y < envelope.y + envelope.height; y += 1) {
+    for (let x = envelope.x; x < envelope.x + envelope.width; x += 1) {
+      if (isInsideFootprint({ x, y }, rect)) continue;
+      cells.push({ x, y });
+    }
+  }
+  return cells;
+}
+
+export interface StagingCellOptions {
+  readonly isActive: (position: GridPosition) => boolean;
+  readonly isWalkable: (position: GridPosition) => boolean;
+  readonly isRightOfWay?: (position: GridPosition) => boolean;
+}
+
+/**
+ * A staging cell is an active, walkable envelope cell with at least one
+ * walkable cell beyond the envelope. ROW cells are valid external circulation
+ * neighbors even when the caller does not expose them through isWalkable.
+ */
+export function stagingCapableEnvelopeCells(
+  rect: GridRect,
+  options: StagingCellOptions,
+): GridPosition[] {
+  const envelope = circulationEnvelope(rect);
+  const candidates = circulationEnvelopeCells(rect);
+  return candidates.filter((candidate) => {
+    if (!options.isActive(candidate) || !options.isWalkable(candidate)) return false;
+    return directions.some((direction) => {
+      const neighbor = { x: candidate.x + direction.x, y: candidate.y + direction.y };
+      if (isInsideFootprint(neighbor, rect)) return false;
+      if (
+        neighbor.x >= envelope.x &&
+        neighbor.x < envelope.x + envelope.width &&
+        neighbor.y >= envelope.y &&
+        neighbor.y < envelope.y + envelope.height
+      ) {
+        return false;
+      }
+      return (
+        options.isActive(neighbor) &&
+        (options.isWalkable(neighbor) || options.isRightOfWay?.(neighbor) === true)
+      );
+    });
+  });
+}
+
+/** Alias used by callers that describe the envelope as a ring. */
+export const envelopeCells = circulationEnvelopeCells;
+
 export function isInsideFootprint(position: GridPosition, rect: GridRect): boolean {
   validateRect(rect);
   return (

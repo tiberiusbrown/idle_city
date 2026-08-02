@@ -1,5 +1,8 @@
+import type { DistrictSeedPlacementInfo } from '@idle-city/simulation';
 import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
+import { CreateLineSystem, CreateLines } from '@babylonjs/core/Meshes/Builders/linesBuilder';
 import type { Scene } from '@babylonjs/core/scene';
+import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { GridPosition } from '@idle-city/shared';
 import { logicalToWorld } from './coordinates';
 import type { CityMaterials } from './materials';
@@ -7,11 +10,62 @@ import type { CityMaterials } from './materials';
 export interface PlacementPreview {
   readonly position: GridPosition;
   readonly valid: boolean;
+  readonly radius?: number;
+  readonly coveredCells?: readonly GridPosition[];
+  readonly activeCoveredCells?: readonly GridPosition[];
 }
 
 export interface PlacementPreviewLayer {
-  setPreview(preview: PlacementPreview | undefined): void;
+  setPreview(preview: PlacementPreview | DistrictSeedPlacementInfo | undefined): void;
   dispose(): void;
+}
+
+function diamondPoints(center: GridPosition, radius: number, cellWorldScale: number): Vector3[] {
+  const origin = logicalToWorld(center, cellWorldScale);
+  const distance = radius * cellWorldScale;
+  return [
+    new Vector3(origin.x, 0.13, origin.z - distance),
+    new Vector3(origin.x + distance, 0.13, origin.z),
+    new Vector3(origin.x, 0.13, origin.z + distance),
+    new Vector3(origin.x - distance, 0.13, origin.z),
+    new Vector3(origin.x, 0.13, origin.z - distance),
+  ];
+}
+
+function activeBoundaryLines(
+  center: GridPosition,
+  activeCells: readonly GridPosition[],
+  cellWorldScale: number,
+): Vector3[][] {
+  const active = new Set(activeCells.map((cell) => `${String(cell.x)},${String(cell.y)}`));
+  const lines: Vector3[][] = [];
+  const edges = [
+    { x: 0, y: -1, a: [-0.5, -0.5], b: [0.5, -0.5] },
+    { x: 1, y: 0, a: [0.5, -0.5], b: [0.5, 0.5] },
+    { x: 0, y: 1, a: [0.5, 0.5], b: [-0.5, 0.5] },
+    { x: -1, y: 0, a: [-0.5, 0.5], b: [-0.5, -0.5] },
+  ] as const;
+  const origin = logicalToWorld(center, cellWorldScale);
+  for (const cell of activeCells) {
+    for (const edge of edges) {
+      if (active.has(`${String(cell.x + edge.x)},${String(cell.y + edge.y)}`)) continue;
+      const centerX = origin.x + (cell.x - center.x) * cellWorldScale;
+      const centerZ = origin.z + (cell.y - center.y) * cellWorldScale;
+      lines.push([
+        new Vector3(
+          centerX + edge.a[0] * cellWorldScale,
+          0.14,
+          centerZ + edge.a[1] * cellWorldScale,
+        ),
+        new Vector3(
+          centerX + edge.b[0] * cellWorldScale,
+          0.14,
+          centerZ + edge.b[1] * cellWorldScale,
+        ),
+      ]);
+    }
+  }
+  return lines;
 }
 
 export function createPlacementPreviewLayer(
@@ -24,23 +78,65 @@ export function createPlacementPreviewLayer(
   mesh.material = materials.placementValid;
   mesh.isPickable = false;
   mesh.isVisible = false;
+  let influence: ReturnType<typeof CreateLines> | undefined;
+  let activeInfluence: ReturnType<typeof CreateLineSystem> | undefined;
   let disposed = false;
 
   return {
-    setPreview(preview: PlacementPreview | undefined): void {
+    setPreview(preview: PlacementPreview | DistrictSeedPlacementInfo | undefined): void {
       if (disposed) throw new Error('Cannot update a disposed placement preview.');
       if (preview === undefined) {
         mesh.isVisible = false;
+        if (influence !== undefined) influence.isVisible = false;
+        if (activeInfluence !== undefined) activeInfluence.isVisible = false;
         return;
       }
       mesh.position = logicalToWorld(preview.position, cellWorldScale);
       mesh.position.y = 0.08;
       mesh.material = preview.valid ? materials.placementValid : materials.placementInvalid;
       mesh.isVisible = true;
+      const radius = preview.radius ?? 1;
+      if (influence === undefined) {
+        influence = CreateLines(
+          'placement-preview-influence',
+          { points: diamondPoints(preview.position, radius, cellWorldScale) },
+          scene,
+        );
+        influence.isPickable = false;
+      } else {
+        CreateLines(
+          'placement-preview-influence',
+          { points: diamondPoints(preview.position, radius, cellWorldScale), instance: influence },
+          scene,
+        );
+      }
+      influence.material = preview.valid ? materials.influenceLiving : materials.placementInvalid;
+      influence.isVisible = true;
+      activeInfluence?.dispose();
+      const activeLines = activeBoundaryLines(
+        preview.position,
+        preview.activeCoveredCells ?? preview.coveredCells ?? [],
+        cellWorldScale,
+      );
+      activeInfluence = CreateLineSystem(
+        'placement-preview-active-influence',
+        {
+          lines: activeLines.length === 0 ? [[Vector3.Zero(), Vector3.Zero()]] : activeLines,
+        },
+        scene,
+      );
+      activeInfluence.material = preview.valid
+        ? materials.influenceWorking
+        : materials.placementInvalid;
+      activeInfluence.isPickable = false;
+      activeInfluence.isVisible =
+        (preview.activeCoveredCells ?? preview.coveredCells ?? []).length > 0;
     },
     dispose(): void {
       if (disposed) return;
       mesh.dispose();
+      influence?.dispose();
+      activeInfluence?.dispose();
       disposed = true;
     },
   };

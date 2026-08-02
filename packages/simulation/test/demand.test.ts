@@ -64,7 +64,7 @@ describe('chunked spatial demand', () => {
       before.demand.chunks.map((chunk) => [chunk.key, chunk.revision]),
     );
     expect(
-      simulation.placeDistrictSeed({ kind: 'living', position: { x: 5, y: 5 } }).accepted,
+      simulation.placeDistrictSeed({ kind: 'living', position: { x: 6, y: 5 } }).accepted,
     ).toBe(true);
     const after = simulation.getSnapshot();
     const changed = after.demand.chunks

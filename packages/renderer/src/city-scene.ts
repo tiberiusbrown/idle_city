@@ -7,13 +7,18 @@ import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
 import { Color3, Color4 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Scene } from '@babylonjs/core/scene';
-import type { SimulationSnapshot } from '@idle-city/simulation';
+import type {
+  DistrictSeedDefinition,
+  DistrictSeedKind,
+  DistrictSeedPlacementInfo,
+  SimulationSnapshot,
+} from '@idle-city/simulation';
 import { createBuildingLayer } from './buildings';
 import { createCitizenLayer } from './citizens';
 import { createChunkGroundLayer } from './chunk-ground';
 import { DEFAULT_LOGICAL_CELL_WORLD_SCALE } from './coordinates';
 import { createCityMaterials } from './materials';
-import { createSeedLayer } from './seeds';
+import { createSeedLayer, type SeedVisibilityOptions } from './seeds';
 import { createConstructionLayer } from './construction';
 import { logicalCellToChunk, pointerToCanvasPosition, worldToLogicalCell } from './coordinates';
 import { createPlacementPreviewLayer, type PlacementPreview } from './placement-preview';
@@ -54,7 +59,8 @@ export interface CityScene {
   readonly scene: Scene;
   update(snapshot: SimulationSnapshot, interpolation: number): void;
   pickLogicalCell(clientX: number, clientY: number): PickedLogicalCell | undefined;
-  setPlacementPreview(preview: PlacementPreview | undefined): void;
+  setPlacementPreview(preview: PlacementPreview | DistrictSeedPlacementInfo | undefined): void;
+  setSeedInfluenceVisibility(options: SeedVisibilityOptions): void;
   setVisibleChunks(chunks: readonly ChunkCoordinate[]): void;
   getStructuralCounters(): CitySceneStructuralCounters;
   dispose(): void;
@@ -107,7 +113,9 @@ export function createCityScene(
   const seeds = createSeedLayer(
     scene,
     cellWorldScale,
-    options.seedInfluenceRadius ?? Math.max(1, initial.chunkSize * 2),
+    Object.fromEntries(
+      initial.districtSeedDefinitions.map((definition) => [definition.kind, definition]),
+    ) as Readonly<Record<DistrictSeedKind, DistrictSeedDefinition>>,
     materials,
   );
   const placementPreview = createPlacementPreviewLayer(scene, cellWorldScale, materials);
@@ -120,7 +128,7 @@ export function createCityScene(
     ground.reconcile(snapshot);
     buildings.reconcile(snapshot.buildings);
     construction.reconcile(snapshot.constructionProjects);
-    seeds.reconcile(snapshot.seeds);
+    seeds.reconcile(snapshot.seeds, snapshot.activeChunks, snapshot.chunkSize);
     citizens.reconcile(
       snapshot.citizens,
       interpolation,
@@ -146,9 +154,13 @@ export function createCityScene(
       const position = worldToLogicalCell(pick.pickedPoint, cellWorldScale);
       return { position, chunk: logicalCellToChunk(position, chunkSize) };
     },
-    setPlacementPreview(preview: PlacementPreview | undefined): void {
+    setPlacementPreview(preview: PlacementPreview | DistrictSeedPlacementInfo | undefined): void {
       if (disposed) throw new Error('Cannot update a disposed city scene.');
       placementPreview.setPreview(preview);
+    },
+    setSeedInfluenceVisibility(options: SeedVisibilityOptions): void {
+      if (disposed) throw new Error('Cannot change seed visibility on a disposed city scene.');
+      seeds.setVisibility(options);
     },
     setVisibleChunks(chunks: readonly ChunkCoordinate[]): void {
       if (disposed) throw new Error('Cannot change visibility on a disposed city scene.');

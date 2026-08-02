@@ -98,6 +98,11 @@ describe('visible chunk city scene', () => {
     expect(city.scene.getTransformNodeByName(`seed-${seed.id}`)).not.toBeNull();
     expect(city.scene.getMeshByName(`${seed.id}-marker`)).not.toBeNull();
     expect(city.scene.getMeshByName(`${seed.id}-influence`)).not.toBeNull();
+    expect(city.scene.getMeshByName(`${seed.id}-influence`)?.isVisible).toBe(false);
+    city.setSeedInfluenceVisibility({ selectedSeedId: seed.id });
+    expect(city.scene.getMeshByName(`${seed.id}-influence`)?.isVisible).toBe(true);
+    city.setSeedInfluenceVisibility({});
+    expect(city.scene.getMeshByName(`${seed.id}-influence`)?.isVisible).toBe(false);
     const removedMeshCount = city.scene.meshes.length;
     city.update(removed, 1);
     expect(city.scene.meshes.length).toBe(removedMeshCount);
@@ -223,8 +228,9 @@ describe('visible chunk city scene', () => {
       },
     });
     expect(
-      simulation.placeDistrictSeed({ kind: 'living', position: { x: 4, y: 4 } }).accepted,
+      simulation.placeDistrictSeed({ kind: 'living', position: { x: 5, y: 1 } }).accepted,
     ).toBe(true);
+    simulation.step();
     simulation.step();
     const projectSnapshot = simulation.getSnapshot();
     const project = projectSnapshot.constructionProjects[0];

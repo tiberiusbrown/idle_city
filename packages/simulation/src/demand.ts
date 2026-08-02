@@ -333,7 +333,7 @@ export function calculateDemandChunk(input: DemandChunkCalculationInput): Demand
   if (!Number.isSafeInteger(input.chunk.x) || !Number.isSafeInteger(input.chunk.y)) {
     throw new Error('Demand chunks require safe integer coordinates.');
   }
-  const maxDistance = input.seedInfluenceRadius ?? chunkSize * 4;
+  const maxDistance = input.seedInfluenceRadius ?? 12;
   positiveInteger('seed influence radius', Math.ceil(maxDistance));
   const prepared = prepareDemand(
     input.buildings,

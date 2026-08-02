@@ -19,21 +19,29 @@ import { nextConstructionPhase, validateConstructionPhaseDurations } from './con
 import { calculateDemandChunk } from './demand';
 import {
   compareDevelopmentCandidates,
-  compareDevelopmentBuildingTypes,
   DEVELOPMENT_BUILDING_TYPE_ORDER,
   scoreDevelopmentCandidate,
 } from './developer';
 import { calculateDistrictSeedInfluence } from './district-seeds';
 import {
+  districtSeedInfluenceRadius,
+  enumerateDistrictSeedInfluenceCells,
+  getDistrictSeedDefinition,
+  getDistrictSeedDefinitions,
+} from './district-seeds';
+import {
   buildingFootprint,
-  exteriorEntranceCandidates,
+  circulationEnvelope,
+  circulationEnvelopeCells,
   footprintCells,
+  isExteriorEntrance,
   isInsideFootprint,
-  selectExteriorEntrance,
+  stagingCapableEnvelopeCells,
 } from './footprints';
 import { findGridPathDetailed } from './pathfinding';
 import { findNearestCompatiblePair } from './population';
 import { SeededRandom } from './random';
+import { enumerateAdjacentCorridorPairs, findTwoCellConnector } from './right-of-way';
 import { createTrafficTelemetry, DEFAULT_TRAFFIC_HISTORY_WINDOW_TICKS } from './traffic';
 import {
   buildMovementProposals,
@@ -66,8 +74,12 @@ import type {
   DemandRegionSnapshot,
   DemandTotals,
   DevelopmentCandidate,
+  DevelopmentJobProgress,
+  DevelopmentJobStage,
   DistrictSeed,
+  DistrictSeedDefinition,
   DistrictSeedKind,
+  DistrictSeedPlacementInfo,
   DistrictSeedPlacementPreview,
   PlaceDistrictSeedCommand,
   Simulation,
@@ -116,6 +128,27 @@ interface ConstructionProjectState {
   readonly seedInfluence: number;
   readonly spatialFactor: number;
   readonly expectedAccessImprovement: number;
+  readonly envelope: Building['footprint'];
+  readonly connector: GridPosition[];
+  readonly stagingCells: GridPosition[];
+}
+
+interface DevelopmentJobState {
+  readonly stateVersion: number;
+  stage: Exclude<DevelopmentJobStage, 'idle' | 'complete' | 'superseded'>;
+  readonly relevantChunks: ChunkCoordinate[];
+  buildingTypeIndex: number;
+  chunkIndex: number;
+  localX: number;
+  localY: number;
+  preliminary: DevelopmentCandidate[];
+  finalistIndex: number;
+  totalAnchorChecks: number;
+  totalFinalistsValidated: number;
+  totalCorridorExpansions: number;
+  anchorChecksThisTick: number;
+  finalistsValidatedThisTick: number;
+  corridorExpansionsThisTick: number;
 }
 
 interface DeadlockPairState {
@@ -158,6 +191,10 @@ const defaults = {
   developmentHomeCapacity: 4,
   developmentWorkplaceCapacity: 6,
   trafficHistoryWindowTicks: DEFAULT_TRAFFIC_HISTORY_WINDOW_TICKS,
+  developmentAnchorCheckBudget: 512,
+  developmentPreliminaryCandidateLimit: 32,
+  developmentFinalistValidationBudget: 4,
+  developmentCorridorExpansionBudget: 2_048,
 } as const;
 
 const zeroTotals = (): DemandTotals => ({ living: 0, working: 0, services: 0 });
@@ -248,12 +285,14 @@ function normalizedDistance(distance: number, maximum: number): number {
   return clampUnit(1 - distance / Math.max(1, maximum));
 }
 
-const developmentDirections: readonly GridPosition[] = [
-  { x: 1, y: 0 },
-  { x: 0, y: 1 },
-  { x: -1, y: 0 },
-  { x: 0, y: -1 },
-];
+function rectsOverlap(left: Building['footprint'], right: Building['footprint']): boolean {
+  return !(
+    left.x + left.width <= right.x ||
+    right.x + right.width <= left.x ||
+    left.y + left.height <= right.y ||
+    right.y + right.height <= left.y
+  );
+}
 
 function resolveRegion(config: SimulationConfig): ChunkRegion {
   const region =
@@ -313,7 +352,64 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       defaults.trafficHistoryWindowTicks,
   );
   const region = resolveRegion(config);
-  const initialChunks = enumerateChunkRegion(region);
+  const initialMinX = region.minX * chunkSize;
+  const initialMinY = region.minY * chunkSize;
+  const defaultHomeOrigin = {
+    x: initialMinX + 1,
+    y: initialMinY + 1,
+  };
+  const homeOrigin = copyPosition(config.homePosition ?? defaultHomeOrigin);
+  const defaultWorkplaceOrigin = {
+    x: initialMinX + Math.max(2, chunkSize - 7),
+    y: initialMinY + Math.max(2, chunkSize - 7),
+  };
+  let workplaceOrigin = legacyScenarioPosition(config, homeOrigin, defaultWorkplaceOrigin);
+  const homeStarterFootprint = buildingFootprint(homeOrigin, 'home');
+  const homeStarterEnvelope = circulationEnvelope(homeStarterFootprint);
+  const requestedWorkplaceFootprint = buildingFootprint(workplaceOrigin, 'workplace');
+  const requestedWorkplaceEnvelope = circulationEnvelope(requestedWorkplaceFootprint);
+  if (
+    rectsOverlap(requestedWorkplaceFootprint, homeStarterEnvelope) ||
+    rectsOverlap(requestedWorkplaceEnvelope, homeStarterFootprint) ||
+    rectsOverlap(requestedWorkplaceEnvelope, homeStarterEnvelope)
+  ) {
+    const minX = initialMinX - chunkSize;
+    const minY = initialMinY - chunkSize;
+    const maxX = initialMinX + region.width * chunkSize + chunkSize;
+    const maxY = initialMinY + region.height * chunkSize + chunkSize;
+    const candidates: GridPosition[] = [];
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) candidates.push({ x, y });
+    }
+    candidates.sort(
+      (left, right) =>
+        manhattanDistance(left, workplaceOrigin) - manhattanDistance(right, workplaceOrigin) ||
+        comparePositions(left, right),
+    );
+    const replacement = candidates.find((candidate) => {
+      const footprint = buildingFootprint(candidate, 'workplace');
+      const envelope = circulationEnvelope(footprint);
+      return (
+        !rectsOverlap(footprint, homeStarterEnvelope) &&
+        !rectsOverlap(envelope, homeStarterFootprint) &&
+        !rectsOverlap(envelope, homeStarterEnvelope)
+      );
+    });
+    if (replacement !== undefined) workplaceOrigin = replacement;
+  }
+  const initialChunkMap = new Map(
+    enumerateChunkRegion(region).map((chunk) => [chunkKey(chunk), chunk]),
+  );
+  // Starter circulation is bootstrapped as part of initial world creation. It
+  // is not an expansion policy: later chunk activation remains explicit.
+  for (const origin of [homeOrigin, workplaceOrigin]) {
+    const footprint = buildingFootprint(origin, origin === homeOrigin ? 'home' : 'workplace');
+    for (const cell of [...footprintCells(footprint), ...circulationEnvelopeCells(footprint)]) {
+      const chunk = chunkCoordinateForPosition(cell, chunkSize);
+      initialChunkMap.set(chunkKey(chunk), chunk);
+    }
+  }
+  const initialChunks = [...initialChunkMap.values()].sort(compareChunks);
   if (initialChunks.length > activeChunkLimit) {
     throw new Error('Initial active chunk region exceeds activeChunkLimit.');
   }
@@ -377,23 +473,22 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     'developmentWorkplaceCapacity',
     config.developmentWorkplaceCapacity ?? defaults.developmentWorkplaceCapacity,
   );
+  const developmentCorridorExpansionBudget = Math.min(
+    defaults.developmentCorridorExpansionBudget,
+    positiveInteger(
+      'developmentCorridorExpansionBudget',
+      config.developmentCorridorExpansionBudget ?? defaults.developmentCorridorExpansionBudget,
+    ),
+  );
   const constructionPhaseDurations = validateConstructionPhaseDurations(
     config.constructionPhaseDurations,
   );
   const random = new SeededRandom(seed);
   const traffic = createTrafficTelemetry({ historyWindowTicks: trafficHistoryWindowTicks });
-  const initialMinX = region.minX * chunkSize;
-  const initialMinY = region.minY * chunkSize;
-  const defaultHomeOrigin = {
-    x: initialMinX,
-    y: initialMinY,
-  };
-  const defaultWorkplaceOrigin = {
-    x: initialMinX + chunkSize - 5,
-    y: initialMinY + chunkSize - 5,
-  };
-  const homeOrigin = copyPosition(config.homePosition ?? defaultHomeOrigin);
-  const workplaceOrigin = legacyScenarioPosition(config, homeOrigin, defaultWorkplaceOrigin);
+
+  const starterFootprintCells = new Set<string>();
+  const starterEnvelopeCells = new Set<string>();
+  const starterEnvelopeStaging = new Map<string, GridPosition[]>();
 
   const ensureFootprintActiveAndFree = (footprint: Building['footprint']): void => {
     for (const cell of footprintCells(footprint)) {
@@ -402,10 +497,41 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
           `Building footprint cell ${String(cell.x)},${String(cell.y)} is in an inactive chunk.`,
         );
       }
-      if (!spatial.isWalkable(cell)) {
+      if (!spatial.isBuildable(cell) || starterEnvelopeCells.has(coordinateKey(cell))) {
         throw new Error(`Building footprint cell ${String(cell.x)},${String(cell.y)} is occupied.`);
       }
     }
+  };
+
+  const ensureEnvelopeActiveAndFree = (footprint: Building['footprint']): GridPosition[] => {
+    const envelope = circulationEnvelope(footprint);
+    const cells = circulationEnvelopeCells(footprint);
+    for (const cell of cells) {
+      if (!spatial.isPositionActive(cell)) {
+        throw new Error(
+          `Building envelope cell ${String(cell.x)},${String(cell.y)} is in an inactive chunk.`,
+        );
+      }
+      if (
+        starterFootprintCells.has(coordinateKey(cell)) ||
+        starterEnvelopeCells.has(coordinateKey(cell))
+      ) {
+        throw new Error(
+          `Building envelope ${String(envelope.x)},${String(envelope.y)} overlaps starter circulation.`,
+        );
+      }
+    }
+    const staging = stagingCapableEnvelopeCells(footprint, {
+      isActive: (position) => spatial.isPositionActive(position),
+      isWalkable: (position) => spatial.isWalkable(position),
+      isRightOfWay: (position) => spatial.isRightOfWay(position),
+    });
+    if (staging.length < 3) {
+      throw new Error(
+        `Building envelope ${String(footprint.x)},${String(footprint.y)} has fewer than three staging cells.`,
+      );
+    }
+    return staging;
   };
 
   const createBuilding = (
@@ -416,11 +542,14 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   ): Building => {
     const footprint = buildingFootprint(origin, type);
     ensureFootprintActiveAndFree(footprint);
-    const entrance = selectExteriorEntrance(footprint, {
-      isActive: (position) => spatial.isPositionActive(position),
-      isWalkable: (position) => spatial.isWalkable(position),
-    });
+    const staging = ensureEnvelopeActiveAndFree(footprint);
+    const entrance = staging.find((cell) => isExteriorEntrance(cell, footprint));
+    if (entrance === undefined) throw new Error(`Building ${id} has no staging entrance.`);
     spatial.blockMany(footprintCells(footprint));
+    for (const cell of footprintCells(footprint)) starterFootprintCells.add(coordinateKey(cell));
+    for (const cell of circulationEnvelopeCells(footprint))
+      starterEnvelopeCells.add(coordinateKey(cell));
+    starterEnvelopeStaging.set(id, staging.map(copyPosition));
     return {
       id,
       type,
@@ -437,6 +566,19 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     workplaceOrigin,
     workplaceCapacity,
   );
+  const starterConnector = findTwoCellConnector({
+    startPairs: enumerateAdjacentCorridorPairs(starterEnvelopeStaging.get(homeBuilding.id) ?? []),
+    goalPairs: enumerateAdjacentCorridorPairs(
+      starterEnvelopeStaging.get(workplaceBuilding.id) ?? [],
+    ),
+    isActive: (position) => spatial.isPositionActive(position),
+    isCellAvailable: (position) => spatial.isWalkable(position) || spatial.isRightOfWay(position),
+    maxExpansions: Math.max(developmentCorridorExpansionBudget, pathSearchBudget),
+  });
+  if (starterConnector.status !== 'found') {
+    throw new Error(`Starter circulation connector failed: ${starterConnector.status}.`);
+  }
+  spatial.markRightOfWayMany(starterConnector.cells);
   const buildings: Building[] = [homeBuilding, workplaceBuilding];
   const buildingsById = new Map(buildings.map((building) => [building.id, building]));
   const initialPopulation = Math.min(
@@ -473,6 +615,15 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   let dataGeneratedThisTick = 0;
   const seeds: DistrictSeed[] = [];
   const constructionProjects: ConstructionProjectState[] = [];
+  const circulationCells = new Set<string>();
+  for (const building of buildings) {
+    for (const cell of circulationEnvelopeCells(building.footprint)) {
+      circulationCells.add(coordinateKey(cell));
+    }
+  }
+  const isCirculationWalkable = (position: GridPosition): boolean =>
+    spatial.isWalkable(position) &&
+    (spatial.isRightOfWay(position) || circulationCells.has(coordinateKey(position)));
   let nextConstructionProjectId = 1;
   const nextBuildingSequence: Record<BuildingType, number> = {
     home: 2,
@@ -486,7 +637,38 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   let constructionProjectsStarted = 0;
   let constructionProjectsCompleted = 0;
   let developmentStateVersion = 0;
-  let lastEvaluatedDevelopmentStateVersion = -1;
+  let developmentJob: DevelopmentJobState | undefined;
+  let lastDevelopmentProgress: DevelopmentJobProgress = {
+    stage: 'idle',
+    stateVersion: developmentStateVersion,
+    relevantChunkCount: 0,
+    chunkIndex: 0,
+    buildingTypeIndex: 0,
+    anchorChecksThisTick: 0,
+    preliminaryCandidatesRetained: 0,
+    finalistsValidatedThisTick: 0,
+    corridorExpansionsThisTick: 0,
+    totalAnchorChecks: 0,
+    totalFinalistsValidated: 0,
+    totalCorridorExpansions: 0,
+  };
+  let developmentJobsStarted = 0;
+  let developmentJobsSuperseded = 0;
+  let developmentJobsCompleted = 0;
+  let developmentAnchorChecks = 0;
+  let developmentPreliminaryCandidatesRetained = 0;
+  let developmentFinalistValidations = 0;
+  let developmentCorridorStateExpansions = 0;
+  let developmentNoConnectorRejections = 0;
+  let developmentAffectedRouteReplans = 0;
+  const developmentRoutePreservationChecks = 0;
+  let developmentPeakAnchorChecksPerTick = 0;
+  let developmentPeakFinalistValidationsPerTick = 0;
+  let developmentPeakCorridorExpansionsPerTick = 0;
+  let rightOfWayCellsAdded = spatial.getRightOfWayCellCount();
+  let rightOfWayRevisionChanges = spatial
+    .getActiveChunks()
+    .reduce((total, chunk) => total + spatial.getRightOfWayRevision(chunk), 0);
   let nextSeedId = 1;
   let demandChunksDirtied = 0;
   let demandChunksEvaluated = 0;
@@ -532,6 +714,12 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     if (!spatial.isPositionActive(requestedPosition)) {
       return { accepted: false, reason: 'inactive-chunk' };
     }
+    if (!spatial.isBuildable(requestedPosition)) {
+      return {
+        accepted: false,
+        reason: spatial.isRightOfWay(requestedPosition) ? 'right-of-way' : 'occupied',
+      };
+    }
     if (seeds.some((districtSeed) => positionsEqual(districtSeed.position, requestedPosition))) {
       return { accepted: false, reason: 'occupied' };
     }
@@ -549,6 +737,30 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       kind: requestedKind,
       position: copyPosition(requestedPosition),
       cost,
+    };
+  };
+
+  const districtSeedPlacementInfo = (
+    command: PlaceDistrictSeedCommand,
+  ): DistrictSeedPlacementInfo => {
+    const requestedPosition = copyPosition(command.position);
+    const requestedKind: unknown = command.kind;
+    const kind: DistrictSeedKind = isDistrictSeedKind(requestedKind) ? requestedKind : 'living';
+    const definition = getDistrictSeedDefinition(kind);
+    const coveredCells = enumerateDistrictSeedInfluenceCells(requestedPosition, kind);
+    const activeCoveredCells = coveredCells.filter((cell) => spatial.isPositionActive(cell));
+    const validation = validateDistrictSeedPlacement(command);
+    return {
+      kind,
+      position: requestedPosition,
+      radius: definition.influenceRadius,
+      cost: isDistrictSeedKind(requestedKind) ? currentDistrictSeedCost(requestedKind) : 0,
+      coveredCellCount: coveredCells.length,
+      activeCoveredCellCount: activeCoveredCells.length,
+      coveredCells: coveredCells.map(copyPosition),
+      activeCoveredCells: activeCoveredCells.map(copyPosition),
+      valid: validation.accepted,
+      ...(validation.accepted ? {} : { reason: validation.reason }),
     };
   };
 
@@ -641,12 +853,18 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   };
 
   const markDemandAroundPosition = (position: GridPosition): void => {
+    const radius = Math.max(
+      districtSeedInfluenceRadius('living'),
+      districtSeedInfluenceRadius('working'),
+      districtSeedInfluenceRadius('services'),
+      demandInfluenceRadius,
+    );
     const minChunk = chunkCoordinateForPosition(
-      { x: position.x - demandInfluenceRadius, y: position.y - demandInfluenceRadius },
+      { x: position.x - radius, y: position.y - radius },
       chunkSize,
     );
     const maxChunk = chunkCoordinateForPosition(
-      { x: position.x + demandInfluenceRadius, y: position.y + demandInfluenceRadius },
+      { x: position.x + radius, y: position.y + radius },
       chunkSize,
     );
     for (let y = minChunk.y; y <= maxChunk.y; y += 1) {
@@ -684,13 +902,17 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       buildings,
       citizens: demandCitizens(),
       metrics,
-      seedInfluenceRadius: demandInfluenceRadius,
+      seedInfluenceRadius: Math.max(
+        demandInfluenceRadius,
+        districtSeedInfluenceRadius('living'),
+        districtSeedInfluenceRadius('working'),
+        districtSeedInfluenceRadius('services'),
+      ),
       seedInfluence: (position, kind) =>
         calculateDistrictSeedInfluence({
           seeds,
           position,
           kind,
-          radius: demandInfluenceRadius,
         }),
       revision: state.revision + 1,
     });
@@ -804,7 +1026,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       {
         chunkSize,
         activeChunks: spatial.getActiveChunks(),
-        isWalkable: (position) => spatial.isWalkable(position),
+        isWalkable: (position) => isCirculationWalkable(position),
         maxNodes: pathSearchBudget,
       },
       citizen.position,
@@ -850,45 +1072,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       seeds,
       position,
       kind: buildingType === 'home' ? 'living' : 'working',
-      radius: demandInfluenceRadius,
     });
-
-  const reachableDistances = (): Map<string, number> => {
-    const distances = new Map<string, number>();
-    const queue: GridPosition[] = [];
-    const starts = [...buildings]
-      .sort(
-        (left, right) =>
-          comparePositions(left.entrance, right.entrance) ||
-          compareDevelopmentBuildingTypes(left.type, right.type) ||
-          (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
-      )
-      .map((building) => building.entrance);
-    for (const start of starts) {
-      const startKey = coordinateKey(start);
-      if (!spatial.isPositionActive(start) || !spatial.isWalkable(start)) continue;
-      if (distances.has(startKey)) continue;
-      distances.set(startKey, 0);
-      queue.push(copyPosition(start));
-    }
-    let queueIndex = 0;
-    while (queueIndex < queue.length) {
-      const current = queue[queueIndex];
-      queueIndex += 1;
-      if (current === undefined) continue;
-      const currentDistance = distances.get(coordinateKey(current));
-      if (currentDistance === undefined) continue;
-      for (const direction of developmentDirections) {
-        const next = { x: current.x + direction.x, y: current.y + direction.y };
-        if (!Number.isSafeInteger(next.x) || !Number.isSafeInteger(next.y)) continue;
-        const nextKey = coordinateKey(next);
-        if (distances.has(nextKey) || !spatial.isWalkable(next)) continue;
-        distances.set(nextKey, currentDistance + 1);
-        queue.push(next);
-      }
-    }
-    return distances;
-  };
 
   const occupancyByBuilding = (): Map<string, number> => {
     const occupancy = new Map<string, number>();
@@ -978,7 +1162,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
           throw new Error(`Citizen ${citizen.id} is not at its route index.`);
         }
       }
-      if (!spatial.isPositionActive(citizen.position) || !spatial.isWalkable(citizen.position)) {
+      if (!spatial.isPositionActive(citizen.position) || !isCirculationWalkable(citizen.position)) {
         throw new Error(`Citizen ${citizen.id} is outside active walkable space.`);
       }
       if (blockedCells.has(coordinateKey(citizen.position))) {
@@ -986,7 +1170,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       }
       if (
         !spatial.isPositionActive(citizen.previousPosition) ||
-        !spatial.isWalkable(citizen.previousPosition) ||
+        !isCirculationWalkable(citizen.previousPosition) ||
         blockedCells.has(coordinateKey(citizen.previousPosition))
       ) {
         throw new Error(`Citizen ${citizen.id} has an invalid previous position.`);
@@ -1003,7 +1187,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       for (let index = 0; index < citizen.route.length; index += 1) {
         const position = citizen.route[index];
         if (position === undefined) throw new Error(`Citizen ${citizen.id} route is sparse.`);
-        if (!spatial.isPositionActive(position) || !spatial.isWalkable(position)) {
+        if (!spatial.isPositionActive(position) || !isCirculationWalkable(position)) {
           throw new Error(`Citizen ${citizen.id} route leaves walkable space.`);
         }
         if (blockedCells.has(coordinateKey(position))) {
@@ -1077,13 +1261,13 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     blocked: ReadonlySet<string>,
   ): boolean => {
     if (blocked.has(coordinateKey(start)) || blocked.has(coordinateKey(goal))) return false;
-    if (!spatial.isWalkable(start) || !spatial.isWalkable(goal)) return false;
+    if (!isCirculationWalkable(start) || !isCirculationWalkable(goal)) return false;
     const result = findGridPathDetailed(
       {
         chunkSize,
         activeChunks: spatial.getActiveChunks(),
         isWalkable: (position) =>
-          spatial.isWalkable(position) && !blocked.has(coordinateKey(position)),
+          isCirculationWalkable(position) && !blocked.has(coordinateKey(position)),
         maxNodes: pathSearchBudget,
       },
       start,
@@ -1097,41 +1281,253 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const pairHasRoute = (home: Building, workplace: Building): boolean =>
     pathExistsWithBlockedCells(home.entrance, workplace.entrance, new Set<string>());
 
-  const canReserveCandidate = (candidate: DevelopmentCandidate): boolean => {
-    const footprint = footprintCells(candidate.footprint);
-    const blocked = new Set(footprint.map(coordinateKey));
-    const existingEntrances = buildings.map((building) => building.entrance).sort(comparePositions);
+  type CandidateValidation =
+    | {
+        readonly status: 'valid';
+        readonly connector: readonly GridPosition[];
+        readonly expansions: number;
+      }
+    | { readonly status: 'no-connector'; readonly expansions: number }
+    | { readonly status: 'budget-exhausted'; readonly expansions: number };
+
+  const existingProjectFootprints = (): readonly Building['footprint'][] => [
+    ...buildings.map((building) => building.footprint),
+    ...constructionProjects.map((project) => project.footprint),
+  ];
+
+  const existingBuildingCirculationCells = (): ReadonlySet<string> => new Set(circulationCells);
+
+  const movingExclusiveCells = (): ReadonlySet<string> => {
+    const cells = new Set<string>();
+    for (const citizen of citizens) {
+      if (citizen.activity !== 'commuting-to-work' && citizen.activity !== 'commuting-home')
+        continue;
+      cells.add(coordinateKey(citizen.position));
+    }
+    return cells;
+  };
+
+  const isRectInsideActiveSpace = (rect: Building['footprint']): boolean =>
+    footprintCells(rect).every((cell) => spatial.isPositionActive(cell));
+
+  const relevantDevelopmentChunks = (): ChunkCoordinate[] => {
+    const metrics = calculateMetrics().metrics;
+    const capacityPressure = metrics.space < 1;
+    const activeChunks = spatial.getActiveChunks().sort(compareChunks);
+    if (capacityPressure) return activeChunks;
+    return activeChunks.filter((chunk) => {
+      const origin = { x: chunk.x * chunkSize, y: chunk.y * chunkSize };
+      const farCorner = { x: origin.x + chunkSize - 1, y: origin.y + chunkSize - 1 };
+      return seeds.some((seed) => {
+        const radius = districtSeedInfluenceRadius(seed.kind);
+        const dx =
+          seed.position.x < origin.x
+            ? origin.x - seed.position.x
+            : seed.position.x > farCorner.x
+              ? seed.position.x - farCorner.x
+              : 0;
+        const dy =
+          seed.position.y < origin.y
+            ? origin.y - seed.position.y
+            : seed.position.y > farCorner.y
+              ? seed.position.y - farCorner.y
+              : 0;
+        return dx + dy <= radius;
+      });
+    });
+  };
+
+  const retainPreliminaryCandidate = (
+    candidates: DevelopmentCandidate[],
+    candidate: DevelopmentCandidate,
+  ): void => {
+    candidates.push(candidate);
+    candidates.sort(compareDevelopmentCandidates);
+    if (candidates.length > defaults.developmentPreliminaryCandidateLimit) candidates.pop();
+    developmentPreliminaryCandidatesRetained += 1;
+  };
+
+  const candidateFromAnchor = (
+    anchor: GridPosition,
+    buildingType: BuildingType,
+    occupancy: ReadonlyMap<string, number>,
+  ): DevelopmentCandidate | undefined => {
+    const footprint = buildingFootprint(anchor, buildingType);
+    const envelope = circulationEnvelope(footprint);
+    const reservedCirculation = existingBuildingCirculationCells();
+    const protectedFootprints = existingProjectFootprints();
+    const protectedPositions = movingExclusiveCells();
+    const footprintCellsForCandidate = footprintCells(footprint);
     if (
-      !existingEntrances.some((entrance) =>
-        pathExistsWithBlockedCells(entrance, candidate.entrance, blocked),
+      !isRectInsideActiveSpace(footprint) ||
+      footprintCellsForCandidate.some(
+        (cell) =>
+          !spatial.isBuildable(cell) ||
+          reservedCirculation.has(coordinateKey(cell)) ||
+          protectedPositions.has(coordinateKey(cell)) ||
+          protectedFootprints.some((protectedFootprint) =>
+            isInsideFootprint(cell, protectedFootprint),
+          ),
       )
     ) {
-      return false;
+      developmentFootprintsRejected += 1;
+      return undefined;
     }
-    const home = buildings.find((building) => building.type === 'home');
-    const workplace = buildings.find((building) => building.type === 'workplace');
-    if (home === undefined || workplace === undefined) return false;
-    if (!pathExistsWithBlockedCells(home.entrance, workplace.entrance, blocked)) return false;
-    for (const citizen of citizens) {
-      if (blocked.has(coordinateKey(citizen.position))) return false;
-      if (citizen.route.some((position) => blocked.has(coordinateKey(position)))) return false;
-      if (citizen.activity === 'commuting-to-work') {
-        if (!pathExistsWithBlockedCells(citizen.position, workplace.entrance, blocked))
-          return false;
-      } else if (citizen.activity === 'commuting-home') {
-        if (!pathExistsWithBlockedCells(citizen.position, home.entrance, blocked)) return false;
+    const envelopeCellsForCandidate = circulationEnvelopeCells(footprint);
+    if (
+      envelopeCellsForCandidate.some(
+        (cell) =>
+          !spatial.isPositionActive(cell) ||
+          protectedFootprints.some((protectedFootprint) =>
+            isInsideFootprint(cell, protectedFootprint),
+          ) ||
+          reservedCirculation.has(coordinateKey(cell)) ||
+          protectedPositions.has(coordinateKey(cell)),
+      )
+    ) {
+      developmentFootprintsRejected += 1;
+      return undefined;
+    }
+    const staging = stagingCapableEnvelopeCells(footprint, {
+      isActive: (position) => spatial.isPositionActive(position),
+      isWalkable: (position) => spatial.isWalkable(position),
+      isRightOfWay: (position) => spatial.isRightOfWay(position),
+    });
+    if (staging.length < 3) {
+      developmentEntrancesRejected += 1;
+      return undefined;
+    }
+    const entrance = staging.find((cell) => isExteriorEntrance(cell, footprint));
+    if (entrance === undefined) return undefined;
+    const localMatchingDemand = demandValueAt(anchor, buildingType);
+    const seedInfluence = matchingSeedInfluenceAt(anchor, buildingType);
+    const complementaryUse = complementaryUseFactor(anchor, buildingType);
+    const sameUseSaturation = localSameUseSaturation(anchor, buildingType, occupancy);
+    const constructionCost = (footprint.width * footprint.height) / 25;
+    let nearestRowDistance = Number.POSITIVE_INFINITY;
+    for (const cell of footprintCellsForCandidate) {
+      for (const building of buildings) {
+        nearestRowDistance = Math.min(
+          nearestRowDistance,
+          manhattanDistance(cell, building.entrance),
+        );
       }
     }
-    return true;
+    const entranceAccessibility =
+      nearestRowDistance === Number.POSITIVE_INFINITY
+        ? 0
+        : normalizedDistance(nearestRowDistance, Math.max(1, demandInfluenceRadius * 2));
+    const accessImprovement = expectedAccessImprovement(entrance, buildingType);
+    const score = scoreDevelopmentCandidate({
+      buildingType,
+      localMatchingDemand,
+      seedInfluence,
+      complementaryUse,
+      entranceAccessibility,
+      expectedAccessImprovement: accessImprovement,
+      sameUseSaturation,
+      constructionCost,
+    });
+    developmentCandidatesScored += 1;
+    if (score.score < developmentMinimumScore) return undefined;
+    return {
+      buildingType,
+      anchor: copyPosition(anchor),
+      footprint: { ...footprint },
+      entrance: copyPosition(entrance),
+      entranceOrder: 0,
+      score: score.score,
+      primaryReason: { ...score.primaryReason },
+      localMatchingDemand: roundData(localMatchingDemand),
+      seedInfluence: roundData(seedInfluence),
+      complementaryUse: roundData(complementaryUse),
+      entranceAccessibility: roundData(entranceAccessibility),
+      expectedAccessImprovement: roundData(accessImprovement),
+      sameUseSaturation: roundData(sameUseSaturation),
+      constructionCost: roundData(constructionCost),
+      spatialFactor: score.spatialFactor,
+      envelope: { ...envelope },
+      stagingCells: staging.map(copyPosition),
+    };
+  };
+
+  const validateCandidateConnector = (
+    candidate: DevelopmentCandidate,
+    maxExpansions: number,
+  ): CandidateValidation => {
+    if (maxExpansions < 1) return { status: 'budget-exhausted', expansions: 0 };
+    const candidateFootprint = new Set(footprintCells(candidate.footprint).map(coordinateKey));
+    const movingCells = movingExclusiveCells();
+    const sourceStaging: GridPosition[] = [];
+    for (const building of buildings) {
+      sourceStaging.push(
+        ...stagingCapableEnvelopeCells(building.footprint, {
+          isActive: (position) => spatial.isPositionActive(position),
+          isWalkable: (position) => spatial.isWalkable(position),
+          isRightOfWay: (position) => spatial.isRightOfWay(position),
+        }),
+      );
+    }
+    const targetStaging = candidate.stagingCells?.map(copyPosition) ?? [];
+    const result = findTwoCellConnector({
+      startPairs: enumerateAdjacentCorridorPairs(sourceStaging),
+      goalPairs: enumerateAdjacentCorridorPairs(targetStaging),
+      isActive: (position) => spatial.isPositionActive(position),
+      isCellAvailable: (position) =>
+        !candidateFootprint.has(coordinateKey(position)) &&
+        !movingCells.has(coordinateKey(position)) &&
+        spatial.isWalkable(position),
+      maxExpansions,
+    });
+    developmentCorridorStateExpansions += result.expansions;
+    if (result.status === 'budget-exhausted') {
+      return { status: 'budget-exhausted', expansions: result.expansions };
+    }
+    if (result.status !== 'found') return { status: 'no-connector', expansions: result.expansions };
+    return {
+      status: 'valid',
+      connector: result.cells.map(copyPosition),
+      expansions: result.expansions,
+    };
+  };
+
+  const replanAffectedRoutes = (footprint: Building['footprint']): void => {
+    const blocked = new Set(footprintCells(footprint).map(coordinateKey));
+    const affected = citizens
+      .filter((citizen) =>
+        citizen.route.some(
+          (position, index) => index > citizen.routeIndex && blocked.has(coordinateKey(position)),
+        ),
+      )
+      .sort(compareCitizenIds);
+    if (affected.length === 0) return;
+    const movingOccupancy = snapshotMovingOccupancy();
+    for (const citizen of affected) {
+      if (!replanCitizen(citizen, movingOccupancy)) {
+        throw new Error(
+          `Affected route for ${citizen.id} could not replan after project placement.`,
+        );
+      }
+      developmentAffectedRouteReplans += 1;
+    }
   };
 
   const capacityForDevelopment = (buildingType: BuildingType): number =>
     buildingType === 'home' ? developmentHomeCapacity : developmentWorkplaceCapacity;
 
-  const startConstruction = (candidate: DevelopmentCandidate): void => {
-    if (!canReserveCandidate(candidate)) return;
+  const startConstruction = (
+    candidate: DevelopmentCandidate,
+    connector: readonly GridPosition[],
+  ): void => {
     const footprint = footprintCells(candidate.footprint);
     spatial.blockMany(footprint);
+    const newRightOfWayCells = connector.filter((cell) => !spatial.isRightOfWay(cell));
+    spatial.markRightOfWayMany(connector);
+    rightOfWayCellsAdded += newRightOfWayCells.length;
+    rightOfWayRevisionChanges += newRightOfWayCells.length;
+    for (const cell of circulationEnvelopeCells(candidate.footprint)) {
+      circulationCells.add(coordinateKey(cell));
+    }
     clearAllDeadlockPairs();
     const project: ConstructionProjectState = {
       id: `construction-project-${String(nextConstructionProjectId)}`,
@@ -1149,11 +1545,15 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       seedInfluence: candidate.seedInfluence,
       spatialFactor: candidate.spatialFactor,
       expectedAccessImprovement: candidate.expectedAccessImprovement,
+      envelope: circulationEnvelope(candidate.footprint),
+      connector: connector.map(copyPosition),
+      stagingCells: (candidate.stagingCells ?? []).map(copyPosition),
     };
     constructionProjects.push(project);
     nextConstructionProjectId += 1;
     constructionProjectsStarted += 1;
     developmentStateVersion += 1;
+    replanAffectedRoutes(project.footprint);
   };
 
   const completeConstructionProject = (project: ConstructionProjectState): void => {
@@ -1174,6 +1574,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       throw new Error(`Duplicate constructed building ${building.id}.`);
     buildings.push(building);
     buildingsById.set(building.id, building);
+    for (const cell of circulationEnvelopeCells(building.footprint)) {
+      circulationCells.add(coordinateKey(cell));
+    }
     nextBuildingSequence[project.buildingType] = sequence + 1;
     constructionProjectsCompleted += 1;
     developmentStateVersion += 1;
@@ -1222,7 +1625,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     return true;
   };
 
-  const evaluateDevelopers = (): void => {
+  const legacyEvaluateDevelopers = (): void => {
+    /* Legacy monolithic evaluator retained in comments as a migration note.
     developmentEvaluations += 1;
     if (constructionProjects.length > 0) {
       lastDevelopmentCandidates = [];
@@ -1343,6 +1747,216 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (constructionProjectsStarted !== before) break;
     }
     lastEvaluatedDevelopmentStateVersion = developmentStateVersion;
+    */
+  };
+  void legacyEvaluateDevelopers;
+
+  const snapshotDevelopmentJob = (): DevelopmentJobProgress => {
+    const job = developmentJob;
+    if (job === undefined) {
+      return { ...lastDevelopmentProgress };
+    }
+    return {
+      stage: job.stage,
+      stateVersion: job.stateVersion,
+      relevantChunkCount: job.relevantChunks.length,
+      chunkIndex: job.chunkIndex,
+      buildingTypeIndex: job.buildingTypeIndex,
+      anchorChecksThisTick: job.anchorChecksThisTick,
+      preliminaryCandidatesRetained: job.preliminary.length,
+      finalistsValidatedThisTick: job.finalistsValidatedThisTick,
+      corridorExpansionsThisTick: job.corridorExpansionsThisTick,
+      totalAnchorChecks: job.totalAnchorChecks,
+      totalFinalistsValidated: job.totalFinalistsValidated,
+      totalCorridorExpansions: job.totalCorridorExpansions,
+    };
+  };
+
+  const finishDevelopmentJob = (stage: DevelopmentJobStage): void => {
+    if (developmentJob !== undefined) {
+      if (stage === 'complete') developmentJobsCompleted += 1;
+      lastDevelopmentProgress = {
+        stage,
+        stateVersion: developmentJob.stateVersion,
+        relevantChunkCount: developmentJob.relevantChunks.length,
+        chunkIndex: developmentJob.chunkIndex,
+        buildingTypeIndex: developmentJob.buildingTypeIndex,
+        anchorChecksThisTick: developmentJob.anchorChecksThisTick,
+        preliminaryCandidatesRetained: developmentJob.preliminary.length,
+        finalistsValidatedThisTick: developmentJob.finalistsValidatedThisTick,
+        corridorExpansionsThisTick: developmentJob.corridorExpansionsThisTick,
+        totalAnchorChecks: developmentJob.totalAnchorChecks,
+        totalFinalistsValidated: developmentJob.totalFinalistsValidated,
+        totalCorridorExpansions: developmentJob.totalCorridorExpansions,
+      };
+    }
+    developmentJob = undefined;
+  };
+
+  const startDevelopmentJob = (): void => {
+    if (constructionProjects.length > 0) return;
+    if (seeds.length === 0 && calculateMetrics().metrics.space >= 1) {
+      lastDevelopmentCandidates = [];
+      lastDevelopmentProgress = {
+        ...lastDevelopmentProgress,
+        stage: 'idle',
+        stateVersion: developmentStateVersion,
+      };
+      return;
+    }
+    developmentEvaluations += 1;
+    developmentJob = {
+      stateVersion: developmentStateVersion,
+      stage: 'enumerating',
+      relevantChunks: relevantDevelopmentChunks(),
+      buildingTypeIndex: 0,
+      chunkIndex: 0,
+      localX: 0,
+      localY: 0,
+      preliminary: [],
+      finalistIndex: 0,
+      totalAnchorChecks: 0,
+      totalFinalistsValidated: 0,
+      totalCorridorExpansions: 0,
+      anchorChecksThisTick: 0,
+      finalistsValidatedThisTick: 0,
+      corridorExpansionsThisTick: 0,
+    };
+    developmentJobsStarted += 1;
+  };
+
+  const advanceDevelopmentJob = (triggerEvaluation: boolean): void => {
+    if (developmentJob !== undefined && developmentJob.stateVersion !== developmentStateVersion) {
+      developmentJobsSuperseded += 1;
+      lastDevelopmentProgress = {
+        ...lastDevelopmentProgress,
+        stage: 'superseded',
+        stateVersion: developmentJob.stateVersion,
+      };
+      developmentJob = undefined;
+    }
+    if (developmentJob === undefined && triggerEvaluation) startDevelopmentJob();
+    const job = developmentJob;
+    if (job === undefined || constructionProjects.length > 0) return;
+    job.anchorChecksThisTick = 0;
+    job.finalistsValidatedThisTick = 0;
+    job.corridorExpansionsThisTick = 0;
+    const occupancy = occupancyByBuilding();
+    while (
+      job.stage === 'enumerating' &&
+      job.anchorChecksThisTick < defaults.developmentAnchorCheckBudget
+    ) {
+      const buildingType = DEVELOPMENT_BUILDING_TYPE_ORDER[job.buildingTypeIndex];
+      const chunk = job.relevantChunks[job.chunkIndex];
+      if (buildingType === undefined || chunk === undefined) {
+        job.stage = 'validating';
+        job.preliminary.sort(compareDevelopmentCandidates);
+        lastDevelopmentCandidates = job.preliminary
+          .slice(0, developmentCandidateSnapshotLimit)
+          .map((candidate) => ({
+            ...candidate,
+            anchor: copyPosition(candidate.anchor),
+            footprint: { ...candidate.footprint },
+            entrance: copyPosition(candidate.entrance),
+            primaryReason: { ...candidate.primaryReason },
+            ...(candidate.envelope === undefined ? {} : { envelope: { ...candidate.envelope } }),
+            ...(candidate.stagingCells === undefined
+              ? {}
+              : { stagingCells: candidate.stagingCells.map(copyPosition) }),
+          }));
+        continue;
+      }
+      const origin = { x: chunk.x * chunkSize, y: chunk.y * chunkSize };
+      const anchor = { x: origin.x + job.localX, y: origin.y + job.localY };
+      job.localX += 1;
+      if (job.localX >= chunkSize) {
+        job.localX = 0;
+        job.localY += 1;
+        if (job.localY >= chunkSize) {
+          job.localY = 0;
+          job.chunkIndex += 1;
+          if (job.chunkIndex >= job.relevantChunks.length) {
+            job.chunkIndex = 0;
+            job.buildingTypeIndex += 1;
+          }
+        }
+      }
+      job.anchorChecksThisTick += 1;
+      job.totalAnchorChecks += 1;
+      developmentAnchorChecks += 1;
+      const candidate = candidateFromAnchor(anchor, buildingType, occupancy);
+      if (candidate !== undefined) retainPreliminaryCandidate(job.preliminary, candidate);
+    }
+    while (
+      job.stage === 'validating' &&
+      job.finalistsValidatedThisTick < defaults.developmentFinalistValidationBudget &&
+      job.corridorExpansionsThisTick < developmentCorridorExpansionBudget
+    ) {
+      const candidate = job.preliminary[job.finalistIndex];
+      if (candidate === undefined) {
+        finishDevelopmentJob('complete');
+        break;
+      }
+      const remainingExpansions =
+        developmentCorridorExpansionBudget - job.corridorExpansionsThisTick;
+      const validation = validateCandidateConnector(candidate, remainingExpansions);
+      job.corridorExpansionsThisTick += validation.expansions;
+      job.totalCorridorExpansions += validation.expansions;
+      if (validation.status === 'budget-exhausted') {
+        developmentFinalistValidations += 1;
+        job.finalistsValidatedThisTick += 1;
+        job.totalFinalistsValidated += 1;
+        break;
+      }
+      job.finalistIndex += 1;
+      job.finalistsValidatedThisTick += 1;
+      job.totalFinalistsValidated += 1;
+      developmentFinalistValidations += 1;
+      if (validation.status === 'no-connector') {
+        developmentNoConnectorRejections += 1;
+        continue;
+      }
+      const before = constructionProjectsStarted;
+      startConstruction(candidate, validation.connector);
+      if (constructionProjectsStarted !== before) {
+        const index = lastDevelopmentCandidates.findIndex(
+          (entry) =>
+            entry.buildingType === candidate.buildingType &&
+            entry.anchor.x === candidate.anchor.x &&
+            entry.anchor.y === candidate.anchor.y,
+        );
+        if (index >= 0) {
+          const visible = lastDevelopmentCandidates[index];
+          if (visible !== undefined) {
+            lastDevelopmentCandidates[index] = {
+              ...visible,
+              connector: validation.connector.map(copyPosition),
+            };
+          }
+        }
+        finishDevelopmentJob('complete');
+        break;
+      }
+    }
+    developmentPeakAnchorChecksPerTick = Math.max(
+      developmentPeakAnchorChecksPerTick,
+      job.anchorChecksThisTick,
+    );
+    developmentPeakFinalistValidationsPerTick = Math.max(
+      developmentPeakFinalistValidationsPerTick,
+      job.finalistsValidatedThisTick,
+    );
+    developmentPeakCorridorExpansionsPerTick = Math.max(
+      developmentPeakCorridorExpansionsPerTick,
+      job.corridorExpansionsThisTick,
+    );
+    if (developmentJob !== undefined) {
+      lastDevelopmentProgress = snapshotDevelopmentJob();
+    }
+  };
+
+  const evaluateDevelopers = (triggerEvaluation: boolean): void => {
+    advanceDevelopmentJob(triggerEvaluation);
   };
 
   const pairStateMatches = (state: DeadlockPairState, pair: MovementSwapPair): boolean =>
@@ -1425,7 +2039,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       currentRoute: citizen.route,
       currentRouteIndex: citizen.routeIndex,
       temporaryBlocked,
-      isWalkable: (position) => spatial.isWalkable(position),
+      isWalkable: (position) => isCirculationWalkable(position),
       maxNodes: pathSearchBudget,
     });
     pathNodesExpanded += result.nodesExpanded;
@@ -1482,7 +2096,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     const proposals = buildMovementProposals({
       candidates,
       isActive: (position) => spatial.isPositionActive(position),
-      isWalkable: (position) => spatial.isWalkable(position),
+      isWalkable: (position) => isCirculationWalkable(position),
     });
     movementProposals += proposals.length;
     const directSwapPairs = findDirectMovementSwapPairs(proposals);
@@ -1576,6 +2190,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         occupancyRevision: spatial.getChunkRevision(chunk),
         demandRevision: state.revision,
         occupancyBufferAllocated: spatial.hasOccupancyBuffer(chunk),
+        rightOfWayRevision: spatial.getRightOfWayRevision(chunk),
+        staticTopologyRevision: spatial.getStaticTopologyRevision(chunk),
+        rightOfWayBufferAllocated: spatial.hasRightOfWayBuffer(chunk),
       });
     }
     const summaries = activeChunks.map((activeChunk) => {
@@ -1601,6 +2218,18 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       activeChunks,
     };
   };
+
+  const rightOfWaySnapshot = (): SimulationSnapshot['rightOfWay'] =>
+    spatial
+      .getActiveChunks()
+      .sort(compareChunks)
+      .map((chunk) => ({
+        chunk: copyChunk(chunk),
+        key: chunkKey(chunk),
+        revision: spatial.getRightOfWayRevision(chunk),
+        cells: spatial.getRightOfWayCells(chunk).map(copyPosition),
+      }))
+      .filter((chunk) => chunk.cells.length > 0);
 
   const snapshot = (): SimulationSnapshot => {
     assertPopulationInvariants();
@@ -1641,6 +2270,24 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       movementReplansAttempted,
       movementReplansSucceeded,
       movementDeadlockRecoveries,
+      allocatedRightOfWayBuffers: spatial.getAllocatedRightOfWayBufferCount(),
+      rightOfWayCells: spatial.getRightOfWayCellCount(),
+      rightOfWayCellsAdded,
+      rightOfWayRevisionChanges,
+      staticTopologyRevision: spatial.getStaticTopologyRevisionTotal(),
+      developmentJobsStarted,
+      developmentJobsSuperseded,
+      developmentJobsCompleted,
+      developmentAnchorChecks,
+      developmentPreliminaryCandidatesRetained,
+      developmentFinalistValidations,
+      developmentCorridorStateExpansions,
+      developmentNoConnectorRejections,
+      developmentAffectedRouteReplans,
+      developmentRoutePreservationChecks,
+      developmentPeakAnchorChecksPerTick,
+      developmentPeakFinalistValidationsPerTick,
+      developmentPeakCorridorExpansionsPerTick,
     };
     return {
       chunkSize,
@@ -1675,6 +2322,15 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         total: edge.total,
       })),
       structural,
+      districtSeedDefinitions: getDistrictSeedDefinitions().map((definition) => ({
+        ...definition,
+      })),
+      rightOfWay: rightOfWaySnapshot().map((chunk) => ({
+        ...chunk,
+        chunk: copyChunk(chunk.chunk),
+        cells: chunk.cells.map(copyPosition),
+      })),
+      developmentJob: snapshotDevelopmentJob(),
       seeds: seeds.map((districtSeed) => ({
         ...districtSeed,
         position: copyPosition(districtSeed.position),
@@ -1703,6 +2359,13 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         footprint: { ...candidate.footprint },
         entrance: copyPosition(candidate.entrance),
         primaryReason: { ...candidate.primaryReason },
+        ...(candidate.envelope === undefined ? {} : { envelope: { ...candidate.envelope } }),
+        ...(candidate.connector === undefined
+          ? {}
+          : { connector: candidate.connector.map(copyPosition) }),
+        ...(candidate.stagingCells === undefined
+          ? {}
+          : { stagingCells: candidate.stagingCells.map(copyPosition) }),
       })),
       constructionProjects: constructionProjects.map((project): ConstructionProject => ({
         id: project.id,
@@ -1720,6 +2383,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         seedInfluence: project.seedInfluence,
         spatialFactor: project.spatialFactor,
         expectedAccessImprovement: project.expectedAccessImprovement,
+        envelope: { ...project.envelope },
+        connector: project.connector.map(copyPosition),
+        stagingCells: project.stagingCells.map(copyPosition),
       })),
     };
   };
@@ -1736,7 +2402,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       const metricsAfter = calculateMetrics().metrics;
       if (populationGrew || !sameMetrics(metricsBefore, metricsAfter)) {
         markAllDemandChunksDirty();
-        developmentStateVersion += 1;
+        if (populationGrew) developmentStateVersion += 1;
       }
       const activitiesCompletedThisTick = completedActivities - activitiesBefore;
       dataGeneratedThisTick = 0;
@@ -1747,14 +2413,23 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         data = roundData(data + dataGeneratedThisTick);
       }
       refreshDirtyDemandChunks();
-      if (tick % developmentEvaluationIntervalTicks === 0) evaluateDevelopers();
+      evaluateDevelopers(tick % developmentEvaluationIntervalTicks === 0);
       assertPopulationInvariants();
     },
+    getDistrictSeedDefinitions(): readonly DistrictSeedDefinition[] {
+      return getDistrictSeedDefinitions().map((definition) => ({ ...definition }));
+    },
+    getDistrictSeedDefinition(kind: DistrictSeedKind): DistrictSeedDefinition {
+      return getDistrictSeedDefinition(kind);
+    },
+    getDistrictSeedPlacementInfo(command: PlaceDistrictSeedCommand): DistrictSeedPlacementInfo {
+      return districtSeedPlacementInfo(command);
+    },
     previewDistrictSeed(command: PlaceDistrictSeedCommand): DistrictSeedPlacementPreview {
-      const validation = validateDistrictSeedPlacement(command);
-      return validation.accepted
-        ? { valid: true, cost: validation.cost }
-        : { valid: false, reason: validation.reason };
+      const info = districtSeedPlacementInfo(command);
+      return info.valid
+        ? { valid: true, cost: info.cost }
+        : { valid: false, reason: info.reason ?? 'invalid-kind' };
     },
     placeDistrictSeed(command: PlaceDistrictSeedCommand): CommandResult {
       const validation = validateDistrictSeedPlacement(command);

@@ -60,6 +60,11 @@ export interface DevelopmentCandidate {
   readonly constructionCost: number;
   /** Weighted spatial/access summary: 0.6 entrance access + 0.4 planned access improvement. */
   readonly spatialFactor: number;
+  /** Derived one-cell protected circulation ring. */
+  readonly envelope?: GridRect;
+  /** Detached cells of the proposed two-cell-wide connector. */
+  readonly connector?: readonly GridPosition[];
+  readonly stagingCells?: readonly GridPosition[];
 }
 
 export interface ConstructionProject {
@@ -78,6 +83,9 @@ export interface ConstructionProject {
   readonly seedInfluence: number;
   readonly spatialFactor: number;
   readonly expectedAccessImprovement: number;
+  readonly envelope?: GridRect;
+  readonly connector?: readonly GridPosition[];
+  readonly stagingCells?: readonly GridPosition[];
 }
 
 export interface CitizenSnapshot {
@@ -100,13 +108,40 @@ export interface DistrictSeed {
   readonly position: GridPosition;
 }
 
+export interface DistrictSeedDefinition {
+  readonly kind: DistrictSeedKind;
+  readonly label: string;
+  readonly baseCost: number;
+  readonly influenceRadius: number;
+  readonly unlocked: boolean;
+}
+
+export interface DistrictSeedPlacementInfo {
+  readonly kind: DistrictSeedKind;
+  readonly position: GridPosition;
+  readonly radius: number;
+  readonly cost: number;
+  readonly coveredCellCount: number;
+  readonly activeCoveredCellCount: number;
+  readonly coveredCells: readonly GridPosition[];
+  readonly activeCoveredCells: readonly GridPosition[];
+  readonly valid: boolean;
+  readonly reason?: CommandRejectionReason;
+}
+
 export interface PlaceDistrictSeedCommand {
   readonly kind: DistrictSeedKind;
   readonly position: GridPosition;
 }
 
 export type CommandRejectionReason =
-  'invalid-kind' | 'out-of-bounds' | 'inactive-chunk' | 'occupied' | 'locked' | 'insufficient-data';
+  | 'invalid-kind'
+  | 'out-of-bounds'
+  | 'inactive-chunk'
+  | 'occupied'
+  | 'right-of-way'
+  | 'locked'
+  | 'insufficient-data';
 
 export interface ValidDistrictSeedPlacementPreview {
   readonly valid: true;
@@ -195,6 +230,33 @@ export interface ActiveChunkSnapshot {
   readonly occupancyRevision: number;
   readonly demandRevision: number;
   readonly occupancyBufferAllocated: boolean;
+  readonly rightOfWayRevision: number;
+  readonly staticTopologyRevision: number;
+  readonly rightOfWayBufferAllocated: boolean;
+}
+
+export interface RightOfWayChunkSnapshot {
+  readonly chunk: ChunkCoordinate;
+  readonly key: string;
+  readonly revision: number;
+  readonly cells: readonly GridPosition[];
+}
+
+export type DevelopmentJobStage = 'idle' | 'enumerating' | 'validating' | 'complete' | 'superseded';
+
+export interface DevelopmentJobProgress {
+  readonly stage: DevelopmentJobStage;
+  readonly stateVersion: number;
+  readonly relevantChunkCount: number;
+  readonly chunkIndex: number;
+  readonly buildingTypeIndex: number;
+  readonly anchorChecksThisTick: number;
+  readonly preliminaryCandidatesRetained: number;
+  readonly finalistsValidatedThisTick: number;
+  readonly corridorExpansionsThisTick: number;
+  readonly totalAnchorChecks: number;
+  readonly totalFinalistsValidated: number;
+  readonly totalCorridorExpansions: number;
 }
 
 export interface TrafficEdgeSnapshot {
@@ -237,6 +299,24 @@ export interface SimulationStructuralCounters {
   readonly movementReplansAttempted: number;
   readonly movementReplansSucceeded: number;
   readonly movementDeadlockRecoveries: number;
+  readonly allocatedRightOfWayBuffers: number;
+  readonly rightOfWayCells: number;
+  readonly rightOfWayCellsAdded: number;
+  readonly rightOfWayRevisionChanges: number;
+  readonly staticTopologyRevision: number;
+  readonly developmentJobsStarted: number;
+  readonly developmentJobsSuperseded: number;
+  readonly developmentJobsCompleted: number;
+  readonly developmentAnchorChecks: number;
+  readonly developmentPreliminaryCandidatesRetained: number;
+  readonly developmentFinalistValidations: number;
+  readonly developmentCorridorStateExpansions: number;
+  readonly developmentNoConnectorRejections: number;
+  readonly developmentAffectedRouteReplans: number;
+  readonly developmentRoutePreservationChecks: number;
+  readonly developmentPeakAnchorChecksPerTick: number;
+  readonly developmentPeakFinalistValidationsPerTick: number;
+  readonly developmentPeakCorridorExpansionsPerTick: number;
 }
 
 export type ActivateChunkCommand = ChunkCoordinate;
@@ -305,6 +385,8 @@ export interface SimulationConfig {
   readonly trafficHistoryWindowTicks?: number;
   /** Alias for trafficHistoryWindowTicks used by focused telemetry scenarios. */
   readonly trafficWindowTicks?: number;
+  /** Maximum paired corridor states expanded by one logical development tick. */
+  readonly developmentCorridorExpansionBudget?: number;
 }
 
 export interface SimulationSnapshot {
@@ -326,6 +408,9 @@ export interface SimulationSnapshot {
   readonly demand: CityDemand;
   readonly traffic: readonly TrafficEdgeSnapshot[];
   readonly structural: SimulationStructuralCounters;
+  readonly districtSeedDefinitions: readonly DistrictSeedDefinition[];
+  readonly rightOfWay: readonly RightOfWayChunkSnapshot[];
+  readonly developmentJob: DevelopmentJobProgress;
   readonly seeds: readonly DistrictSeed[];
   readonly buildings: readonly Building[];
   readonly occupancy: readonly BuildingOccupancy[];
@@ -336,6 +421,9 @@ export interface SimulationSnapshot {
 
 export interface Simulation {
   step(): void;
+  getDistrictSeedDefinitions(): readonly DistrictSeedDefinition[];
+  getDistrictSeedDefinition(kind: DistrictSeedKind): DistrictSeedDefinition;
+  getDistrictSeedPlacementInfo(command: PlaceDistrictSeedCommand): DistrictSeedPlacementInfo;
   previewDistrictSeed(command: PlaceDistrictSeedCommand): DistrictSeedPlacementPreview;
   placeDistrictSeed(command: PlaceDistrictSeedCommand): CommandResult;
   getCurrentDistrictSeedCost(kind: DistrictSeedKind): number;

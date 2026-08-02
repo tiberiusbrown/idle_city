@@ -6,7 +6,10 @@ interface OccupancyChunk {
   readonly coordinate: ChunkCoordinate;
   readonly key: string;
   occupied: Uint8Array | undefined;
+  rightOfWay: Uint8Array | undefined;
   revision: number;
+  rightOfWayRevision: number;
+  staticTopologyRevision: number;
 }
 
 function safeInteger(name: string, value: number): number {
@@ -112,7 +115,10 @@ export class ChunkSpatialStore {
       coordinate: { x: chunk.x, y: chunk.y },
       key,
       occupied: undefined,
+      rightOfWay: undefined,
       revision: 0,
+      rightOfWayRevision: 0,
+      staticTopologyRevision: 0,
     });
     return true;
   }
@@ -132,6 +138,24 @@ export class ChunkSpatialStore {
     return chunk.occupied?.[local.y * this.chunkSize + local.x] !== 1;
   }
 
+  public isRightOfWay(position: GridPosition): boolean {
+    const chunk = this.chunks.get(chunkKey(chunkCoordinateForPosition(position, this.chunkSize)));
+    if (chunk === undefined) return false;
+    const local = localCoordinateForPosition(position, this.chunkSize);
+    return chunk.rightOfWay?.[local.y * this.chunkSize + local.x] === 1;
+  }
+
+  public isRow(position: GridPosition): boolean {
+    return this.isRightOfWay(position);
+  }
+
+  /** Buildable means active, walkable, and not public right-of-way. */
+  public isBuildable(position: GridPosition): boolean {
+    return (
+      this.isPositionActive(position) && this.isWalkable(position) && !this.isRightOfWay(position)
+    );
+  }
+
   public block(position: GridPosition): void {
     const chunk = this.chunks.get(chunkKey(chunkCoordinateForPosition(position, this.chunkSize)));
     if (chunk === undefined) {
@@ -140,11 +164,18 @@ export class ChunkSpatialStore {
       );
     }
     const local = localCoordinateForPosition(position, this.chunkSize);
+    const rowIndex = local.y * this.chunkSize + local.x;
+    if (chunk.rightOfWay?.[rowIndex] === 1) {
+      throw new Error(
+        `Cannot block public right-of-way ${String(position.x)},${String(position.y)}.`,
+      );
+    }
     chunk.occupied ??= new Uint8Array(this.chunkSize ** 2);
-    const index = local.y * this.chunkSize + local.x;
+    const index = rowIndex;
     if (chunk.occupied[index] === 1) return;
     chunk.occupied[index] = 1;
     chunk.revision += 1;
+    chunk.staticTopologyRevision += 1;
   }
 
   public blockMany(positions: readonly GridPosition[]): void {
@@ -155,8 +186,96 @@ export class ChunkSpatialStore {
     return this.chunks.get(chunkKey(chunk))?.revision ?? 0;
   }
 
+  public getRightOfWayRevision(chunk: ChunkCoordinate): number {
+    return this.chunks.get(chunkKey(chunk))?.rightOfWayRevision ?? 0;
+  }
+
+  public getRowRevision(chunk: ChunkCoordinate): number {
+    return this.getRightOfWayRevision(chunk);
+  }
+
+  public getStaticTopologyRevision(chunk: ChunkCoordinate): number {
+    return this.chunks.get(chunkKey(chunk))?.staticTopologyRevision ?? 0;
+  }
+
   public hasOccupancyBuffer(chunk: ChunkCoordinate): boolean {
     return this.chunks.get(chunkKey(chunk))?.occupied !== undefined;
+  }
+
+  public hasRightOfWayBuffer(chunk: ChunkCoordinate): boolean {
+    return this.chunks.get(chunkKey(chunk))?.rightOfWay !== undefined;
+  }
+
+  public hasRowBuffer(chunk: ChunkCoordinate): boolean {
+    return this.hasRightOfWayBuffer(chunk);
+  }
+
+  public markRightOfWay(position: GridPosition): void {
+    const chunk = this.chunks.get(chunkKey(chunkCoordinateForPosition(position, this.chunkSize)));
+    if (chunk === undefined) {
+      throw new Error(
+        `Cannot mark right-of-way in inactive position ${String(position.x)},${String(position.y)}.`,
+      );
+    }
+    const local = localCoordinateForPosition(position, this.chunkSize);
+    const index = local.y * this.chunkSize + local.x;
+    if (chunk.occupied?.[index] === 1) {
+      throw new Error(
+        `Cannot mark building interior as public right-of-way ${String(position.x)},${String(position.y)}.`,
+      );
+    }
+    chunk.rightOfWay ??= new Uint8Array(this.chunkSize ** 2);
+    if (chunk.rightOfWay[index] === 1) return;
+    chunk.rightOfWay[index] = 1;
+    chunk.rightOfWayRevision += 1;
+    chunk.staticTopologyRevision += 1;
+  }
+
+  public markRow(position: GridPosition): void {
+    this.markRightOfWay(position);
+  }
+
+  /** Validates the complete batch before mutating any cell. */
+  public markRightOfWayMany(positions: readonly GridPosition[]): void {
+    const unique = new Map<string, GridPosition>();
+    for (const position of positions)
+      unique.set(`${String(position.x)},${String(position.y)}`, position);
+    for (const position of unique.values()) {
+      const chunk = this.chunks.get(chunkKey(chunkCoordinateForPosition(position, this.chunkSize)));
+      if (chunk === undefined)
+        throw new Error(
+          `Cannot mark inactive right-of-way cell ${String(position.x)},${String(position.y)}.`,
+        );
+      const local = localCoordinateForPosition(position, this.chunkSize);
+      const index = local.y * this.chunkSize + local.x;
+      if (chunk.occupied?.[index] === 1)
+        throw new Error(
+          `Cannot mark occupied right-of-way cell ${String(position.x)},${String(position.y)}.`,
+        );
+    }
+    for (const position of unique.values()) this.markRightOfWay(position);
+  }
+
+  public markRowMany(positions: readonly GridPosition[]): void {
+    this.markRightOfWayMany(positions);
+  }
+
+  public getRightOfWayCells(chunk: ChunkCoordinate): GridPosition[] {
+    const state = this.chunks.get(chunkKey(chunk));
+    if (state?.rightOfWay === undefined) return [];
+    const origin = chunkOrigin(chunk, this.chunkSize);
+    const cells: GridPosition[] = [];
+    for (let localY = 0; localY < this.chunkSize; localY += 1) {
+      for (let localX = 0; localX < this.chunkSize; localX += 1) {
+        if (state.rightOfWay[localY * this.chunkSize + localX] !== 1) continue;
+        cells.push({ x: origin.x + localX, y: origin.y + localY });
+      }
+    }
+    return cells;
+  }
+
+  public getRowCells(chunk: ChunkCoordinate): GridPosition[] {
+    return this.getRightOfWayCells(chunk);
   }
 
   public getAllocatedOccupancyBufferCount(): number {
@@ -165,6 +284,37 @@ export class ChunkSpatialStore {
       if (chunk.occupied !== undefined) count += 1;
     }
     return count;
+  }
+
+  public getAllocatedRightOfWayBufferCount(): number {
+    let count = 0;
+    for (const chunk of this.chunks.values()) {
+      if (chunk.rightOfWay !== undefined) count += 1;
+    }
+    return count;
+  }
+
+  public getAllocatedRowBufferCount(): number {
+    return this.getAllocatedRightOfWayBufferCount();
+  }
+
+  public getRightOfWayCellCount(): number {
+    let count = 0;
+    for (const chunk of this.chunks.values()) {
+      if (chunk.rightOfWay === undefined) continue;
+      for (const value of chunk.rightOfWay) count += value === 1 ? 1 : 0;
+    }
+    return count;
+  }
+
+  public getRowCellCount(): number {
+    return this.getRightOfWayCellCount();
+  }
+
+  public getStaticTopologyRevisionTotal(): number {
+    let revision = 0;
+    for (const chunk of this.chunks.values()) revision += chunk.staticTopologyRevision;
+    return revision;
   }
 
   public getActiveChunks(): ChunkCoordinate[] {

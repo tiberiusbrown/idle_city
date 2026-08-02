@@ -3,6 +3,7 @@ import {
   chunkCoordinateForPosition,
   chunkKey,
   canonicalTrafficEdge,
+  circulationEnvelopeCells,
   compareChunks,
   createSimulation,
   DISTRICT_SEED_COSTS,
@@ -14,6 +15,7 @@ import {
   type CommandResult,
   type DemandTotals,
   type DistrictSeed,
+  type DistrictSeedPlacementInfo,
   type PlaceDistrictSeedCommand,
   type SimulationConfig,
   type SimulationSnapshot,
@@ -57,6 +59,15 @@ export const balanceScenarioNames = [
   'tie',
   'capped-growth',
   'long-run-city',
+  'seed-boundary',
+  'multiple-same-type-seeds',
+  'sparse-development',
+  'two-connected-row-buildings',
+  'narrow-connector',
+  'dense-circulation',
+  'development-supersession',
+  'long-incremental-development',
+  'step9-dense-movement',
 ] as const;
 
 export type BalanceScenarioName = (typeof balanceScenarioNames)[number];
@@ -135,8 +146,8 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
       developmentEvaluationIntervalTicks: 100,
     },
     commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 3, y: 3 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 3, y: 3 } } },
+      { tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 5, y: 1 } } },
     ],
     activations: [],
   },
@@ -184,7 +195,7 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
   },
   'localized-demand': {
     config: { startingData: DISTRICT_SEED_COSTS.living },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 4, y: 4 } } }],
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
     activations: [],
   },
   'long-route': {
@@ -370,7 +381,7 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
   },
   'living-led': {
     config: { startingData: DISTRICT_SEED_COSTS.living, developmentEvaluationIntervalTicks: 100 },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 4, y: 4 } } }],
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
     activations: [],
   },
   'working-led': {
@@ -384,7 +395,7 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
       developmentEvaluationIntervalTicks: 100,
     },
     commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 4, y: 4 } } },
+      { tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } },
       { tick: 0, command: { kind: 'working', position: { x: 8, y: 6 } } },
     ],
     activations: [],
@@ -398,7 +409,7 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
       startingData: DISTRICT_SEED_COSTS.living,
       developmentEvaluationIntervalTicks: 100,
     },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 4, y: 4 } } }],
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
     activations: [],
   },
   'no-valid-footprint': {
@@ -424,8 +435,8 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
       developmentEvaluationIntervalTicks: 10,
     },
     commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 4, y: 4 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 5, y: 4 } } },
+      { tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 6, y: 1 } } },
     ],
     activations: [],
   },
@@ -501,9 +512,117 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
       developmentEvaluationIntervalTicks: 10,
     },
     commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 4, y: 4 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 5, y: 4 } } },
+      { tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 6, y: 1 } } },
     ],
+    activations: [],
+  },
+  'seed-boundary': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
+      startingData: DISTRICT_SEED_COSTS.living,
+      developmentEvaluationIntervalTicks: 1_000_000,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 7, y: 1 } } }],
+    activations: [],
+  },
+  'multiple-same-type-seeds': {
+    config: {
+      startingData: 30,
+      developmentEvaluationIntervalTicks: 1_000_000,
+    },
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } },
+      { tick: 0, command: { kind: 'living', position: { x: 14, y: 1 } } },
+    ],
+    activations: [],
+  },
+  'sparse-development': {
+    config: {
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 8, height: 8 },
+      startingData: DISTRICT_SEED_COSTS.living,
+      developmentEvaluationIntervalTicks: 1,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
+    activations: [],
+  },
+  'two-connected-row-buildings': {
+    config: {
+      chunkSize: 16,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+      startingData: DISTRICT_SEED_COSTS.living + DISTRICT_SEED_COSTS.working,
+      developmentEvaluationIntervalTicks: 1,
+    },
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 25, y: 1 } } },
+    ],
+    activations: [],
+  },
+  'narrow-connector': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 1 },
+      homePosition: { x: 0, y: 0 },
+      workplacePosition: { x: 8, y: 0 },
+      startingData: DISTRICT_SEED_COSTS.living,
+      developmentEvaluationIntervalTicks: 1,
+      developmentCorridorExpansionBudget: 1,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } }],
+    activations: [],
+  },
+  'dense-circulation': {
+    config: {
+      chunkSize: 8,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+      startingData: 40,
+      citizenCount: 20,
+      housingCapacity: 20,
+      workplaceCapacity: 20,
+      populationCap: 20,
+      developmentEvaluationIntervalTicks: 1,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } }],
+    activations: [],
+  },
+  'development-supersession': {
+    config: {
+      chunkSize: 32,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+      startingData: 30,
+      developmentEvaluationIntervalTicks: 1,
+    },
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } },
+      { tick: 1, command: { kind: 'working', position: { x: 22, y: 1 } } },
+    ],
+    activations: [],
+  },
+  'long-incremental-development': {
+    config: {
+      chunkSize: 32,
+      initialChunkRegion: { minX: 0, minY: 0, width: 8, height: 8 },
+      startingData: DISTRICT_SEED_COSTS.living,
+      developmentEvaluationIntervalTicks: 1,
+    },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } }],
+    activations: [],
+  },
+  'step9-dense-movement': {
+    config: trafficScenarioConfig({
+      chunkSize: 8,
+      initialChunkRegion: { minX: -1, minY: -1, width: 4, height: 4 },
+      homePosition: { x: -6, y: -6 },
+      workplacePosition: { x: 18, y: 18 },
+      citizenCount: 20,
+      housingCapacity: 20,
+      workplaceCapacity: 20,
+      populationCap: 20,
+    }),
+    commands: [],
     activations: [],
   },
 };
@@ -549,6 +668,7 @@ export interface BalanceOptions {
 export interface BalanceCommandResult {
   readonly tick: number;
   readonly command: PlaceDistrictSeedCommand;
+  readonly preview: DistrictSeedPlacementInfo;
   readonly result: CommandResult;
 }
 
@@ -611,6 +731,7 @@ export interface BalanceSummary {
   readonly constructionProjectsStarted: number;
   readonly constructionProjectsCompleted: number;
   readonly developmentEvaluations: number;
+  readonly developmentJob: SimulationSnapshot['developmentJob'];
   readonly invariantFailures: readonly string[];
   readonly determinismHash: string;
 }
@@ -655,10 +776,54 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     fail('structural active chunk count mismatch');
   if (snapshot.structural.allocatedChunks !== activeKeys.size)
     fail('allocated chunk count mismatch');
+  for (const chunk of snapshot.activeChunks) {
+    if (
+      chunk.rightOfWayRevision < 0 ||
+      chunk.staticTopologyRevision < 0 ||
+      (chunk.rightOfWayBufferAllocated && chunk.rightOfWayRevision === 0)
+    ) {
+      fail(`static topology revisions are invalid for ${chunk.key}`);
+    }
+  }
+
+  const rowKeys = new Set<string>();
+  let previousRowChunk: { readonly x: number; readonly y: number } | undefined;
+  for (const rowChunk of snapshot.rightOfWay) {
+    if (!activeKeys.has(rowChunk.key)) fail(`ROW chunk is inactive ${rowChunk.key}`);
+    if (rowChunk.key !== chunkKey(rowChunk.chunk)) fail(`ROW chunk key mismatch ${rowChunk.key}`);
+    if (previousRowChunk !== undefined && compareChunks(rowChunk.chunk, previousRowChunk) <= 0) {
+      fail('ROW chunks are not stably ordered');
+    }
+    previousRowChunk = rowChunk.chunk;
+    const activeSummary = snapshot.activeChunks.find(({ key }) => key === rowChunk.key);
+    if (activeSummary?.rightOfWayRevision !== rowChunk.revision) {
+      fail(`ROW revision mismatch for ${rowChunk.key}`);
+    }
+    let previousCell: { readonly x: number; readonly y: number } | undefined;
+    for (const cell of rowChunk.cells) {
+      const key = `${String(cell.x)},${String(cell.y)}`;
+      if (rowKeys.has(key)) fail(`duplicate ROW cell ${key}`);
+      rowKeys.add(key);
+      if (!active(snapshot, cell)) fail(`ROW cell is inactive ${key}`);
+      if (
+        previousCell !== undefined &&
+        (cell.y < previousCell.y || (cell.y === previousCell.y && cell.x <= previousCell.x))
+      ) {
+        fail(`ROW cells are not stably ordered in ${rowChunk.key}`);
+      }
+      previousCell = cell;
+    }
+  }
+  if (snapshot.structural.rightOfWayCells !== rowKeys.size) fail('ROW cell count mismatch');
+  if (snapshot.structural.rightOfWayCellsAdded < rowKeys.size) {
+    fail('ROW additions are below the current ROW count');
+  }
+  if (snapshot.structural.rightOfWayRevisionChanges < 0) fail('ROW revision counter is negative');
 
   const buildingIds = new Set<string>();
   const occupiedCells = new Set<string>();
   const reservedCells = new Set<string>();
+  const circulationCells = new Set<string>(rowKeys);
   const capacityByType = new Map<'home' | 'workplace', number>([
     ['home', 0],
     ['workplace', 0],
@@ -680,8 +845,20 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     for (const cell of footprintCells(building.footprint)) {
       if (!active(snapshot, cell)) fail(`building ${building.id} leaves active chunks`);
       const cellKey = `${String(cell.x)},${String(cell.y)}`;
+      if (rowKeys.has(cellKey)) fail(`building ${building.id} consumes ROW at ${cellKey}`);
       if (occupiedCells.has(cellKey)) fail(`building footprints overlap at ${cellKey}`);
       occupiedCells.add(cellKey);
+    }
+    for (const cell of circulationEnvelopeCells(building.footprint)) {
+      if (!active(snapshot, cell)) fail(`building ${building.id} envelope leaves active chunks`);
+      circulationCells.add(`${String(cell.x)},${String(cell.y)}`);
+      if (rowKeys.has(`${String(cell.x)},${String(cell.y)}`)) continue;
+      for (const other of snapshot.buildings) {
+        if (other.id === building.id) continue;
+        if (footprintCells(other.footprint).some(({ x, y }) => x === cell.x && y === cell.y)) {
+          fail(`building envelopes overlap at ${String(cell.x)},${String(cell.y)}`);
+        }
+      }
     }
     if (!active(snapshot, building.entrance)) fail(`building ${building.id} entrance is inactive`);
   }
@@ -735,6 +912,23 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
         fail(`construction project overlaps a building at ${cellKey}`);
       if (reservedCells.has(cellKey)) fail(`construction projects overlap at ${cellKey}`);
       reservedCells.add(cellKey);
+    }
+    for (const cell of circulationEnvelopeCells(project.footprint)) {
+      if (!active(snapshot, cell))
+        fail(`construction project ${project.id} envelope leaves active chunks`);
+      circulationCells.add(`${String(cell.x)},${String(cell.y)}`);
+      if (rowKeys.has(`${String(cell.x)},${String(cell.y)}`)) continue;
+      if (occupiedCells.has(`${String(cell.x)},${String(cell.y)}`)) {
+        fail(`construction project ${project.id} envelope overlaps a building`);
+      }
+    }
+    for (const cell of project.connector ?? []) {
+      const key = `${String(cell.x)},${String(cell.y)}`;
+      if (!rowKeys.has(key)) fail(`construction project ${project.id} connector is not ROW`);
+      if (occupiedCells.has(key) || reservedCells.has(key)) {
+        fail(`construction project ${project.id} connector enters a footprint`);
+      }
+      circulationCells.add(key);
     }
     if (occupiedCells.has(`${String(project.entrance.x)},${String(project.entrance.y)}`)) {
       fail(`construction project ${project.id} entrance is blocked`);
@@ -891,6 +1085,9 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
       ) {
         fail(`citizen ${citizen.id} route enters a building interior`);
       }
+      if (!circulationCells.has(`${String(position.x)},${String(position.y)}`)) {
+        fail(`citizen ${citizen.id} route leaves circulation ROW/envelopes`);
+      }
       const previous = citizen.route[index - 1];
       if (previous !== undefined && !adjacent(previous, position)) {
         fail(`citizen ${citizen.id} route is non-adjacent`);
@@ -927,6 +1124,20 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     snapshot.structural.constructionProjectsStarted
   ) {
     fail('construction project counts do not reconcile');
+  }
+  const job = snapshot.developmentJob;
+  if (job.anchorChecksThisTick > 512) fail('development anchor budget exceeded');
+  if (job.preliminaryCandidatesRetained > 32) fail('development preliminary cap exceeded');
+  if (job.finalistsValidatedThisTick > 4) fail('development finalist budget exceeded');
+  if (job.corridorExpansionsThisTick > 2_048) fail('development corridor budget exceeded');
+  if (snapshot.structural.developmentPeakAnchorChecksPerTick > 512) {
+    fail('development peak anchor budget exceeded');
+  }
+  if (snapshot.structural.developmentPeakFinalistValidationsPerTick > 4) {
+    fail('development peak finalist budget exceeded');
+  }
+  if (snapshot.structural.developmentPeakCorridorExpansionsPerTick > 2_048) {
+    fail('development peak corridor budget exceeded');
   }
   return failures;
 }
@@ -991,9 +1202,11 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
       const scheduled = scheduledCommands[nextScheduledCommand];
       if (scheduled === undefined || scheduled.tick > currentTick) break;
       const command = { ...scheduled.command, position: { ...scheduled.command.position } };
+      const preview = simulation.getDistrictSeedPlacementInfo(command);
       commandResults.push({
         tick: currentTick,
         command,
+        preview,
         result: simulation.placeDistrictSeed(command),
       });
       nextScheduledCommand += 1;
@@ -1077,6 +1290,7 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     constructionProjectsStarted: snapshot.structural.constructionProjectsStarted,
     constructionProjectsCompleted: snapshot.structural.constructionProjectsCompleted,
     developmentEvaluations: snapshot.structural.developmentEvaluations,
+    developmentJob: snapshot.developmentJob,
     invariantFailures: [...invariantFailures],
     determinismHash: simulation.getDeterminismHash(),
   };

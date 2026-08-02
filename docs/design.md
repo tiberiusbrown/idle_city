@@ -177,7 +177,34 @@ Candidate tie-breaking is:
 
 No randomness is used in the score or tie-breaker.
 
-### 4.6 Construction — Implemented
+### 4.6 Circulation-aware development — Implemented Step 9.5
+
+Buildings reserve a one-cell circulation envelope around their complete
+footprint. The envelope is fully active, cannot overlap another completed or
+project footprint, and must provide at least three stable staging-capable
+cells. An entrance is selected from those staging cells and remains outside
+the blocked footprint.
+
+The simulation owns a compact public right-of-way (ROW) layer. ROW cells are
+active and walkable but never buildable. Starter-building envelopes are joined
+by a deterministic two-cell-wide connector. Later projects receive the same
+envelope and connector treatment; the player never draws roads or removes
+ROW.
+
+Developer evaluation is an incremental deterministic job. It considers only
+relevant active chunks, checks at most 512 anchors per logical tick, retains
+at most 32 preliminary candidates, validates at most four finalists, and
+expands at most 2,048 paired corridor states per tick. A job is superseded by
+an explicit development-state version change. At most one project starts after
+a complete non-superseded evaluation.
+
+An accepted project reserves its footprint, envelope, and connector in one
+authoritative transition. Existing ROW is reused and never consumed. The
+simulation does not rerun every citizen route for every candidate; after a
+project is accepted it replans only citizens whose stored future route
+intersects the newly reserved footprint.
+
+### 4.7 Construction — Implemented
 
 Projects reserve their complete footprint and progress through:
 
@@ -247,6 +274,20 @@ Same-type influences add together and cap at `1`.
 
 The current seed influence uses Manhattan distance.
 
+The implemented neighborhood radii are fixed simulation definitions:
+
+| Seed     |   Radius |
+| -------- | -------: |
+| Living   | 10 cells |
+| Working  | 12 cells |
+| Services |  8 cells |
+
+These radii never derive from chunk dimensions. The simulation exposes the
+definitions and a detached current-placement-info result containing the exact
+diamond cells, active covered-cell subset, current cost, and validation
+reason. The browser, renderer, and balance runner consume that authoritative
+information.
+
 For a matching seed:
 
 ```text
@@ -292,6 +333,7 @@ A seed-placement command rejects when:
 - The type is locked.
 - The anchor is outside active space.
 - The anchor is not buildable.
+- The anchor is public right-of-way.
 - Another seed already occupies the anchor.
 - The player lacks Data.
 - Another explicit future placement rule fails.
@@ -305,6 +347,13 @@ A rejected command changes none of:
 - demand revisions
 - snapshots
 - determinism hash
+
+Selecting a seed type does not purchase it. Hovering shows a transient exact
+diamond preview; clicking or tapping locks the candidate; an explicit
+`Place <Type> for <Cost> Data` confirmation revalidates the command and
+charges once. Cancel, drag, pointer cancellation, and lost capture clear the
+candidate without mutation. The placement panel shows radius, coordinates,
+active covered-cell count, current cost, and a plain-language reason.
 
 ### 5.6 Seed relocation — Contracted
 
@@ -486,6 +535,12 @@ Overlays unlock only with their mechanic:
 | Redevelopment forecast | Space 6 or Activity 5, as applicable |
 
 Only one major overlay is active at a time.
+
+Placed seed markers remain compact. Their full influence and active-world
+boundary are hidden by default and become visible when the seed is selected,
+the influence overlay is active, or the player is placing or relocating a
+seed. Placement previews show the complete authoritative Manhattan diamond
+and distinguish its currently active cells near world boundaries.
 
 ### 7.3 Explanations
 

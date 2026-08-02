@@ -114,6 +114,10 @@ async function placeWithMouse(page: Page, kind: 'Living' | 'Working'): Promise<M
   await expect(page.getByTestId('placement-status')).toContainText(`${kind} placement mode`);
   const point = await findValidMapPoint(page, kind);
   await page.mouse.click(point.x, point.y);
+  const confirmButton = page.locator('[data-action="confirm-placement"]');
+  await expect(confirmButton).toBeVisible();
+  await expect(confirmButton).toBeEnabled();
+  await confirmButton.click();
   return point;
 }
 
@@ -148,12 +152,16 @@ test('mouse placement previews, charges the exact cost, rejects duplicates and i
   expect(beforeLiving - (await metric(page, 'data-metric'))).toBe(10);
 
   await page.mouse.click(livingPoint.x, livingPoint.y);
-  await expect(page.getByTestId('status')).toContainText('already has a district seed');
+  await expect(page.locator('[data-action="confirm-placement"]')).toBeVisible();
+  await expect(page.locator('[data-action="confirm-placement"]')).toBeDisabled();
+  await expect(page.getByTestId('placement-reason')).toContainText('already has a district seed');
   await expect(page.getByTestId('data-metric')).toHaveText(String(beforeLiving - 10));
 
   await page.getByRole('button', { name: 'Choose Working district seed' }).click();
   const workingPoint = await findValidMapPoint(page, 'Working');
   await page.mouse.click(workingPoint.x, workingPoint.y);
+  await expect(page.locator('[data-action="confirm-placement"]')).toBeEnabled();
+  await page.locator('[data-action="confirm-placement"]').click();
   await expect(page.getByTestId('status')).toContainText('Working seed accepted');
   await expect(page.getByTestId('working-cost')).toHaveText('15 Data');
   expect(await metric(page, 'data-metric')).toBe(beforeLiving - 10 - 12);
@@ -161,6 +169,7 @@ test('mouse placement previews, charges the exact cost, rejects duplicates and i
   await page.getByRole('button', { name: 'Choose Living district seed' }).click();
   const insufficientPoint = await findMapPointWithStatus(page, 'Not enough Data');
   await page.mouse.click(insufficientPoint.x, insufficientPoint.y);
+  await expect(page.locator('[data-action="confirm-placement"]')).toBeDisabled();
   await expect(page.getByTestId('status')).toContainText('Not enough Data');
   await expect(page.getByTestId('seed-count')).toHaveText('2 seeds');
 
@@ -266,6 +275,9 @@ test.describe('touch viewport', () => {
     const bounds = await canvas.boundingBox();
     if (bounds === null) throw new Error('The game canvas is not measurable.');
     await canvas.tap({ position: { x: point.x - bounds.x, y: point.y - bounds.y } });
+    const confirmButton = page.locator('[data-action="confirm-placement"]');
+    await expect(confirmButton).toBeEnabled();
+    await confirmButton.tap();
     await expect(page.getByTestId('status')).toContainText('Working seed accepted');
     await expect(page.getByTestId('seed-count')).toHaveText('1 seed');
     await expect(page.getByRole('button', { name: 'Cancel placement' })).toBeVisible();
