@@ -1,1135 +1,1103 @@
 # Virtual Crowd-Built City
 
+## 0. Document Authority
+
+This document is the authoritative gameplay-design contract for Idle City.
+
+It serves two audiences:
+
+- People designing, implementing, testing, and balancing the game.
+- AI coding agents that need exact boundaries and must not invent mechanics outside the approved plan.
+
+Every substantial mechanic has one of three statuses:
+
+- **Implemented** — exists in the repository and must remain consistent with code and tests.
+- **Contracted** — approved future behavior. It may be implemented only when a task explicitly includes it.
+- **Deferred** — intentionally undefined or postponed. Agents must not invent an implementation.
+
+Rules for interpretation:
+
+1. Implemented and Contracted sections are normative.
+2. Examples, visual descriptions, and design rationale do not override a stated contract.
+3. A future mechanic mentioned outside a Contracted section is not permission to implement it.
+4. If code and an Implemented contract disagree, the discrepancy must be reported and reconciled. Do not silently choose one.
+5. Balance constants in this document are authoritative defaults until deliberately revised.
+6. All progression requirements are based on state, completed actions, or numeric thresholds. Elapsed real time and fixed tick-wait gates are prohibited.
+7. Determinism, stable ordering, and mutation-free rejection are gameplay requirements as well as engineering requirements.
+8. New systems should be introduced through the progression structure in this document rather than exposed immediately.
+
+---
+
 ## 1. Concept
 
-A touch-friendly incremental game about operating a visibly artificial, voxel-based city simulation.
+Idle City is a touch-friendly incremental game about operating a visibly artificial, voxel-based city simulation.
 
-The player does not place individual buildings, roads, or citizens. Instead, the player occasionally places broad **district seeds** and purchases **simulation upgrades**. AI citizens follow daily schedules, developers react to demand, and construction bots continuously build, upgrade, convert, and connect the city.
+The player does not place individual buildings, roads, or citizens. The player uses two recurring actions:
+
+1. Place broad **district seeds** that influence where activity develops.
+2. Purchase **simulation research** that changes autonomous behavior.
+
+Citizens follow schedules. Developers react to demand. Construction projects reserve sites and assemble structures. Repeated travel creates movement corridors. The city expands through active simulation chunks rather than through a fixed maximum map.
 
 The central fantasy is:
 
 > Give a virtual society a few high-level incentives, then watch it organize itself into a functioning city.
 
-The city should be interesting to watch even when the player is not making decisions. Morning commutes, shop visits, deliveries, construction, relocations, and nighttime activity should produce a constant visual spectacle.
+The city must remain interesting to watch between decisions. Commutes, service visits, construction, queues, relocations, expansion, and redevelopment should create continuous visible consequences.
 
 ---
 
 ## 2. Design Priorities
 
-1. **Immediate visual satisfaction**  
-   Purchases should quickly cause visible movement, construction, or reorganization.
+1. **Immediate visible consequences**  
+   A purchase should cause a visible change in movement, construction, land use, or agent decisions.
 
-2. **Emergent behavior**  
-   City form should result from citizen schedules, demand, and developer decisions rather than fixed layouts.
+2. **Emergent city form**  
+   Layout should result from seeds, demand, access, citizen schedules, and developer decisions rather than fixed plans.
 
-3. **Low physics emphasis**  
-   The simulation uses discrete fixed steps. Movement is between graph nodes or voxel cells, with animation tweened between logical states.
+3. **Minimal micromanagement**  
+   The player does not draw roads, approve normal buildings, assign citizens, or tune numeric quantities.
 
-4. **High AI emphasis**  
-   Citizens and developers make most local decisions. Progress increasingly improves their planning ability.
+4. **Gradual conceptual progression**  
+   The game introduces one major system at a time. New systems remain hidden until their fixed prerequisites are met.
 
-5. **Minimal micromanagement**  
-   The player shapes broad spatial incentives and selects upgrades, but does not manage individual agents or buildings.
+5. **Meaningful run identity**  
+   Research depth, specialization choices, seed topology, procedural conditions, and Kernel loadouts should create different viable runs.
 
-6. **High player understanding**  
-   Important behavior must be visually explainable. The player should know what is wrong, why construction occurred, and how a purchase changed the city.
+6. **Deep paths beat shallow generalism in their domain**  
+   A generalist remains flexible, but high research ranks unlock capabilities that cannot be reproduced by buying many shallow upgrades.
 
-7. **Low art requirement**  
-   Citizens, vehicles, buildings, and construction effects should be built from simple voxel forms, icons, lights, and procedural animation.
+7. **High explainability**  
+   Important autonomous decisions expose plain-language reasons and relevant overlays.
 
-8. **Mouse- and touch-only controls**  
-   All actions use tapping, clicking, dragging, cards, and large buttons. No keyboard input or numeric amount controls are required.
+8. **Low physics emphasis**  
+   The authoritative simulation uses deterministic fixed logical steps. Rendering interpolates but never affects outcomes.
 
----
+9. **Scalability from the start**  
+   The world expands through chunks. Simulation and rendering work should scale with active entities, dirty chunks, and visible chunks rather than coordinate extent.
 
-## 3. The Two Player Actions
-
-The game is built around only two recurring actions.
-
-### 3.1 Place a District Seed
-
-A district seed is a player-placed influence point. It encourages a kind of activity nearby but does not directly place buildings.
-
-The three starting seed types are:
-
-- **Living** — encourages homes and population growth.
-- **Working** — encourages workplaces and job creation.
-- **Services** — encourages food, shopping, and basic leisure.
-
-The Step 2 simulation exposes all three kinds as domain values, but only Living and Working are currently unlocked. Services remains locked until service activities exist.
-
-Later upgrades may unlock additional specialized seeds:
-
-- Learning
-- Entertainment
-- Industry
-- Transit
-- Research
-
-A seed influences a broad radius. Developers decide the exact building types, sizes, and positions within that area.
-
-A Living seed near a Working seed may create a compact mixed neighborhood. Placing them far apart may create a commuter city. Several separated seed clusters may produce a polycentric city. Placing seeds in a line may create a linear city.
-
-This gives the player meaningful spatial influence without requiring zoning or road drawing.
-
-### 3.2 Buy a Simulation Upgrade
-
-The player spends Data to unlock one new capability or improve autonomous behavior.
-
-Examples:
-
-- Apartments
-- Mixed-use buildings
-- Buses
-- Education
-- Recreation
-- Delivery services
-- Better job matching
-- Better demand forecasting
-- Business relocation
-- Automatic redevelopment
-- Coordinated travel
-- Vertical construction
-
-Upgrades should usually change visible behavior rather than merely apply a hidden percentage bonus.
-
-Good upgrade:
-
-> Developers may replace small homes with apartments when local housing demand is high.
-
-Weak upgrade:
-
-> Housing output +10%.
-
-Numerical modifiers may support visible upgrades, but should not be the primary reward.
+10. **Mouse- and touch-only play**  
+    Core play requires no keyboard input, text entry, numeric steppers, or repeated plus/minus controls.
 
 ---
 
-## 4. Core Gameplay Loop
+## 3. Core Gameplay Loop
 
-1. Citizens follow their schedules.
-2. Their completed activities generate **Data**.
-3. Demand, congestion, or underuse becomes visible.
-4. The player chooses one purchase:
-   - place a district seed, or
-   - buy a simulation upgrade.
-5. Developers and citizens react.
-6. Construction, movement, and city structure visibly change.
-7. The improved city supports more citizens and more complex schedules.
-8. New problems and opportunities appear.
+1. Citizens attempt scheduled activities.
+2. Completed activities generate **Data**.
+3. Space, Access, Activity, demand, congestion, and underuse reveal the city’s current problems.
+4. The player chooses one action:
+   - place or relocate a district seed, or
+   - purchase a Core Protocol or research-track advancement.
+5. Developers, citizens, construction, and movement systems react.
+6. The city gains capacity, changes shape, or changes behavior.
+7. New scale creates a new problem.
+8. The player reaches fixed progression milestones.
+9. Late in the run, the player validates the city and recompiles the simulation for permanent metaprogression.
 
-A typical short session might look like this:
-
-1. The player opens the city during the morning commute.
-2. Many citizens travel across town for food after work.
-3. Red travel trails show that the western residential area lacks services.
-4. The purchase menu offers:
-   - Place Services Seed
-   - Research Buses
-   - Research Mixed-Use Buildings
-5. The player places a Services seed in the western district.
-6. Developers propose a grocery shop and café.
-7. Construction bots assemble both buildings.
-8. Nearby citizens alter their schedules.
-9. Travel distance falls, foot traffic rises, and new homes appear nearby.
-10. The resulting activity generates Data toward the next purchase.
-
-One simple decision should create a chain of autonomous consequences.
+A decision should create a chain of autonomous effects rather than a single isolated modifier.
 
 ---
 
-## 5. City Simulation
+## 4. Current Simulation Foundation
 
-## 5.1 Citizens
+### 4.1 Fixed-step authority — Implemented
 
-Citizens are discrete agents with:
+The simulation is authoritative and advances only through logical steps.
 
-- A home
-- A job or school
-- A daily schedule
-- A small set of needs
-- Preferred destinations
-- A current route
-- A limited memory of recent success or failure
+- Rendering frame rate does not affect simulation outcomes.
+- Citizens move by no more than one logical cell per simulation tick.
+- Random behavior uses explicit seeded state.
+- Simulation snapshots are detached and serializable.
+- Rejected commands do not mutate authoritative state.
 
-An early citizen schedule may be:
+### 4.2 Chunked world — Implemented
 
-1. Leave home.
-2. Travel to work.
-3. Work.
-4. Visit a food service.
-5. Return home.
-6. Sleep.
+The world uses signed logical coordinates divided into active chunks.
 
-Later upgrades add:
+- Inactive chunks are not part of ordinary simulation space.
+- Ordinary snapshots expose active-chunk summaries rather than a dense maximum rectangle.
+- Detailed demand cells are queried through bounded chunk or region requests.
+- Chunk ordering and demand-cell ordering are deterministic.
+- Future worlds may extend beyond `1000 × 1000` logical coordinates without allocating every cell in the bounding rectangle.
 
-- Education
-- Recreation
-- Social visits
-- Shopping
-- Remote work
-- Tourism
-- Household routines
+### 4.3 Building footprints and entrances — Implemented
 
-Citizens choose destinations using a simple utility score:
+Initial footprints are:
+
+| Building type | Footprint |
+|---|---:|
+| Home | `3 × 3` logical cells |
+| Workplace | `5 × 5` logical cells |
+
+Buildings occupy their complete footprint. Citizens route to valid exterior entrance cells rather than to blocked interiors.
+
+Capacity is an independent balance value. Footprint area does not automatically determine capacity.
+
+### 4.4 Demand — Implemented
+
+The simulation exposes Living, Working, and Services demand.
+
+Demand:
+
+- Is normalized and deterministic.
+- Uses aggregate shortage, local saturation, Access pressure, complementary uses, and matching district-seed influence.
+- Is stored and recalculated by affected active chunks.
+- Uses stable chunk summaries in ordinary snapshots.
+- Uses detached bounded detail queries for cell-level overlays and tests.
+
+### 4.5 Developer projects — Implemented foundation
+
+Developer scoring is deterministic and currently supports homes and workplaces.
+
+The implemented normalized score is:
+
+```text
+project_score =
+    0.30 × local_matching_demand
+  + 0.35 × matching_seed_influence
+  + 0.10 × complementary_use
+  + 0.10 × entrance_accessibility
+  + 0.15 × expected_access_improvement
+  - 0.15 × same_use_saturation
+  - 0.05 × construction_cost
+```
+
+The score is clamped to `[0, 1]` and rounded to six decimal places.
+
+Candidate tie-breaking is:
+
+1. Higher score.
+2. Higher matching seed influence.
+3. Higher expected Access improvement.
+4. Lower footprint `y`.
+5. Lower footprint `x`.
+6. Stable building-type order.
+7. Stable entrance order.
+
+No randomness is used in the score or tie-breaker.
+
+### 4.6 Construction — Implemented
+
+Projects reserve their complete footprint and progress through:
+
+1. Survey
+2. Blueprint
+3. Foundation
+4. Frame
+5. Completion
+
+Default phase durations are:
+
+| Phase | Logical ticks |
+|---|---:|
+| Survey | 2 |
+| Blueprint | 3 |
+| Foundation | 4 |
+| Frame | 6 |
+| Completion | 1 |
+
+Total default construction duration is 16 logical ticks.
+
+Future visual sub-stages may exist inside renderer animation, but they must not create additional authoritative construction phases unless this contract is revised.
+
+---
+
+## 5. District Seeds
+
+### 5.1 Seed catalog
+
+The complete planned catalog contains exactly six district seed types.
+
+| Contract ID | Seed | Status | Base cost | Unlock |
+|---|---|---|---:|---|
+| `SEED-LIVING` | Living | Implemented | 10 Data | Bootstrap |
+| `SEED-WORKING` | Working | Implemented | 12 Data | Bootstrap |
+| `SEED-SERVICES` | Services | Implemented domain; locked behavior | 20 Data | Services Core |
+| `SEED-LEARNING` | Learning | Contracted | 40 Data | Choose Learning specialization |
+| `SEED-INDUSTRY` | Industry | Contracted | 45 Data | Choose Industry specialization |
+| `SEED-ENTERTAINMENT` | Entertainment | Contracted | 40 Data | Choose Entertainment specialization |
+
+There are no Transit or Research district seeds.
+
+- Transit emerges from route usage plus Access research.
+- Research-oriented development emerges from Learning, Working, and later specialization interactions.
+- Mixed-use development emerges from overlapping activity influence plus Space research.
+
+### 5.2 Shared seed contract
+
+Every district seed:
+
+- Has a stable authoritative ID.
+- Has one type, one anchor cell, and one placement tick.
+- Must be placed in an active buildable chunk.
+- Must not share its anchor cell with another seed.
+- Does not directly place a building.
+- Adds only matching-type influence.
+- Uses deterministic influence, rounding, and iteration order.
+- Consumes no RNG when placed, moved, or rejected.
+- Appears in the Seed Influence overlay.
+- Exposes a plain-language explanation of the uses it encourages.
+
+Different seed types may overlap.
+
+Same-type influences add together and cap at `1`.
+
+### 5.3 Influence — Implemented
+
+The current seed influence uses Manhattan distance.
+
+For a matching seed:
+
+```text
+single_seed_influence =
+    max(0, 1 - manhattan_distance / influence_radius)
+```
+
+Matching contributions add, cap at `1`, and round to six decimal places.
+
+The configured radius is authoritative simulation balance data. UI previews must read the authoritative value rather than duplicate it.
+
+### 5.4 Gentle exponential placement cost — Contracted
+
+The cost of the next seed of a type is:
+
+```text
+placement_cost(type) =
+    ceil(base_cost(type) × 1.25 ^ active_same_type_seed_count)
+```
+
+The first seed uses exponent `0`.
+
+Examples for Living:
+
+| Existing Living seeds | Next Living cost |
+|---:|---:|
+| 0 | 10 |
+| 1 | 13 |
+| 2 | 16 |
+| 3 | 20 |
+| 4 | 25 |
+| 5 | 31 |
+| 6 | 39 |
+
+Only active seeds of the same type affect the exponent. Different seed types do not increase one another’s cost.
+
+The existing fixed 10/12/20 costs represent the first seed of each implemented type.
+
+### 5.5 Placement rejection
+
+A seed-placement command rejects when:
+
+- The type is locked.
+- The anchor is outside active space.
+- The anchor is not buildable.
+- Another seed already occupies the anchor.
+- The player lacks Data.
+- Another explicit future placement rule fails.
+
+A rejected command changes none of:
+
+- Data
+- seed collection
+- ID counters
+- RNG state
+- demand revisions
+- snapshots
+- determinism hash
+
+### 5.6 Seed relocation — Contracted
+
+Seed relocation unlocks with Traffic Analysis.
+
+Relocation:
+
+- Is an atomic simulation command.
+- Keeps the seed’s stable ID.
+- Validates the destination using placement rules.
+- Does not refund the original placement cost.
+- Costs:
+
+```text
+relocation_cost(type) =
+    ceil(
+      base_cost(type)
+      × 1.25 ^ max(0, active_same_type_seed_count - 1)
+      × 0.50
+    )
+```
+
+- Removes old influence and adds new influence in the same state transition.
+- Does not create a moment when both anchors are active.
+- Is mutation-free on rejection.
+
+Seeds cannot be deleted for a refund.
+
+---
+
+## 6. Citizens, Buildings, and Movement
+
+### 6.1 Citizen foundation
+
+Citizens have:
+
+- A stable ID.
+- A home.
+- A job, school, or other primary assignment when the relevant system exists.
+- A current activity.
+- A route and route progress.
+- Activity timers.
+- Needs unlocked by progression.
+- Limited deterministic state needed for destination choice and schedule adaptation.
+
+The simulation does not expose arbitrary personality statistics before they affect an implemented decision.
+
+### 6.2 Activity progression
+
+Activities unlock in this order:
+
+| Core stage | Activities introduced |
+|---|---|
+| Bootstrap | Home, commute, work |
+| Services | Eat and basic service use |
+| Traffic Analysis | Waiting and route-delay response |
+| Transit | Walk-to-stop, wait, ride, transfer |
+| Specialization | Learn, Produce/Deliver, or Recreate depending on chosen specialization |
+| Verticality | Vertical circulation and multi-level destinations |
+| Megacity Coordination | Coordinated multi-stop plans and predictive adaptation |
+
+A system must not create demand for an activity before a valid destination and completion path exist.
+
+### 6.3 Destination choice
+
+When multiple valid destinations exist, citizens use a deterministic utility score with explicit weights:
 
 ```text
 destination_score =
     need_value
   + preference
   + quality
-  - travel_cost
+  - route_cost
   - expected_wait
   - price_cost
 ```
 
-The score need not be exposed numerically to the player. The game should explain the main reason for a choice in plain language.
+Each implemented activity must define:
 
-## 5.2 Developers
+- Candidate destinations.
+- Normalization of every term.
+- Weights.
+- Tie-breaking.
+- Failure behavior.
+- Player-facing primary reason.
 
-Developers periodically evaluate unmet demand and propose projects.
+Agents must not invent a generic all-purpose destination planner without an explicit task.
 
-A simple project score may be:
+### 6.4 Buildings
 
-```text
-project_score =
-    local_demand
-  + seed_influence
-  + nearby_activity
-  + access
-  + complementary_uses
-  - construction_cost
-  - competition
-  - congestion
-```
+Building categories are unlocked by research and specialization.
 
-Developers handle:
+Initial implemented categories:
 
-- Exact building placement
-- Building type selection
-- Building size
-- Construction timing
-- Expansion
-- Conversion
-- Demolition
-- Redevelopment
+- Home
+- Workplace
 
-The player never approves ordinary projects.
+Contracted categories:
 
-## 5.3 Buildings
-
-Buildings use modular voxel shells and a small number of functional types.
-
-Starting types:
-
-- Small home
 - Apartment
-- Workshop
-- Office
-- Food shop
-- General service building
+- Larger workplace
+- Food service
+- General service
+- Mixed-use building
+- Learning facility
+- Industrial facility
+- Entertainment venue
+- Vertical variants
+- Transit-support structures
 
-Later types can remain combinations of the same modules rather than requiring unique art.
+Each building contract must define:
 
-Buildings may autonomously:
+- Footprint
+- Entrance rules
+- Capacity
+- Compatible activities
+- Developer eligibility
+- Construction cost normalization
+- Upgrade or conversion prerequisites
+- Occupancy rules
+- Explanation text
 
-- Expand upward
-- Add capacity
-- Change use
-- Merge with adjacent lots
-- Become mixed-use
-- Shut down
-- Be replaced
+### 6.5 Movement and infrastructure
 
-When a major change occurs, the game briefly displays the reason:
+The player does not draw roads.
 
-> Upgrading to apartments because 38 citizens are seeking nearby housing.
-
-## 5.4 Paths and Transit
-
-The player does not place roads.
-
-Citizens initially travel along direct grid paths. Repeated travel increases a route's usage score. Infrastructure upgrades automatically emerge:
+Movement infrastructure evolves through:
 
 ```text
 informal route
 → walkway
-→ street
-→ bus route
+→ street or service corridor
+→ bus corridor
 → high-capacity transit
 ```
 
-The upgrade depends on traffic type and researched technology.
+Progression rules:
 
-Examples:
-
-- Dense pedestrian traffic creates wider walkways.
-- Delivery traffic encourages service streets.
-- Repeated long commutes create bus demand.
-- Extremely busy routes may later become rail or portal links.
-
-This makes the transport network a visible result of citizen behavior and seed placement.
-
-## 5.5 Construction
-
-Construction is a major visual reward.
-
-A project progresses through discrete states:
-
-1. Survey
-2. Holographic blueprint
-3. Foundation
-4. Voxel frame
-5. Functional modules
-6. Exterior completion
-7. Occupancy
-
-Construction bots tween between logical positions, carry glowing voxel blocks, and assemble structures layer by layer.
-
-Large projects should be staged long enough to be enjoyable to watch without slowing progression excessively.
+- Route usage is measured before infrastructure upgrades exist.
+- Congestion-aware route choice requires Access research.
+- Immediate citizen conflict resolution uses deterministic movement reservations, not global permanent blocking.
+- Transit corridors require both qualifying traffic and the relevant Core/Access research.
+- High-capacity transit cannot appear before Access rank 5.
 
 ---
 
-## 6. Player Understanding
+## 7. Player Understanding
 
-The simulation must remain understandable despite autonomous behavior.
+### 7.1 Primary indicators
 
-## 6.1 Three Primary City Indicators
+The main interface exposes only:
 
-The main interface tracks only three city-wide concerns.
+- **Space** — whether sufficient compatible capacity exists.
+- **Access** — whether citizens can reach activities efficiently.
+- **Activity** — whether citizens and buildings are productively used.
 
-### Space
+All three are normalized to `[0, 1]`.
 
-Are enough homes, jobs, and services available?
+Detailed diagnostics may exist in inspection panels and development tools, but progression and explanations should use these three terms consistently.
 
-Visible signs:
+### 7.2 Overlays
 
-- Demand icons above crowded areas
-- Citizens failing to find destinations
-- Full buildings
-- Construction interest
+Overlays unlock only with their mechanic:
 
-### Access
+| Overlay | Unlock |
+|---|---|
+| Space demand | Bootstrap |
+| Seed influence | First seed placement |
+| Building activity | First completed building |
+| Travel flow | Traffic Analysis |
+| Transit network | Transit |
+| Specialization demand | Matching specialization |
+| Redevelopment forecast | Space 6 or Activity 5, as applicable |
 
-Can citizens reach scheduled activities efficiently?
+Only one major overlay is active at a time.
 
-Visible signs:
+### 7.3 Explanations
 
-- Long red travel trails
-- Queues
-- Crowded paths
-- Missed activities
-
-### Activity
-
-Are buildings and citizens being productively used?
-
-Visible signs:
-
-- Dim underused buildings
-- Empty workplaces
-- Idle citizens
-- Failed businesses
-
-Detailed metrics may exist in inspection panels and development builds, but the main game should emphasize these three concepts.
-
-The first simulation slice exposes each indicator as a deterministic normalized value from `0` to `1`:
-
-- **Space** is the smaller of housing-capacity coverage and workplace-capacity coverage.
-- **Access** compares the average trip duration with the longest possible direct grid trip. Before a trip completes, the planned home-to-work distance is used.
-- **Activity** is the share of citizens currently working. Home time is scheduled rest, while commuting is travel rather than productive building use.
-
-The current slice generates Data when a citizen completes a work activity. Each completed activity contributes one activity unit multiplied by a bounded efficiency factor derived from the three indicators. A struggling city still receives at least half value, and generation is rounded to six decimal places so headless summaries remain compact and reproducible.
-
-The simulation also publishes a derived spatial demand field for the three starting activity kinds: Living, Working, and Services. The signed world is partitioned into active chunks; the ordinary snapshot exposes aggregate totals and stable chunk summaries, while bounded demand-chunk or demand-region queries return detached normalized cells in row-major `(y, x)` order. The field uses housing and workplace capacity shortage, local building saturation, travel pressure from Access, nearby complementary uses, and accepted district-seed influence. Seed influence uses a configured bounded Manhattan radius, is dirty-tracked by affected active chunks, and is rounded to six decimal places before it is added to a cell's base demand. Inactive chunks do not contribute snapshot cells.
-
-## 6.2 Tap-to-Explain
-
-Tapping an object opens a short explanation.
+Inspection panels show the primary reason, not an unexplained raw score.
 
 Citizen:
 
 - Current activity
 - Next destination
-- Why that destination was selected
-- Current unmet need
-- Follow button
+- Primary destination reason
+- Unmet need
+- Current delay or wait
+- Follow control
 
 Building:
 
 - Purpose
-- Occupancy
-- Current demand
-- Why it was built or upgraded
+- Occupancy and capacity
+- Relevant local demand
+- Why it was built, upgraded, moved, or converted
 - Recent activity
 
 Seed:
 
 - Type
-- Influence area
-- Buildings encouraged
-- Citizens affected
+- Current placement cost for another seed of that type
+- Influence radius
+- Matching uses encouraged
+- Local influence strength
 
 Route:
 
-- Current traffic
-- Average trip
-- Next possible infrastructure upgrade
+- Usage
+- Congestion
+- Average trip contribution
+- Current infrastructure class
+- Next eligible upgrade and missing prerequisite
 
-## 6.3 Visual Overlays
+Research:
 
-The player may select one overlay at a time:
-
-- Space demand
-- Travel flow
-- Building activity
-- Seed influence
-
-These are enough for early play. More specialized overlays should only be added when the corresponding mechanics exist.
-
-## 6.4 Event Summaries
-
-The game periodically calls out meaningful emergent changes:
-
-- A second neighborhood center has formed.
-- A new service cluster shortened 54 daily trips.
-- The northern district is losing residents because jobs are too distant.
-- A busy walkway has upgraded into a bus corridor.
-- Developers are converting unused offices into housing.
-
-These summaries help players understand the city's history without reading logs.
-
----
-
-## 7. Progression
-
-Progression adds one concept at a time.
-
-## Stage 1: Seed Settlement
-
-Available:
-
-- Living seed
-- Working seed
-- Services seed (locked until service activities exist)
-- Small buildings
-- Walking
-- Basic citizen schedules
-
-Purpose:
-
-- Teach how seed placement changes autonomous construction.
-
-## Stage 2: Busy Town
-
-Unlocks:
-
-- Apartments
-- Recreation
-- Delivery agents
-- Improved path upgrades
-- Better job matching
-
-Visible change:
-
-- More traffic
-- Taller buildings
-- Specialized trips
-- Denser neighborhoods
-
-## Stage 3: Connected City
-
-Unlocks:
-
-- Buses
-- Mixed-use buildings
-- Education
-- Business relocation
-- Automatic building conversion
-
-Visible change:
-
-- Transit flows
-- Neighborhood specialization
-- More schedule variety
-- Active redevelopment
-
-## Stage 4: Vertical Metropolis
-
-Unlocks:
-
-- Towers
-- Elevators
-- Multi-level paths
-- Advanced demand forecasting
-- Coordinated construction
-
-Visible change:
-
-- Vertical growth
-- Skybridges
-- Layered movement
-- Major construction projects
-
-## Stage 5: Autonomous Megacity
-
-Unlocks:
-
-- High-capacity transit
-- Satellite districts
-- Predictive redevelopment
-- Advanced citizen planning
-- Specialized city sectors
-
-Visible change:
-
-- Multiple city centers
-- Large synchronized flows
-- Self-correcting neighborhoods
-- Continuous large-scale redevelopment
+- Exact mechanical effect
+- Prerequisites
+- Base or delayed cost
+- Visible consequence
+- Whether it resets on recompilation
 
 ---
 
 ## 8. Data Economy
 
-The player manages one resource: **Data**.
+### 8.1 Single run resource
 
-Data is earned when citizens successfully complete activities:
+The player manages one run resource: **Data**.
 
-- Work
-- Eat
-- Shop
-- Learn
-- Socialize
-- Travel efficiently
-- Use newly unlocked systems
+The simulation may internally model costs or viability, but the player does not directly manage money, materials, taxes, or construction budgets.
 
-Data income should be influenced by both scale and effectiveness:
+### 8.2 Generation
+
+Data is generated by completed activities.
 
 ```text
-data_per_tick =
-    completed_activities
-  × activity_value
+data_generated =
+    completed_activity_value
   × city_efficiency_factor
 ```
 
-The efficiency factor should be bounded so a temporarily inefficient city still progresses.
+The efficiency factor is derived from Space, Access, and Activity and is bounded so a weak city continues to progress.
 
-The simulation snapshot also reports accumulated Data, Data generated during the most recent tick, completed work activities, average trip duration, and detached district seeds. These values are authoritative simulation state and are reused by the HUD and balance runner.
+Every activity contract must define its base Data value.
 
-The authoritative Step 2 seed costs are 10 Data for Living, 12 Data for Working, and 20 Data for Services. Living and Working are unlocked in this slice; Services remains locked until service activities exist. A placement command spends its cost once only after all validation succeeds.
+Implemented work generation remains authoritative until revised by an explicit economy task.
 
-The city may internally simulate money, building costs, and business viability, but the player does not directly manage those systems.
+### 8.3 Spending
 
-The purchase menu should usually present three or four affordable or near-affordable choices. It should avoid long technology trees and quantity selectors.
+Data is spent on:
+
+- District seed placement
+- District seed relocation
+- Core Protocols
+- Research-track advancements
+- Explicit future run actions approved by this document
+
+The player never buys arbitrary quantities through numeric selectors.
+
+### 8.4 Research menu size
+
+The Research screen shows at most four primary purchase cards:
+
+- The next eligible Core Protocol, when available.
+- The next relevant Space purchase.
+- The next relevant Access purchase.
+- The next relevant Activity purchase.
+
+Additional delayed research is accessed through one secondary “Available Research” view. It must not overwhelm the default screen.
 
 ---
 
-## 9. Spatial Variety Between Runs
+## 9. Research and Strict Progression
 
-Replay variety comes primarily from seed placement and procedural starting conditions.
+### 9.1 Progression model
 
-## 9.1 Procedural Map Variation
+Progression has two layers:
 
-A new run may vary:
+1. **Core Protocols** introduce major systems in a fixed order.
+2. **Research tracks** let the player deepen Space, Access, or Activity.
 
-- Starting platform shape
-- Existing obstacles
-- Elevation
-- Buildable gaps
-- Initial resource or activity nodes
-- Starting population distribution
-- Initial seed position
+Core order is fixed. Research depth is player-directed.
 
-Maps should remain readable and not require manual terrain editing.
+There are six Core tiers after Bootstrap.
 
-## 9.2 Seed Availability
+| Tier | Core Protocol | New major concept |
+|---:|---|---|
+| 0 | Bootstrap | Living, Working, homes, workplaces, walking, work Data |
+| 1 | Services Core | Needs and destination selection |
+| 2 | Traffic Analysis | Route usage, congestion visibility, seed relocation |
+| 3 | Transit Core | Autonomous transit corridors and multimodal trips |
+| 4 | Specialization Core | First specialized activity and seed |
+| 5 | Vertical Simulation | Second specialization and vertical development |
+| 6 | Megacity Coordination | Predictive coordination and recompilation eligibility |
 
-The order in which specialized seed types appear may vary between runs.
+Core Protocols cannot be skipped in a normal run.
 
-One city may gain Learning early. Another may gain Transit or Entertainment first. This changes development pressure without requiring a large random technology tree.
+### 9.2 Core costs
 
-## 9.3 Player-Created Topology
+| Core | Data cost |
+|---|---:|
+| Services Core | 50 |
+| Traffic Analysis | 150 |
+| Transit Core | 450 |
+| Specialization Core | 1,200 |
+| Vertical Simulation | 3,200 |
+| Megacity Coordination | 8,000 |
 
-The player indirectly creates the city shape through seed placement.
+Kernel effects may reduce effective cost. Effective cost is always rounded up and cannot fall below 50% of the table value.
 
-Examples:
+### 9.3 Core milestones
 
-- Compact cluster
-- Long commuter corridor
-- Several independent centers
-- Dense vertical core
-- Ring-shaped development
-- Satellite neighborhoods
+Core eligibility requires all listed state conditions.
 
-No explicit topology selection is necessary.
+#### Services Core
 
-## 9.4 Expansion Choice
+- At least one Living seed placed.
+- At least one Working seed placed.
+- Population at least 20.
+- At least 40 completed work activities.
 
-Most expansion is automatic. At occasional milestones, the player makes one simple choice:
+#### Traffic Analysis
+
+- Services Core purchased.
+- At least one Services seed placed.
+- At least 30 completed service activities.
+- Population at least 40.
+- At least 100 completed trips.
+
+#### Transit Core
+
+- Traffic Analysis purchased.
+- At least 300 completed trips.
+- At least one route edge reaches 25 traversals within the authoritative traffic-history window.
+- Population at least 75.
+
+#### Specialization Core
+
+- Transit Core purchased.
+- At least 100 completed transit rides.
+- Population at least 150.
+- At least 10 occupied buildings.
+
+#### Vertical Simulation
+
+- Specialization Core purchased.
+- At least 100 activities from the first specialization.
+- Population at least 300.
+- At least 20 occupied buildings.
+- At least 3 chunk activations beyond the initial active region.
+
+#### Megacity Coordination
+
+- Vertical Simulation purchased.
+- Population at least 600.
+- At least 1,500 total completed activities.
+- At least 35 occupied buildings.
+- At least 6 chunk activations beyond the initial active region.
+
+No Core milestone may require:
+
+- A fixed number of elapsed ticks.
+- Real-world time.
+- Keeping the game open.
+- Owning a system for a minimum duration.
+
+Future Kernel effects may reduce numeric thresholds. A reduced threshold is rounded up.
+
+### 9.4 Track focus and delayed availability
+
+Each Core tier from 1 through 6 unlocks one new rank in each track.
+
+When a Core Protocol is purchased:
+
+1. The player selects one eligible track as the tier’s **Research Focus**.
+2. That tier’s rank in the chosen track receives **Focused** pricing.
+3. The same tier’s ranks in the other two tracks receive **Delayed** pricing.
+4. All three ranks remain available for the rest of the run.
+5. A rank still requires the prior rank in its track.
+6. A delayed rank may be purchased at any later point after its prerequisite is owned.
+7. Focus status is permanent for that rank during the run.
+
+This allows catch-up while strongly rewarding a deep path.
+
+### 9.5 Track costs
+
+Base costs by rank:
+
+| Rank | Base cost |
+|---:|---:|
+| 1 | 30 |
+| 2 | 90 |
+| 3 | 250 |
+| 4 | 700 |
+| 5 | 1,800 |
+| 6 | 4,500 |
+
+Focused cost:
+
+```text
+focused_cost(rank) = base_cost(rank)
+```
+
+Delayed cost:
+
+```text
+delayed_cost(rank) = ceil(base_cost(rank) × 2.50)
+```
+
+Kernel effects may reduce both costs. Effective research cost is rounded up and cannot fall below 50% of the applicable focused or delayed value.
+
+The focused rank from the current tier must be purchased before the next Core Protocol can be purchased.
+
+Delayed ranks are optional.
+
+### 9.6 Space track
+
+| Rank | Contract ID | Upgrade | Fixed effect |
+|---:|---|---|---|
+| 1 | `SPACE-1` | Apartments | Developers may construct dense residential buildings when local Living demand is at least `0.60` and expected occupancy is at least `75%`. |
+| 2 | `SPACE-2` | Adaptive Density | Residential and workplace candidate generation may choose small or dense forms based on demand, saturation, and Access instead of using one form per type. |
+| 3 | `SPACE-3` | Mixed Use | Developers may construct compatible Living/Services or Working/Services mixed-use buildings where both matching local demands are at least `0.50`. |
+| 4 | `SPACE-4` | Vertical Neighborhoods | Dense and mixed-use buildings may add vertical capacity modules instead of requiring a new footprint when local demand is at least `0.70`. |
+| 5 | `SPACE-5` | Satellite Development | Developer evaluation may begin a disconnected satellite cluster in an activated region when central buildable capacity is constrained and a specialization or service anchor exists. |
+| 6 | `SPACE-6` | Predictive Redevelopment | Developers may coordinate conversion, merging, and replacement using forecast demand and Access rather than responding only after failure. |
+
+### 9.7 Access track
+
+| Rank | Contract ID | Upgrade | Fixed effect |
+|---:|---|---|---|
+| 1 | `ACCESS-1` | Better Job Matching | New citizens choose compatible home/work assignments using route cost, then stable building ID, rather than first available capacity. |
+| 2 | `ACCESS-2` | Congestion-Aware Routing | Long-range route cost includes bounded historical congestion. Current citizen positions remain local reservation concerns, not static global obstacles. |
+| 3 | `ACCESS-3` | Coordinated Transfers | Citizens may combine walking and transit legs and evaluate transfer wait in destination cost. |
+| 4 | `ACCESS-4` | Express Corridors | High-use transit corridors may skip local stops and form a route hierarchy when both local and express demand thresholds are met. |
+| 5 | `ACCESS-5` | High-Capacity Transit | Qualifying express corridors may upgrade to high-capacity transit with greater throughput and higher construction requirements. |
+| 6 | `ACCESS-6` | Predictive Network Planning | The simulation may reserve or upgrade corridors based on forecast movement demand before sustained gridlock occurs. |
+
+### 9.8 Activity track
+
+| Rank | Contract ID | Upgrade | Fixed effect |
+|---:|---|---|---|
+| 1 | `ACTIVITY-1` | Schedule Chaining | A citizen may travel directly from one completed out-of-home activity to the next valid activity instead of always returning home. |
+| 2 | `ACTIVITY-2` | Staggered Schedules | Citizens with repeated delay may choose an earlier or later deterministic departure band. |
+| 3 | `ACTIVITY-3` | Business Relocation | Persistently underused service or specialized businesses may relocate to a better valid site instead of only closing. |
+| 4 | `ACTIVITY-4` | Multi-Stop Plans | Citizens may form deterministic plans containing up to three out-of-home destinations before returning home. |
+| 5 | `ACTIVITY-5` | Demand Forecasting | Developers and businesses may use forecast activity demand when evaluating capacity and location. |
+| 6 | `ACTIVITY-6` | Autonomous Coordination | Schedules, destination capacity, construction timing, and service availability may coordinate through a shared forecast horizon. |
+
+### 9.9 Research-depth intent
+
+Expected run profiles include:
+
+- `6/0/0` specialist
+- `5/1/0` deep specialist
+- `4/1/1` focused
+- `3/3/0` hybrid
+- `2/2/2` generalist
+
+A specialist pays focused price for its defining ranks and reaches transformative behavior earlier in its domain.
+
+A generalist may purchase all available ranks but pays delayed cost for most of them.
+
+No track may be replaced by a generic percentage-only ladder.
+
+---
+
+## 10. Specializations
+
+### 10.1 Choice schedule
+
+At Specialization Core:
+
+- Choose exactly one of Learning, Industry, or Entertainment.
+- The matching seed, demand, buildings, and activity unlock.
+- The choice is permanent for the run.
+
+At Vertical Simulation:
+
+- Choose one of the two remaining specializations.
+- The matching systems unlock.
+- The third specialization remains unavailable for that run.
+
+A normal run never unlocks all three specializations.
+
+### 10.2 Learning specialization
+
+Unlocks:
+
+- Learning seed.
+- Learning demand.
+- Learn activity.
+- School and campus development.
+- Education completion Data.
+- Skilled-job compatibility for future job contracts.
+
+### 10.3 Industry specialization
+
+Unlocks:
+
+- Industry seed.
+- Industry demand.
+- Produce and Deliver activities.
+- Workshop, production, and logistics development.
+- Freight or delivery traffic.
+- Production completion Data.
+
+### 10.4 Entertainment specialization
+
+Unlocks:
+
+- Entertainment seed.
+- Entertainment demand.
+- Recreate activity.
+- Venue and entertainment-complex development.
+- Evening and off-peak travel patterns.
+- Recreation completion Data.
+
+---
+
+## 11. Expansion
+
+The world expands by activating chunks.
+
+- Activation is authoritative and deterministic.
+- Only active chunks contain ordinary buildable or walkable space.
+- Expansion allocates only activated chunks.
+- A distant coordinate does not allocate the rectangle between it and existing chunks.
+
+At defined milestones the player may choose:
 
 - **Expand Outward**
 - **Expand Upward**
-
-Later, a third option may appear:
-
 - **Start Satellite District**
 
-This preserves occasional macro-level authorship without adding a full land-allocation system.
+The exact Data cost and automatic-expansion thresholds remain Deferred until chunk activation, developer expansion, and population growth are balanced together.
+
+Agents must not invent those costs before that task.
 
 ---
 
-## 10. Prestige
+## 12. Recompilation and Permanent Progression
 
-Prestige means archiving the current simulation and starting a new city with one inherited capability.
+### 12.1 Player-facing name
 
-A run ends when the city reaches a clear milestone, such as:
+The prestige action is called **Recompile Simulation**.
 
-- A target population
-- A target simulation level
-- Completion of a major city core
-- A late-game research threshold
+### 12.2 Availability
 
-The archived city remains viewable as a snapshot or short time-lapse.
+Recompilation is manual and never forced.
 
-At prestige, the player selects one permanent trait from a small set.
+It becomes available when:
 
-Examples:
+- Megacity Coordination is purchased.
+- The prestige-scaled population target is met.
+- The prestige-scaled completed-activity target is met.
+- The prestige-scaled active-chunk target is met.
+- Space is at least `0.65`.
+- Access is at least `0.65`.
+- Activity is at least `0.60`.
+- One Validation objective is complete.
+- The simulation has no critical invalid or permanently stalled state.
 
-- Start with buses unlocked.
-- Developers react faster to demand.
-- Paths upgrade with less traffic.
-- Residential buildings may grow one level taller.
-- Service buildings attract citizens from farther away.
-- Begin with an additional district seed.
-- Citizens adapt schedules more quickly.
-- Construction bots work in larger teams.
+There is no elapsed-time or tick-count requirement.
 
-Traits should create different early strategies rather than only increase Data income.
+### 12.3 Prestige-scaled targets
 
-At later prestige levels, the player may carry two traits. A large loadout system is unnecessary unless later playtesting shows a need.
+Let `P` be the current Prestige Level before recompiling.
+
+```text
+population_target(P) =
+    600 + 250P + 50P²
+
+completed_activity_target(P) =
+    1,500 + 1,000P + 200P²
+
+active_chunk_target(P) =
+    16 + 2P
+```
+
+### 12.4 Validation objectives
+
+The player completes one Validation per run.
+
+#### Space Validation
+
+- Space at least `0.80`.
+- Housing and job capacity each at least `125%` of population.
+- At least `ceil(10 × (1 + 0.10P))` occupied dense, mixed-use, vertical, or satellite buildings.
+
+#### Access Validation
+
+- Access at least `0.80`.
+- At least `ceil(500 × (1 + 0.15P))` completed transit rides.
+- No critical route remains above the contracted severe-congestion threshold.
+
+#### Activity Validation
+
+- Activity at least `0.75`.
+- Occupied-building ratio at least `0.80`.
+- At least `ceil(500 × (1 + 0.15P))` completed specialization activities.
+
+### 12.5 Reset boundary
+
+Recompilation resets:
+
+- World and active chunks
+- Citizens
+- Buildings and projects
+- District seeds
+- Data
+- Core Protocols
+- Research ranks and focus selections
+- Specializations
+- Route and congestion history
+- Run-specific counters and milestones
+
+Recompilation preserves:
+
+- Prestige Level
+- Kernel Capacity
+- Unspent Kernel Points
+- Permanently purchased Kernel Modules
+- Permanent Kernel Optimization ranks
+- Cosmetics
+- Settings and accessibility preferences
+
+The game is not required to preserve past city summaries, screenshots, time-lapses, or replay archives.
+
+### 12.6 Reward every prestige
+
+Every recompilation grants:
+
+- Prestige Level `+1`
+- Kernel Capacity `+1`
+- One unrestricted Kernel Point
+- One Validation Kernel Point that must be spent in the selected Validation branch
+- One additional unrestricted Kernel Point when the new Prestige Level is divisible by `5`
+
+### 12.7 Kernel Matrix
+
+The Kernel Matrix has four branches:
+
+- Bootstrap
+- Space
+- Access
+- Activity
+
+Major Kernel Modules:
+
+- Are purchased permanently.
+- Cost one Kernel Point unless stated otherwise.
+- Must be equipped before a run.
+- Consume Kernel Capacity.
+- Cannot be changed during a run.
+- May be rearranged freely before a new run.
+
+### 12.8 Repeatable Kernel Optimizations
+
+After purchasing all six major modules in a branch, that branch unlocks repeatable permanent optimizations.
+
+Repeatable optimizations:
+
+- Cost one Kernel Point per rank.
+- Are always active.
+- Do not consume Kernel Capacity.
+- Have diminishing returns.
+- Never reach their asymptotic floor at a finite rank.
+
+Representative contracted formulas:
+
+```text
+core_cost_factor(r) =
+    0.50 + 0.50 × 0.95^r
+
+construction_duration_factor(r) =
+    0.50 + 0.50 × 0.95^r
+
+seed_growth_factor(r) =
+    1.15 + 0.10 × 0.95^r
+
+core_threshold_factor(r) =
+    0.60 + 0.40 × 0.95^r
+
+research_cost_factor(r) =
+    0.50 + 0.50 × 0.95^r
+
+validation_count_factor(r) =
+    0.60 + 0.40 × 0.95^r
+```
+
+All factors are rounded to six decimal places before use.
 
 ---
 
-## 11. Touch-Only Interface
+## 13. Touch-Only Interface
 
 Persistent controls:
 
-- **Build** — available district seeds
-- **Research** — upgrade cards
-- **City** — three main indicators and milestones
-- **View** — overlays and camera focus
-- **Speed** — pause, normal, fast, very fast
+- **Build**
+- **Research**
+- **City**
+- **View**
+- **Speed**
 
-### Seed placement
+The Research screen presents:
 
-1. Tap Build.
-2. Tap a seed card.
-3. Tap a valid city location.
-4. View its influence preview.
-5. Tap Confirm or Cancel.
+- Next Core Protocol or its missing requirements.
+- Current-tier Space option.
+- Current-tier Access option.
+- Current-tier Activity option.
 
-### Research
+Delayed research appears in a secondary view.
 
-Research appears as three or four large cards. Each card includes:
-
-- Name
-- One-sentence effect
-- Visible consequence
-- Data cost
-- Purchase button
-
-### Camera
-
-- Drag to rotate
-- Pinch or wheel to zoom
-- Two-finger drag or middle-drag to pan
-- Tap to inspect
-- Double-tap to follow
-- Tap empty space to close panels
-
-No action requires typing or repeated plus/minus inputs.
+Recompile requires explicit confirmation because it resets the run.
 
 ---
 
-## 12. Visual Direction
+## 14. Balance-Test Apparatus
 
-The city should unmistakably resemble a virtual environment.
+The headless runner must test:
 
-Visual elements:
+- Seed type and placement value
+- Exponential seed-cost pressure
+- Focused versus delayed research
+- Specialist, hybrid, and generalist paths
+- Core milestone pacing
+- Specialization combinations
+- Recompilation target scaling
+- Kernel module combinations
+- Repeatable optimization progression
+- Recovery from poor layouts
+- Long-run determinism and invariants
 
-- Floating voxel terrain in a dark or abstract void
-- Visible grid lines
-- Holographic construction previews
-- Glowing route traces
-- Voxel citizens with state lights
-- Buildings briefly shown as wireframes when selected
-- Data pulses moving through active structures
-- New terrain appearing as allocated simulation blocks
-- Controlled visual glitches during upgrades
-- Simulation diagnostics as diegetic UI
-- A wave of light passing through the city when AI behavior is upgraded
-
-Citizens can be tiny geometric figures with a few procedural animations:
-
-- Walk
-- Wait
-- Enter building
-- Carry item
-- Ride transit
-- Socialize
-- Sleep or recharge
-
-Buildings should be assembled from reusable voxel modules rather than unique modeled assets.
+Ticks may be measured for balance comparison. Ticks are not permitted as fixed unlock requirements.
 
 ---
 
-## 13. Balance-Test Apparatus
-
-The game should have a separate headless runner using the same deterministic simulation core.
-
-Its purpose is to answer:
-
-- Is one seed type consistently better than the others?
-- Is one upgrade almost always the correct purchase?
-- Do some seed arrangements create runaway growth?
-- Does player choice matter more than random variation?
-- Are prestige traits meaningfully different?
-- Can the simulation recover from poor layouts?
-- Are apparently useful options actually ineffective?
-
-## 13.1 Reproducible Runs
-
-Every run is determined by:
-
-- World seed
-- Citizen seed
-- Developer seed
-- Upgrade offer seed
-- Player policy
-- Prestige trait
-- Simulation version
-
-The runner outputs a compact result file and, when needed, a replay log.
-
-Example:
-
-```text
-citysim-runner
-  --seed 184729
-  --policy heuristic
-  --prestige faster_developers
-  --ticks 100000
-  --output result.json
-```
-
-Rendering is optional.
-
-## 13.2 Automated Player Policies
-
-Begin with three policies.
-
-### Random Player
-
-Randomly buys an affordable valid seed or upgrade.
-
-Use it to:
-
-- Exercise unusual combinations
-- Find invalid states
-- Establish a weak baseline
-
-### Heuristic Player
-
-Responds to the largest current problem.
-
-Example:
-
-```text
-if Space is critical:
-    prefer Living seed or capacity upgrade
-elif Access is critical:
-    prefer nearby Services seed or transit upgrade
-elif Activity is critical:
-    prefer Working seed or demand-matching upgrade
-else:
-    buy the cheapest broadly useful option
-```
-
-Use it to approximate normal competent play.
-
-### Greedy Lookahead Player
-
-For each legal purchase:
-
-1. Clone the current state.
-2. Apply the purchase.
-3. Simulate a short horizon.
-4. Score the result.
-5. Choose the highest-scoring option.
-
-Use it to detect choices with excessive short-term power.
-
-A more advanced search player can be added later only when the option set becomes large enough to justify it.
-
-## 13.3 Core Metrics
-
-Record a small metric set:
-
-- Population
-- Total Data earned
-- Average trip duration
-- Activity completion rate
-- Occupied building count
-- Citizen idle time
-- City footprint
-
-The primary balance score may combine several metrics for automated comparison, but raw metrics must remain available.
-
-Example development score:
-
-```text
-score =
-    total_data
-  + population_weight × population
-  + completion_weight × completed_activities
-  - trip_weight × average_trip_duration
-  - idle_weight × citizen_idle_time
-```
-
-This score is only a testing convenience. It should not replace separate metric analysis.
-
-## 13.4 Paired-Seed Comparison
-
-To compare two options:
-
-1. Save a simulation state where both choices are legal.
-2. Clone it.
-3. Apply option A to one clone.
-4. Apply option B to the other.
-5. Continue both with identical future random streams.
-6. Compare metrics after short, medium, and long horizons.
-
-Repeat across many states and seeds.
-
-This reveals:
-
-- Immediate value
-- Delayed value
-- Variance
-- Context dependence
-- Whether one option dominates another
-
-## 13.5 Testing Seed Placement
-
-Seed balance is spatial, so the runner should test several placement policies:
-
-- Near an existing complementary seed
-- Far from existing development
-- Near the largest demand cluster
-- Near the busiest route
-- Random valid location
-- Location selected by short lookahead
-
-For each seed type, measure both:
-
-- The value of buying the seed
-- The sensitivity to where it is placed
-
-A seed is problematic if it is either useful almost everywhere or useful only in an extremely narrow, hidden condition.
-
-## 13.6 Balance Criteria
-
-Options need not have equal average value. They should have understandable tradeoffs.
-
-Healthy patterns:
-
-- One choice helps immediately; another helps later.
-- One choice supports compact cities; another supports expansion.
-- One choice is reliable; another is high-variance.
-- One choice solves Space; another solves Access.
-- Different map shapes favor different options.
-
-Warning signs:
-
-- One option wins in nearly every paired comparison.
-- Strong policies always select the same opening sequence.
-- An option has no measurable effect.
-- One prestige trait dominates every map type.
-- Random map variation matters much more than player decisions.
-- A bad early seed placement permanently ruins a run.
-
-## 13.7 Development Test Suites
-
-### Per-change smoke test
-
-Run dozens or hundreds of short simulations.
-
-Detect:
-
-- Crashes
-- Deadlocks
-- Citizens with no valid action
-- Buildings that can never fill
-- Pathfinding failures
-- Numerical explosions
-
-### Nightly balance test
-
-Run thousands of medium simulations.
-
-Report:
-
-- Choice frequencies
-- Average option effects
-- Metric changes from the previous build
-- Common failure states
-- Best and worst replay seeds
-
-### Milestone test
-
-Run a larger batch before major releases.
-
-Check:
-
-- Opening strategies
-- Prestige traits
-- Long-run stagnation
-- Dominant seed layouts
-- Recovery from poor choices
-- Variety of successful city shapes
-
-Every reported outlier should be reproducible in the visual client from its seed and replay log.
-
----
-
-## 14. Recommended MVP
-
-The first playable build should contain only the following.
-
-### Player actions
-
-- Place Living seed
-- Place Working seed
-- Place Services seed
-- Buy one of three offered upgrades
-
-### Citizen activities
-
-- Live
-- Work
-- Eat
-- Return home
-
-### Autonomous systems
-
-- Destination selection
-- Fixed-step path travel
-- Developer project selection
-- Building construction
-- Building occupancy
-- Automatic path formation
-- Automatic city expansion
-
-### Buildings
-
-- Home
-- Apartment
-- Workplace
-- Food service
-
-### Upgrades
-
-- Apartments
-- Faster walking
-- Better job matching
-- Larger workplaces
-- Mixed-use buildings
-- Basic buses
-
-### Presentation
-
-- Voxel city
-- Day/night activity cycle
-- Construction bots
-- Travel trails
-- Space, Access, and Activity indicators
-- Tap-to-explain panels
-- Follow-citizen camera
-
-### Balance tools
-
-- Deterministic headless runner
-- Random policy
-- Heuristic policy
-- Greedy short-lookahead policy
-- Paired-seed comparison
-- JSON metrics and replay output
-
-### Prestige
-
-Prestige should be deferred until the base loop is satisfying. The first implementation can reset to a new procedural map without permanent bonuses. Add inherited traits only after multiple city layouts and upgrade paths are proven to behave differently.
-
----
-
-## 15. Implementation Order
-
-### Phase 1: Watchable simulation
-
-Build:
-
-- Fixed-step clock
-- Citizens and schedules
-- Tweened movement
-- Homes, jobs, and food services
+## 15. Recommended MVP
+
+The first complete playable progression slice should contain:
+
+- Living, Working, and Services seeds
+- Services Core
+- One tier-1 Research Focus
+- Space 1: Apartments
+- Access 1: Better Job Matching
+- Activity 1: Schedule Chaining
+- Home, work, and service activities
 - Developer construction
-- Voxel rendering
-- Camera controls
-- Time controls
+- Population growth
+- Chunk activation
+- Deterministic scenario runner
 
-Success condition:
-
-> A small city is pleasant to watch for several minutes without player input.
-
-### Phase 2: Player influence
-
-Add:
-
-- Three district seeds
-- Seed influence fields
-- Data resource
-- Seed purchase and placement
-- Three city indicators
-- Tap-to-explain panels
-
-Success condition:
-
-> Different seed placements visibly produce different neighborhoods and travel patterns.
-
-### Phase 3: Incremental progression
-
-Add:
-
-- Upgrade cards
-- Apartments
-- Better matching
-- Mixed use
-- Path upgrades
-- Buses
-- Milestones
-
-Success condition:
-
-> A purchase repeatedly produces a clear visible improvement or change.
-
-### Phase 4: Balance runner
-
-Add:
-
-- Headless mode
-- Deterministic seeds
-- Automated policies
-- Metrics
-- Paired comparisons
-- Replay export
-
-Success condition:
-
-> A developer can compare two options across hundreds of identical scenarios and inspect representative visual replays.
-
-### Phase 5: Replay and prestige
-
-Add:
-
-- More procedural map shapes
-- Specialized seeds
-- Archived city summaries
-- One inherited prestige trait
-
-Success condition:
-
-> Starting a new city produces a meaningfully different optimization problem rather than only repeating the same build order.
+Recompilation is not part of the MVP implementation. Its contract exists now so earlier systems do not block it later.
 
 ---
 
-## 16. Main Design Risks
+## 16. Design Summary
 
-### The city plays itself
+Idle City has two recurring player actions:
 
-The player may feel unnecessary if seeds and upgrades have weak effects.
+1. Place district seeds.
+2. Purchase research.
 
-Mitigation:
+The six seed types are:
 
-- Make seed placement strongly affect demand fields.
-- Present choices tied to visible city problems.
-- Show before-and-after consequences.
-- Ensure different placements lead to different city structures.
+- Living
+- Working
+- Services
+- Learning
+- Industry
+- Entertainment
 
-### Autonomous behavior feels arbitrary
+Research has:
 
-Mitigation:
+- Six fixed Core Protocols
+- Six Space ranks
+- Six Access ranks
+- Six Activity ranks
+- One focused rank per Core tier
+- Permanently available delayed ranks at `2.50×` cost
+- One specialization at Core 4
+- A second specialization at Core 5
+- No third specialization in the same run
 
-- Expose simple reasons for projects and destination choices.
-- Use only four early overlays.
-- Keep initial schedules and building types limited.
-- Introduce complexity gradually.
+Each recompilation:
 
-### The optimal layout becomes obvious
+- Resets the city and run research.
+- Increases Prestige Level and Kernel Capacity.
+- Grants unrestricted and branch-aligned Kernel Points.
+- Expands a permanent Kernel Matrix.
+- Supports ongoing progression through repeatable diminishing-return optimizations.
 
-Mitigation:
+The intended long-term loop is:
 
-- Vary map geometry and initial conditions.
-- Use overlapping but nonidentical seed effects.
-- Make compactness, access, and growth pull in different directions.
-- Test opening placements with paired deterministic simulations.
-
-### Poor choices ruin a run
-
-Mitigation:
-
-- Let developers convert buildings.
-- Allow seeds to be moved later at a visible cost.
-- Let the city gradually recover from congestion.
-- Avoid permanent failure states in ordinary play.
-
-### Visual spectacle disappears at scale
-
-Mitigation:
-
-- Keep construction continuous.
-- Aggregate distant agents while retaining representative visible flows.
-- Use morning, evening, and event-driven activity waves.
-- Focus the camera automatically on major construction and network changes.
-
----
-
-## 17. Design Summary
-
-The simplified game has one spatial mechanic and one progression mechanic:
-
-1. **Place district seeds** to influence where broad kinds of activity develop.
-2. **Buy simulation upgrades** to add capabilities or improve AI behavior.
-
-Everything else is autonomous:
-
-- Building placement
-- Road and path formation
-- Construction
-- Citizen schedules
-- Business location
-- Redevelopment
-- City expansion
-
-Replay variety comes from:
-
-- Procedural map shapes
-- Different seed placement
-- Different upgrade order
-- Occasional outward-versus-upward expansion choices
-- A small prestige trait system added later
-
-The resulting core loop is:
-
-> Observe a visible need, place one influence or unlock one capability, then watch the simulated city reorganize itself.
-
-This preserves spatial strategy, emergent behavior, player understanding, and visual spectacle while keeping the interaction model simple enough for an incremental game.
+> Observe a need, place an influence or deepen a research path, watch the city reorganize, validate the resulting megacity, then recompile with a stronger and more specialized simulation kernel.
