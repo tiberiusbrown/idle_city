@@ -6,6 +6,13 @@ import {
   type GridPosition,
 } from '@idle-city/shared';
 import { createAStarSearch, type AStarAdvanceResult, type AStarSearch } from './pathfinding';
+import {
+  movementCellKey,
+  resolveMovementProposals,
+  type MovementParticipant,
+  type MovementProposal,
+  type MovementResolution,
+} from './movement';
 import { cloneWorld, createWorld, ensureChunkAt, getSortedChunks, type WorldState } from './world';
 
 export type { CitizenId, GridPosition } from '@idle-city/shared';
@@ -24,6 +31,15 @@ export type {
   AStarSearchOptions,
   AStarSearchStatus,
 } from './pathfinding';
+export { movementCellKey, resolveMovementProposals } from './movement';
+export type {
+  AcceptedMovement,
+  MovementParticipant,
+  MovementProposal,
+  MovementProposalKind,
+  MovementResolution,
+  MovementResolutionOptions,
+} from './movement';
 
 export const FIXED_POINT_UNITS_PER_CELL = 1024;
 export const DEFAULT_CITIZEN_MOVEMENT_SPEED = 512;
@@ -124,6 +140,8 @@ interface CitizenState {
   path: GridPosition[] | null;
   pathIndex: number;
   goalStartTick: number;
+  routeNeedsReplan: boolean;
+  replanWithOccupancy: boolean;
 }
 
 interface AuthoritativeState {
@@ -133,6 +151,7 @@ interface AuthoritativeState {
   readonly citizens: CitizenState[];
   readonly world: WorldState;
   readonly metrics: MutableMovementMetrics;
+  movementNoProgressTicks: number;
 }
 
 /**
@@ -168,12 +187,6 @@ interface TickCursors {
   readonly commitCompletedTick: StageCursor;
 }
 
-interface MovementProposal {
-  readonly citizenId: CitizenId;
-  readonly from: GridPosition;
-  readonly target: GridPosition;
-}
-
 interface PendingTick {
   readonly nextState: AuthoritativeState;
   readonly cursors: TickCursors;
@@ -181,7 +194,7 @@ interface PendingTick {
   occupancy: Map<string, CitizenId> | null;
   readonly pathSearches: Map<CitizenId, AStarSearch>;
   readonly proposals: MovementProposal[];
-  acceptedCitizenIds: Set<CitizenId> | null;
+  movementResolution: MovementResolution | null;
 }
 
 const INITIAL_CITIZEN_POSITIONS: readonly GridPosition[] = [
@@ -225,7 +238,7 @@ function copySnapshotPosition(position: GridPosition): GridPosition {
 }
 
 function cellKey(position: GridPosition): string {
-  return `${String(position.x)},${String(position.y)}`;
+  return movementCellKey(position);
 }
 
 function isAdjacent(left: GridPosition, right: GridPosition): boolean {
@@ -298,6 +311,8 @@ function createCitizenState(id: CitizenId, position: GridPosition): CitizenState
     path: null,
     pathIndex: 0,
     goalStartTick: 0,
+    routeNeedsReplan: false,
+    replanWithOccupancy: false,
   };
 }
 
@@ -317,6 +332,7 @@ function createInitialState(seed: number): AuthoritativeState {
     citizens,
     world,
     metrics: createMutableMetrics(),
+    movementNoProgressTicks: 0,
   };
 }
 
@@ -334,6 +350,8 @@ function copyCitizenForPending(citizen: CitizenState): CitizenState {
     path: citizen.path?.map(copyPosition) ?? null,
     pathIndex: citizen.pathIndex,
     goalStartTick: citizen.goalStartTick,
+    routeNeedsReplan: citizen.routeNeedsReplan,
+    replanWithOccupancy: citizen.replanWithOccupancy,
   };
 }
 
@@ -403,13 +421,14 @@ function createPendingTick(state: AuthoritativeState): PendingTick {
       citizens: state.citizens.map(copyCitizenForPending),
       world: cloneWorld(state.world),
       metrics: copyMetrics(state.metrics),
+      movementNoProgressTicks: state.movementNoProgressTicks,
     },
     cursors: createTickCursors(),
     nextStageIndex: 0,
     occupancy: null,
     pathSearches: new Map(),
     proposals: [],
-    acceptedCitizenIds: null,
+    movementResolution: null,
   };
 }
 
@@ -433,6 +452,8 @@ function startWanderingSegment(state: AuthoritativeState, citizen: CitizenState)
   citizen.path = null;
   citizen.pathIndex = 0;
   citizen.goalStartTick = state.tick;
+  citizen.routeNeedsReplan = false;
+  citizen.replanWithOccupancy = false;
   ensureChunkAt(state.world, citizen.wanderingAnchor);
   ensureChunkAt(state.world, citizen.wanderingTarget);
 }
@@ -448,6 +469,13 @@ function processFreezeCitizenOccupancy(pending: PendingTick): boolean {
       throw new Error(`Citizens overlap at ${key} before movement resolution.`);
     }
     occupancy.set(key, citizen.id);
+
+    if (citizen.blockedMovementCount >= 8 && !citizen.routeNeedsReplan) {
+      citizen.routeNeedsReplan = true;
+      citizen.replanWithOccupancy = true;
+      citizen.path = null;
+      citizen.pathIndex = 0;
+    }
   }
   pending.occupancy = occupancy;
   return true;
@@ -458,6 +486,7 @@ function processSelectNonConstructionGoals(pending: PendingTick): boolean {
   consumeSingleStage(cursor);
 
   for (const citizen of pending.nextState.citizens) {
+    if (citizen.routeNeedsReplan) continue;
     if (citizen.path !== null && citizen.pathIndex < citizen.path.length) continue;
     startWanderingSegment(pending.nextState, citizen);
   }
@@ -472,17 +501,24 @@ function processAdvancePathPlanning(pending: PendingTick): boolean {
   const citizen = citizens[cursor.workIndex];
   if (citizen === undefined) throw new Error('Path-planning cursor exceeded citizens.');
 
-  if (citizen.path !== null) {
+  if (citizen.path !== null && !citizen.routeNeedsReplan) {
     cursor.workIndex += 1;
     return cursor.workIndex >= citizens.length;
   }
 
+  if (pending.occupancy === null) throw new Error('Movement occupancy was not frozen.');
+
   let search = pending.pathSearches.get(citizen.id);
   if (search === undefined) {
+    const useTemporaryOccupancy = citizen.replanWithOccupancy;
     search = createAStarSearch({
       start: citizen.position,
       goal: citizen.wanderingTarget,
-      isWalkable: (position) => isWithinWanderingBounds(citizen.wanderingAnchor, position),
+      isWalkable: (position) =>
+        isWithinWanderingBounds(citizen.wanderingAnchor, position) &&
+        (!useTemporaryOccupancy ||
+          cellKey(position) === cellKey(citizen.position) ||
+          !pending.occupancy?.has(cellKey(position))),
     });
     pending.pathSearches.set(citizen.id, search);
   }
@@ -493,6 +529,8 @@ function processAdvancePathPlanning(pending: PendingTick): boolean {
 
   citizen.path = result.status === 'found' ? (result.path?.map(copyPosition) ?? []) : [];
   citizen.pathIndex = 0;
+  citizen.routeNeedsReplan = false;
+  citizen.replanWithOccupancy = false;
   pending.pathSearches.delete(citizen.id);
   cursor.workIndex += 1;
   return cursor.workIndex >= citizens.length;
@@ -511,10 +549,70 @@ function processAccrueMovementCredit(pending: PendingTick): boolean {
   return true;
 }
 
+function compareKeyedSidestepCandidates(
+  seed: number,
+  citizen: CitizenState,
+  left: GridPosition,
+  right: GridPosition,
+): number {
+  const leftKey = stableHash({
+    seed,
+    purpose: 'movement-sidestep',
+    citizenId: citizen.id,
+    blockedMovementCount: citizen.blockedMovementCount,
+    from: citizen.position,
+    target: left,
+  });
+  const rightKey = stableHash({
+    seed,
+    purpose: 'movement-sidestep',
+    citizenId: citizen.id,
+    blockedMovementCount: citizen.blockedMovementCount,
+    from: citizen.position,
+    target: right,
+  });
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : left.y - right.y || left.x - right.x;
+}
+
+function selectSidestepTarget(
+  state: AuthoritativeState,
+  citizen: CitizenState,
+  occupancy: ReadonlyMap<string, CitizenId>,
+  routeTarget: GridPosition,
+): GridPosition | null {
+  if (!occupancy.has(cellKey(routeTarget))) return null;
+
+  const candidates: GridPosition[] = [];
+  const deltas: readonly (readonly [number, number])[] = [
+    [0, 1],
+    [1, 0],
+    [0, -1],
+    [-1, 0],
+  ];
+  for (const [xDelta, yDelta] of deltas) {
+    const x = citizen.position.x + xDelta;
+    const y = citizen.position.y + yDelta;
+    if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y)) continue;
+    const candidate = createGridPosition(x, y);
+    if (
+      isWithinWanderingBounds(citizen.wanderingAnchor, candidate) &&
+      !occupancy.has(cellKey(candidate))
+    ) {
+      candidates.push(candidate);
+    }
+  }
+
+  candidates.sort((left, right) =>
+    compareKeyedSidestepCandidates(state.seed, citizen, left, right),
+  );
+  return candidates[0] ?? null;
+}
+
 function processGenerateMovementProposals(pending: PendingTick): boolean {
   const cursor = pending.cursors.generateMovementProposals;
   const citizens = pending.nextState.citizens;
   if (cursor.workIndex >= citizens.length) return true;
+  if (pending.occupancy === null) throw new Error('Movement occupancy was not frozen.');
 
   const citizen = citizens[cursor.workIndex];
   if (citizen === undefined) throw new Error('Movement-proposal cursor exceeded citizens.');
@@ -524,19 +622,35 @@ function processGenerateMovementProposals(pending: PendingTick): boolean {
     citizen.path !== null &&
     citizen.pathIndex < citizen.path.length
   ) {
-    const target = citizen.path[citizen.pathIndex];
-    if (target === undefined) throw new Error('Movement path index exceeded path length.');
-    if (!isAdjacent(citizen.position, target)) {
+    const routeTarget = citizen.path[citizen.pathIndex];
+    if (routeTarget === undefined) throw new Error('Movement path index exceeded path length.');
+    if (!isAdjacent(citizen.position, routeTarget)) {
       throw new Error(`Movement path for ${citizen.id} was not orthogonal.`);
     }
-    if (!isWithinWanderingBounds(citizen.wanderingAnchor, target)) {
+    if (!isWithinWanderingBounds(citizen.wanderingAnchor, routeTarget)) {
       throw new Error(`Movement path for ${citizen.id} exceeded its wandering anchor.`);
+    }
+
+    let target = routeTarget;
+    let kind: MovementProposal['kind'] = 'route';
+    if (citizen.blockedMovementCount >= 4) {
+      const sidestepTarget = selectSidestepTarget(
+        pending.nextState,
+        citizen,
+        pending.occupancy,
+        routeTarget,
+      );
+      if (sidestepTarget !== null) {
+        target = sidestepTarget;
+        kind = 'sidestep';
+      }
     }
 
     pending.proposals.push({
       citizenId: citizen.id,
       from: copyPosition(citizen.position),
       target: copyPosition(target),
+      kind,
     });
     pending.nextState.metrics.movementProposals += 1;
   }
@@ -550,65 +664,106 @@ function processResolveMovementConflicts(pending: PendingTick): boolean {
   consumeSingleStage(cursor);
   if (pending.occupancy === null) throw new Error('Movement occupancy was not frozen.');
 
-  const targetCounts = new Map<string, number>();
-  for (const proposal of pending.proposals) {
-    const key = cellKey(proposal.target);
-    targetCounts.set(key, (targetCounts.get(key) ?? 0) + 1);
-  }
-
-  const acceptedCitizenIds = new Set<CitizenId>();
-  for (const proposal of pending.proposals) {
-    const targetKey = cellKey(proposal.target);
-    const targetIsEmpty = !pending.occupancy.has(targetKey);
-    const targetIsUnopposed = targetCounts.get(targetKey) === 1;
-    if (targetIsEmpty && targetIsUnopposed) acceptedCitizenIds.add(proposal.citizenId);
-  }
-  pending.acceptedCitizenIds = acceptedCitizenIds;
+  const participants: MovementParticipant[] = pending.nextState.citizens.map((citizen) => ({
+    id: citizen.id,
+    position: citizen.position,
+    movementCredit: citizen.movementCredit,
+    blockedMovementCount: citizen.blockedMovementCount,
+    remainingRouteCells:
+      citizen.path === null ? 0 : Math.max(0, citizen.path.length - citizen.pathIndex),
+    goalStartTick: citizen.goalStartTick,
+  }));
+  pending.movementResolution = resolveMovementProposals({
+    seed: pending.nextState.seed,
+    occupancy: pending.occupancy,
+    participants,
+    proposals: pending.proposals,
+    noProgressTicks: pending.nextState.movementNoProgressTicks,
+    isMoveLegal: (participant, target) => {
+      const citizen = pending.nextState.citizens.find(
+        (candidate) => candidate.id === participant.id,
+      );
+      return citizen !== undefined && isWithinWanderingBounds(citizen.wanderingAnchor, target);
+    },
+  });
   return true;
 }
 
 function processCommitAcceptedMovement(pending: PendingTick): boolean {
   const cursor = pending.cursors.commitAcceptedMovement;
   consumeSingleStage(cursor);
-  const acceptedCitizenIds = pending.acceptedCitizenIds;
-  if (acceptedCitizenIds === null) throw new Error('Movement conflicts were not resolved.');
+  const movementResolution = pending.movementResolution;
+  if (movementResolution === null) throw new Error('Movement conflicts were not resolved.');
 
   const nextPositions = new Map<CitizenId, GridPosition>();
   const acceptedTargets = new Set<string>();
-  for (const proposal of pending.proposals) {
-    if (acceptedCitizenIds.has(proposal.citizenId)) {
-      const targetKey = cellKey(proposal.target);
-      if (acceptedTargets.has(targetKey)) {
-        throw new Error(`Duplicate accepted target ${targetKey}.`);
-      }
-      acceptedTargets.add(targetKey);
-      nextPositions.set(proposal.citizenId, proposal.target);
-      continue;
+  for (const accepted of movementResolution.accepted) {
+    const targetKey = cellKey(accepted.target);
+    if (acceptedTargets.has(targetKey)) {
+      throw new Error(`Duplicate accepted target ${targetKey}.`);
     }
+    acceptedTargets.add(targetKey);
+    nextPositions.set(accepted.citizenId, accepted.target);
+  }
 
-    const blockedCitizen = pending.nextState.citizens.find(
-      (citizen) => citizen.id === proposal.citizenId,
-    );
-    if (blockedCitizen === undefined) throw new Error(`Unknown citizen ${proposal.citizenId}.`);
+  const citizensById = new Map<CitizenId, CitizenState>();
+  for (const citizen of pending.nextState.citizens) citizensById.set(citizen.id, citizen);
+
+  for (const citizenId of movementResolution.rejected) {
+    const blockedCitizen = citizensById.get(citizenId);
+    if (blockedCitizen === undefined) throw new Error(`Unknown citizen ${citizenId}.`);
+    const previousBlockedCount = blockedCitizen.blockedMovementCount;
     blockedCitizen.blockedMovementCount += 1;
+    if (previousBlockedCount < 8 && blockedCitizen.blockedMovementCount >= 8) {
+      blockedCitizen.routeNeedsReplan = true;
+      blockedCitizen.replanWithOccupancy = true;
+      blockedCitizen.path = null;
+      blockedCitizen.pathIndex = 0;
+    }
     pending.nextState.metrics.blockedMoves += 1;
   }
 
-  for (const citizen of pending.nextState.citizens) {
+  for (const accepted of movementResolution.accepted) {
+    const citizen = citizensById.get(accepted.citizenId);
+    if (citizen === undefined) throw new Error(`Unknown citizen ${accepted.citizenId}.`);
+
     const nextPosition = nextPositions.get(citizen.id);
-    if (nextPosition === undefined) continue;
+    if (nextPosition === undefined) {
+      throw new Error(`Accepted citizen ${citizen.id} has no next position.`);
+    }
 
     citizen.position = copyPosition(nextPosition);
     citizen.movementCredit -= FIXED_POINT_UNITS_PER_CELL;
     if (citizen.movementCredit < 0) {
       throw new Error(`Citizen ${citizen.id} moved without enough fixed-point credit.`);
     }
-    if (citizen.path === null) throw new Error(`Citizen ${citizen.id} moved without a path.`);
-    citizen.pathIndex += 1;
+
+    if (accepted.implicit) {
+      citizen.path = null;
+      citizen.pathIndex = 0;
+      citizen.routeNeedsReplan = true;
+      citizen.replanWithOccupancy = true;
+    } else if (accepted.kind === 'sidestep') {
+      citizen.path = null;
+      citizen.pathIndex = 0;
+      citizen.routeNeedsReplan = true;
+      citizen.replanWithOccupancy = false;
+    } else {
+      if (citizen.path === null) throw new Error(`Citizen ${citizen.id} moved without a path.`);
+      citizen.pathIndex += 1;
+    }
+
     citizen.blockedMovementCount = 0;
     ensureChunkAt(pending.nextState.world, citizen.position);
     pending.nextState.metrics.committedMoves += 1;
   }
+
+  if (pending.proposals.length > 0 && movementResolution.accepted.length === 0) {
+    pending.nextState.movementNoProgressTicks += 1;
+  } else {
+    pending.nextState.movementNoProgressTicks = 0;
+  }
+
   return true;
 }
 
