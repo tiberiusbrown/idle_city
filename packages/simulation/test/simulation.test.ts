@@ -13,10 +13,26 @@ describe('simulation skeleton', () => {
       data: 10,
       population: 4,
       citizens: [
-        { id: 'citizen-1', position: { x: 0, y: 0 } },
-        { id: 'citizen-2', position: { x: 1, y: 0 } },
-        { id: 'citizen-3', position: { x: 0, y: 1 } },
-        { id: 'citizen-4', position: { x: 1, y: 1 } },
+        {
+          id: 'citizen-1',
+          position: { x: 0, y: 0 },
+          previousPosition: { x: 0, y: 0 },
+        },
+        {
+          id: 'citizen-2',
+          position: { x: 1, y: 0 },
+          previousPosition: { x: 1, y: 0 },
+        },
+        {
+          id: 'citizen-3',
+          position: { x: 0, y: 1 },
+          previousPosition: { x: 0, y: 1 },
+        },
+        {
+          id: 'citizen-4',
+          position: { x: 1, y: 1 },
+          previousPosition: { x: 1, y: 1 },
+        },
       ],
       zones: [],
       buildings: [],

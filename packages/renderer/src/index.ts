@@ -15,7 +15,7 @@ export { DEFAULT_LOGICAL_CELL_WORLD_SCALE, logicalToWorld } from './coordinates'
 
 export interface CityScene {
   readonly scene: Scene;
-  update(snapshot: SimulationSnapshot): void;
+  update(snapshot: SimulationSnapshot, interpolationAlpha?: number): void;
   resize(): void;
   dispose(): void;
 }
@@ -60,7 +60,7 @@ export function createCityScene(
   citizenMaterial.specularColor = new Color3(0.08, 0.06, 0.03);
 
   const citizenVisuals = new Map<CitizenId, Mesh>();
-  const reconcileCitizens = (snapshot: SimulationSnapshot): void => {
+  const reconcileCitizens = (snapshot: SimulationSnapshot, interpolationAlpha: number): void => {
     const seenIds = new Set<CitizenId>();
 
     for (const citizen of snapshot.citizens) {
@@ -79,7 +79,12 @@ export function createCityScene(
         citizenVisuals.set(citizen.id, visual);
       }
 
-      visual.position.copyFrom(logicalToWorld(citizen.position, DEFAULT_LOGICAL_CELL_WORLD_SCALE));
+      const previousPosition = logicalToWorld(
+        citizen.previousPosition,
+        DEFAULT_LOGICAL_CELL_WORLD_SCALE,
+      );
+      const currentPosition = logicalToWorld(citizen.position, DEFAULT_LOGICAL_CELL_WORLD_SCALE);
+      visual.position.copyFrom(Vector3.Lerp(previousPosition, currentPosition, interpolationAlpha));
       visual.position.y = 0.4;
     }
 
@@ -91,9 +96,10 @@ export function createCityScene(
   };
 
   let disposed = false;
-  const update = (snapshot: SimulationSnapshot): void => {
+  const update = (snapshot: SimulationSnapshot, interpolationAlpha = 1): void => {
     if (disposed) throw new Error('Cannot update a disposed city scene.');
-    reconcileCitizens(snapshot);
+    const clampedInterpolationAlpha = Math.min(1, Math.max(0, interpolationAlpha));
+    reconcileCitizens(snapshot, clampedInterpolationAlpha);
   };
 
   update(initialSnapshot);

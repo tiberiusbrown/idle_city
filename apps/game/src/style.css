@@ -76,3 +76,29 @@ body {
   color: #eef4ff;
   font-variant-numeric: tabular-nums;
 }
+
+.speed-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+  pointer-events: auto;
+}
+
+.speed-controls button {
+  min-width: 72px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 10px;
+  color: #dce8ff;
+  background: #17233a;
+  font: inherit;
+  cursor: pointer;
+}
+
+.speed-controls button[aria-pressed='true'] {
+  border-color: #8ab4ff;
+  color: #08101e;
+  background: #8ab4ff;
+}

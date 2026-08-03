@@ -9,9 +9,10 @@ The repository has been reset to a clean target-core skeleton for rebuilding the
 The current implementation contains:
 
 - A `createSimulation()` API whose detached snapshot contains the four-citizen opening state and 10 Data.
-- A deterministic simulation hash for the authoritative opening state.
+- Deterministic transactional tick work with explicit target-stage cursors, committed-only snapshots, and stable hashes.
 - A Babylon.js scene with a neutral background, camera controls, continuous-looking ground, and four citizens.
-- A small browser HUD showing Data, population, and tick.
+- A small browser HUD showing Data, population, tick, and pause/normal/fast controls.
+- A balance runner that advances a requested number of completed ticks with an optional work budget.
 - The existing npm workspaces, PWA setup, and validation infrastructure.
 
 Gameplay systems are intentionally not implemented yet.
@@ -56,12 +57,12 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
-npm run sim:run -- --seed 1234 --ticks 0
+npm run sim:run -- --seed 1234 --ticks 10 --work-budget 1
 ```
 
 The balance runner prints one machine-readable JSON object containing the current tick, Data, population,
-citizen positions, and stable hash. `--ticks` currently accepts only `0`; tick execution is the next
-migration step.
+citizen positions, and stable hash. `--ticks` counts completed logical ticks; `--work-budget` is optional
+and controls the deterministic work supplied to each call.
 
 Playwright remains configured through `playwright.config.ts`; browser tests will be added when a user-facing interaction exists.
 
