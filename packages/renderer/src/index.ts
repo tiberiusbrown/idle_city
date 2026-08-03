@@ -9,9 +9,13 @@ import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Scene } from '@babylonjs/core/scene';
 import type { CitizenId } from '@idle-city/shared';
 import type { SimulationSnapshot } from '@idle-city/simulation';
-import { DEFAULT_LOGICAL_CELL_WORLD_SCALE, logicalToWorld } from './coordinates';
+import { DEFAULT_LOGICAL_CELL_WORLD_SCALE, interpolatedLogicalToWorld } from './coordinates';
 
-export { DEFAULT_LOGICAL_CELL_WORLD_SCALE, logicalToWorld } from './coordinates';
+export {
+  DEFAULT_LOGICAL_CELL_WORLD_SCALE,
+  interpolatedLogicalToWorld,
+  logicalToWorld,
+} from './coordinates';
 
 export interface CityScene {
   readonly scene: Scene;
@@ -79,12 +83,13 @@ export function createCityScene(
         citizenVisuals.set(citizen.id, visual);
       }
 
-      const previousPosition = logicalToWorld(
+      const interpolatedPosition = interpolatedLogicalToWorld(
         citizen.previousPosition,
+        citizen.position,
+        interpolationAlpha,
         DEFAULT_LOGICAL_CELL_WORLD_SCALE,
       );
-      const currentPosition = logicalToWorld(citizen.position, DEFAULT_LOGICAL_CELL_WORLD_SCALE);
-      visual.position.copyFrom(Vector3.Lerp(previousPosition, currentPosition, interpolationAlpha));
+      visual.position.copyFrom(interpolatedPosition);
       visual.position.y = 0.4;
     }
 

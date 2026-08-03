@@ -4,13 +4,61 @@ export interface GridPosition {
   readonly y: number;
 }
 
+/** The centralized logical chunk width and height. */
+export const CHUNK_SIZE = 32;
+
+/** A signed chunk coordinate. */
+export interface ChunkCoordinates {
+  readonly x: number;
+  readonly y: number;
+}
+
+function validateChunkSize(chunkSize: number): number {
+  if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
+    throw new Error(`Chunk size must be a positive safe integer; received ${String(chunkSize)}.`);
+  }
+  return chunkSize;
+}
+
 /** Creates an immutable grid position and rejects non-integer coordinates. */
 export function createGridPosition(x: number, y: number): GridPosition {
   if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y)) {
-    throw new Error(`Grid positions must use safe integer coordinates; received (${x}, ${y}).`);
+    throw new Error(
+      `Grid positions must use safe integer coordinates; received (${String(x)}, ${String(y)}).`,
+    );
   }
 
   return Object.freeze({ x, y });
+}
+
+/**
+ * Converts a signed logical cell to its chunk using mathematical floor
+ * division. In particular, cell -1 belongs to chunk -1 rather than chunk 0.
+ */
+export function getChunkCoordinates(
+  position: GridPosition,
+  chunkSize = CHUNK_SIZE,
+): ChunkCoordinates {
+  const size = validateChunkSize(chunkSize);
+  return Object.freeze({
+    x: Math.floor(position.x / size),
+    y: Math.floor(position.y / size),
+  });
+}
+
+/** Returns the nonnegative local cell coordinate inside a signed chunk. */
+export function getChunkLocalPosition(
+  position: GridPosition,
+  chunkSize = CHUNK_SIZE,
+): GridPosition {
+  const size = validateChunkSize(chunkSize);
+  const chunk = getChunkCoordinates(position, size);
+  return createGridPosition(position.x - chunk.x * size, position.y - chunk.y * size);
+}
+
+/** Creates a stable serialized key for a chunk coordinate. */
+export function getChunkKey(chunk: ChunkCoordinates): string {
+  return `${String(chunk.x)},${String(chunk.y)}`;
 }
 
 declare const citizenIdBrand: unique symbol;

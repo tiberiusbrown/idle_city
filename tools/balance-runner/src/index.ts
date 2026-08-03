@@ -34,6 +34,7 @@ while (completedTicks < ticks) {
 }
 
 const snapshot = simulation.getSnapshot();
+const metrics = simulation.getMetrics();
 
 process.stdout.write(
   `${JSON.stringify({
@@ -41,6 +42,10 @@ process.stdout.write(
     data: snapshot.data,
     population: snapshot.population,
     citizens: snapshot.citizens,
+    movementProposals: metrics.movementProposals,
+    committedMoves: metrics.committedMoves,
+    blockedMoves: metrics.blockedMoves,
+    pathfindingExpansions: metrics.pathfindingExpansions,
     hash: simulation.getDeterminismHash(),
   })}\n`,
 );

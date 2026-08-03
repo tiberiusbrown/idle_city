@@ -17,21 +17,29 @@ describe('simulation skeleton', () => {
           id: 'citizen-1',
           position: { x: 0, y: 0 },
           previousPosition: { x: 0, y: 0 },
+          movementCredit: 0,
+          wanderingAnchor: { x: 0, y: 0 },
         },
         {
           id: 'citizen-2',
           position: { x: 1, y: 0 },
           previousPosition: { x: 1, y: 0 },
+          movementCredit: 0,
+          wanderingAnchor: { x: 1, y: 0 },
         },
         {
           id: 'citizen-3',
           position: { x: 0, y: 1 },
           previousPosition: { x: 0, y: 1 },
+          movementCredit: 0,
+          wanderingAnchor: { x: 0, y: 1 },
         },
         {
           id: 'citizen-4',
           position: { x: 1, y: 1 },
           previousPosition: { x: 1, y: 1 },
+          movementCredit: 0,
+          wanderingAnchor: { x: 1, y: 1 },
         },
       ],
       zones: [],
@@ -42,9 +50,11 @@ describe('simulation skeleton', () => {
     expect(first.citizens).not.toBe(second.citizens);
 
     const mutable = first as unknown as {
-      citizens: Array<{ id: string; position: { x: number; y: number } }>;
+      citizens: { id: string; position: { x: number; y: number } }[];
     };
-    mutable.citizens[0]!.position.x = 99;
+    const firstCitizen = mutable.citizens[0];
+    if (firstCitizen === undefined) throw new Error('Expected the first citizen.');
+    firstCitizen.position.x = 99;
     mutable.citizens.push({ id: 'unrelated', position: { x: 9, y: 9 } });
 
     expect(firstSimulation.getSnapshot()).toEqual(secondSimulation.getSnapshot());

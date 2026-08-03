@@ -5,8 +5,34 @@ import {
   type CitizenId,
   type GridPosition,
 } from '@idle-city/shared';
+import { createAStarSearch, type AStarAdvanceResult, type AStarSearch } from './pathfinding';
+import { cloneWorld, createWorld, ensureChunkAt, getSortedChunks, type WorldState } from './world';
 
 export type { CitizenId, GridPosition } from '@idle-city/shared';
+export {
+  CHUNK_SIZE,
+  getChunkCoordinates,
+  getChunkKey,
+  getChunkLocalPosition,
+} from '@idle-city/shared';
+export type { ChunkCoordinates } from '@idle-city/shared';
+export { createAStarSearch } from './pathfinding';
+export type {
+  AStarAdvanceResult,
+  AStarAdvanceStatus,
+  AStarSearch,
+  AStarSearchOptions,
+  AStarSearchStatus,
+} from './pathfinding';
+
+export const FIXED_POINT_UNITS_PER_CELL = 1024;
+export const DEFAULT_CITIZEN_MOVEMENT_SPEED = 512;
+export const WANDERING_CHEBYSHEV_RADIUS = 16;
+
+/** Compatibility aliases for callers that name the balance values directly. */
+export const MOVEMENT_UNITS_PER_CELL = FIXED_POINT_UNITS_PER_CELL;
+export const CITIZEN_MOVEMENT_SPEED = DEFAULT_CITIZEN_MOVEMENT_SPEED;
+export const WANDER_RADIUS = WANDERING_CHEBYSHEV_RADIUS;
 
 export interface SimulationOptions {
   readonly seed?: number;
@@ -47,10 +73,19 @@ export interface TickWorkResult {
   readonly workUnitsConsumed: number;
 }
 
+export interface MovementMetrics {
+  readonly movementProposals: number;
+  readonly committedMoves: number;
+  readonly blockedMoves: number;
+  readonly pathfindingExpansions: number;
+}
+
 export interface CitizenSnapshot {
   readonly id: CitizenId;
   readonly position: GridPosition;
   readonly previousPosition: GridPosition;
+  readonly movementCredit: number;
+  readonly wanderingAnchor: GridPosition;
 }
 
 export interface SimulationSnapshot {
@@ -65,25 +100,44 @@ export interface SimulationSnapshot {
 export interface Simulation {
   advanceTickWork(maxWorkUnits: number): TickWorkResult;
   getSnapshot(): SimulationSnapshot;
+  getMetrics(): MovementMetrics;
   getDeterminismHash(): string;
+}
+
+interface MutableMovementMetrics {
+  movementProposals: number;
+  committedMoves: number;
+  blockedMoves: number;
+  pathfindingExpansions: number;
 }
 
 interface CitizenState {
   readonly id: CitizenId;
-  readonly position: GridPosition;
-  readonly previousPosition: GridPosition;
+  position: GridPosition;
+  previousPosition: GridPosition;
+  movementCredit: number;
+  readonly movementSpeed: number;
+  blockedMovementCount: number;
+  wanderingAnchor: GridPosition;
+  wanderingTarget: GridPosition;
+  wanderingSequence: number;
+  path: GridPosition[] | null;
+  pathIndex: number;
+  goalStartTick: number;
 }
 
 interface AuthoritativeState {
   readonly seed: number;
   readonly tick: number;
   readonly data: number;
-  readonly citizens: readonly CitizenState[];
+  readonly citizens: CitizenState[];
+  readonly world: WorldState;
+  readonly metrics: MutableMovementMetrics;
 }
 
 /**
- * Each stage owns a cursor even while its implementation is a no-op. Future
- * stages can extend their cursor without changing the transactional driver.
+ * Each stage owns a cursor. A path-planning or proposal stage may consume
+ * several work units while keeping its cursor private to the pending tick.
  */
 interface StageCursor {
   workIndex: number;
@@ -114,10 +168,20 @@ interface TickCursors {
   readonly commitCompletedTick: StageCursor;
 }
 
+interface MovementProposal {
+  readonly citizenId: CitizenId;
+  readonly from: GridPosition;
+  readonly target: GridPosition;
+}
+
 interface PendingTick {
   readonly nextState: AuthoritativeState;
   readonly cursors: TickCursors;
   nextStageIndex: number;
+  occupancy: Map<string, CitizenId> | null;
+  readonly pathSearches: Map<CitizenId, AStarSearch>;
+  readonly proposals: MovementProposal[];
+  acceptedCitizenIds: Set<CitizenId> | null;
 }
 
 const INITIAL_CITIZEN_POSITIONS: readonly GridPosition[] = [
@@ -126,6 +190,24 @@ const INITIAL_CITIZEN_POSITIONS: readonly GridPosition[] = [
   createGridPosition(0, 1),
   createGridPosition(1, 1),
 ];
+
+function createMutableMetrics(): MutableMovementMetrics {
+  return {
+    movementProposals: 0,
+    committedMoves: 0,
+    blockedMoves: 0,
+    pathfindingExpansions: 0,
+  };
+}
+
+function copyMetrics(metrics: MutableMovementMetrics): MutableMovementMetrics {
+  return {
+    movementProposals: metrics.movementProposals,
+    committedMoves: metrics.committedMoves,
+    blockedMoves: metrics.blockedMoves,
+    pathfindingExpansions: metrics.pathfindingExpansions,
+  };
+}
 
 function validateSeed(seed: number): number {
   if (!Number.isSafeInteger(seed)) {
@@ -142,19 +224,117 @@ function copySnapshotPosition(position: GridPosition): GridPosition {
   return { x: position.x, y: position.y };
 }
 
-function createInitialState(seed: number): AuthoritativeState {
-  const citizens = INITIAL_CITIZEN_POSITIONS.map((position, index) => ({
-    id: createCitizenId(`citizen-${index + 1}`),
-    position,
-    previousPosition: position,
-  }));
+function cellKey(position: GridPosition): string {
+  return `${String(position.x)},${String(position.y)}`;
+}
 
-  return Object.freeze({
-    seed: validateSeed(seed),
+function isAdjacent(left: GridPosition, right: GridPosition): boolean {
+  return Math.abs(left.x - right.x) + Math.abs(left.y - right.y) === 1;
+}
+
+function chebyshevDistance(left: GridPosition, right: GridPosition): number {
+  return Math.max(Math.abs(left.x - right.x), Math.abs(left.y - right.y));
+}
+
+function isWithinWanderingBounds(anchor: GridPosition, position: GridPosition): boolean {
+  return chebyshevDistance(anchor, position) <= WANDERING_CHEBYSHEV_RADIUS;
+}
+
+function createWanderOffsets(): readonly (readonly [number, number])[] {
+  const offsets: (readonly [number, number])[] = [];
+  for (let y = -WANDERING_CHEBYSHEV_RADIUS; y <= WANDERING_CHEBYSHEV_RADIUS; y += 1) {
+    for (let x = -WANDERING_CHEBYSHEV_RADIUS; x <= WANDERING_CHEBYSHEV_RADIUS; x += 1) {
+      if (x === 0 && y === 0) continue;
+      offsets.push([x, y]);
+    }
+  }
+  return Object.freeze(offsets);
+}
+
+const WANDER_OFFSETS = createWanderOffsets();
+
+function keyedWanderOffsetIndex(
+  seed: number,
+  citizenId: CitizenId,
+  wanderingSequence: number,
+): number {
+  const hash = stableHash({
+    seed,
+    citizenId,
+    wanderingSequence,
+    purpose: 'wandering-target',
+  });
+  return Number.parseInt(hash, 16) % WANDER_OFFSETS.length;
+}
+
+function selectWanderTarget(
+  seed: number,
+  citizenId: CitizenId,
+  wanderingSequence: number,
+  anchor: GridPosition,
+): GridPosition {
+  const offset = WANDER_OFFSETS[keyedWanderOffsetIndex(seed, citizenId, wanderingSequence)];
+  if (offset === undefined) throw new Error('Wandering offset selection was out of range.');
+
+  const x = anchor.x + offset[0];
+  const y = anchor.y + offset[1];
+  if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y)) {
+    throw new Error('Wandering target exceeded the safe signed grid range.');
+  }
+  return createGridPosition(x, y);
+}
+
+function createCitizenState(id: CitizenId, position: GridPosition): CitizenState {
+  return {
+    id,
+    position: copyPosition(position),
+    previousPosition: copyPosition(position),
+    movementCredit: 0,
+    movementSpeed: DEFAULT_CITIZEN_MOVEMENT_SPEED,
+    blockedMovementCount: 0,
+    wanderingAnchor: copyPosition(position),
+    wanderingTarget: copyPosition(position),
+    wanderingSequence: 0,
+    path: null,
+    pathIndex: 0,
+    goalStartTick: 0,
+  };
+}
+
+function createInitialState(seed: number): AuthoritativeState {
+  const validatedSeed = validateSeed(seed);
+  const world = createWorld();
+  const citizens = INITIAL_CITIZEN_POSITIONS.map((position, index) => {
+    const citizen = createCitizenState(createCitizenId(`citizen-${String(index + 1)}`), position);
+    ensureChunkAt(world, citizen.position);
+    return citizen;
+  });
+
+  return {
+    seed: validatedSeed,
     tick: 0,
     data: 10,
-    citizens: Object.freeze(citizens),
-  });
+    citizens,
+    world,
+    metrics: createMutableMetrics(),
+  };
+}
+
+function copyCitizenForPending(citizen: CitizenState): CitizenState {
+  return {
+    id: citizen.id,
+    position: copyPosition(citizen.position),
+    previousPosition: copyPosition(citizen.position),
+    movementCredit: citizen.movementCredit,
+    movementSpeed: citizen.movementSpeed,
+    blockedMovementCount: citizen.blockedMovementCount,
+    wanderingAnchor: copyPosition(citizen.wanderingAnchor),
+    wanderingTarget: copyPosition(citizen.wanderingTarget),
+    wanderingSequence: citizen.wanderingSequence,
+    path: citizen.path?.map(copyPosition) ?? null,
+    pathIndex: citizen.pathIndex,
+    goalStartTick: citizen.goalStartTick,
+  };
 }
 
 function createSnapshot(state: AuthoritativeState): SimulationSnapshot {
@@ -166,9 +346,20 @@ function createSnapshot(state: AuthoritativeState): SimulationSnapshot {
       id: citizen.id,
       position: copySnapshotPosition(citizen.position),
       previousPosition: copySnapshotPosition(citizen.previousPosition),
+      movementCredit: citizen.movementCredit,
+      wanderingAnchor: copySnapshotPosition(citizen.wanderingAnchor),
     })),
     zones: [],
     buildings: [],
+  };
+}
+
+function createMetricsSnapshot(metrics: MutableMovementMetrics): MovementMetrics {
+  return {
+    movementProposals: metrics.movementProposals,
+    committedMoves: metrics.committedMoves,
+    blockedMoves: metrics.blockedMoves,
+    pathfindingExpansions: metrics.pathfindingExpansions,
   };
 }
 
@@ -204,99 +395,269 @@ function createTickCursors(): TickCursors {
 }
 
 function createPendingTick(state: AuthoritativeState): PendingTick {
-  const citizens = state.citizens.map((citizen) => ({
-    id: citizen.id,
-    position: copyPosition(citizen.position),
-    previousPosition: copyPosition(citizen.position),
-  }));
-
   return {
     nextState: {
       seed: state.seed,
       tick: state.tick + 1,
       data: state.data,
-      citizens,
+      citizens: state.citizens.map(copyCitizenForPending),
+      world: cloneWorld(state.world),
+      metrics: copyMetrics(state.metrics),
     },
     cursors: createTickCursors(),
     nextStageIndex: 0,
+    occupancy: null,
+    pathSearches: new Map(),
+    proposals: [],
+    acceptedCitizenIds: null,
   };
 }
 
-function consumeStageCursor(cursor: StageCursor): void {
+function consumeSingleStage(cursor: StageCursor): boolean {
   if (cursor.workIndex !== 0) {
     throw new Error('A tick stage was processed more than once.');
   }
   cursor.workIndex = 1;
+  return true;
 }
 
-function processStage(pendingTick: PendingTick, stage: TickStage): void {
+function startWanderingSegment(state: AuthoritativeState, citizen: CitizenState): void {
+  citizen.wanderingSequence += 1;
+  citizen.wanderingAnchor = copyPosition(citizen.position);
+  citizen.wanderingTarget = selectWanderTarget(
+    state.seed,
+    citizen.id,
+    citizen.wanderingSequence,
+    citizen.wanderingAnchor,
+  );
+  citizen.path = null;
+  citizen.pathIndex = 0;
+  citizen.goalStartTick = state.tick;
+  ensureChunkAt(state.world, citizen.wanderingAnchor);
+  ensureChunkAt(state.world, citizen.wanderingTarget);
+}
+
+function processFreezeCitizenOccupancy(pending: PendingTick): boolean {
+  const cursor = pending.cursors.freezeCitizenOccupancy;
+  consumeSingleStage(cursor);
+
+  const occupancy = new Map<string, CitizenId>();
+  for (const citizen of pending.nextState.citizens) {
+    const key = cellKey(citizen.position);
+    if (occupancy.has(key)) {
+      throw new Error(`Citizens overlap at ${key} before movement resolution.`);
+    }
+    occupancy.set(key, citizen.id);
+  }
+  pending.occupancy = occupancy;
+  return true;
+}
+
+function processSelectNonConstructionGoals(pending: PendingTick): boolean {
+  const cursor = pending.cursors.selectNonConstructionGoals;
+  consumeSingleStage(cursor);
+
+  for (const citizen of pending.nextState.citizens) {
+    if (citizen.path !== null && citizen.pathIndex < citizen.path.length) continue;
+    startWanderingSegment(pending.nextState, citizen);
+  }
+  return true;
+}
+
+function processAdvancePathPlanning(pending: PendingTick): boolean {
+  const cursor = pending.cursors.advancePathPlanning;
+  const citizens = pending.nextState.citizens;
+  if (cursor.workIndex >= citizens.length) return true;
+
+  const citizen = citizens[cursor.workIndex];
+  if (citizen === undefined) throw new Error('Path-planning cursor exceeded citizens.');
+
+  if (citizen.path !== null) {
+    cursor.workIndex += 1;
+    return cursor.workIndex >= citizens.length;
+  }
+
+  let search = pending.pathSearches.get(citizen.id);
+  if (search === undefined) {
+    search = createAStarSearch({
+      start: citizen.position,
+      goal: citizen.wanderingTarget,
+      isWalkable: (position) => isWithinWanderingBounds(citizen.wanderingAnchor, position),
+    });
+    pending.pathSearches.set(citizen.id, search);
+  }
+
+  const result: AStarAdvanceResult = search.advance(1);
+  pending.nextState.metrics.pathfindingExpansions += result.expansions;
+  if (result.status === 'budget-exhausted') return false;
+
+  citizen.path = result.status === 'found' ? (result.path?.map(copyPosition) ?? []) : [];
+  citizen.pathIndex = 0;
+  pending.pathSearches.delete(citizen.id);
+  cursor.workIndex += 1;
+  return cursor.workIndex >= citizens.length;
+}
+
+function processAccrueMovementCredit(pending: PendingTick): boolean {
+  const cursor = pending.cursors.accrueMovementCredit;
+  consumeSingleStage(cursor);
+
+  for (const citizen of pending.nextState.citizens) {
+    citizen.movementCredit = Math.min(
+      FIXED_POINT_UNITS_PER_CELL,
+      citizen.movementCredit + citizen.movementSpeed,
+    );
+  }
+  return true;
+}
+
+function processGenerateMovementProposals(pending: PendingTick): boolean {
+  const cursor = pending.cursors.generateMovementProposals;
+  const citizens = pending.nextState.citizens;
+  if (cursor.workIndex >= citizens.length) return true;
+
+  const citizen = citizens[cursor.workIndex];
+  if (citizen === undefined) throw new Error('Movement-proposal cursor exceeded citizens.');
+
+  if (
+    citizen.movementCredit >= FIXED_POINT_UNITS_PER_CELL &&
+    citizen.path !== null &&
+    citizen.pathIndex < citizen.path.length
+  ) {
+    const target = citizen.path[citizen.pathIndex];
+    if (target === undefined) throw new Error('Movement path index exceeded path length.');
+    if (!isAdjacent(citizen.position, target)) {
+      throw new Error(`Movement path for ${citizen.id} was not orthogonal.`);
+    }
+    if (!isWithinWanderingBounds(citizen.wanderingAnchor, target)) {
+      throw new Error(`Movement path for ${citizen.id} exceeded its wandering anchor.`);
+    }
+
+    pending.proposals.push({
+      citizenId: citizen.id,
+      from: copyPosition(citizen.position),
+      target: copyPosition(target),
+    });
+    pending.nextState.metrics.movementProposals += 1;
+  }
+
+  cursor.workIndex += 1;
+  return cursor.workIndex >= citizens.length;
+}
+
+function processResolveMovementConflicts(pending: PendingTick): boolean {
+  const cursor = pending.cursors.resolveMovementConflicts;
+  consumeSingleStage(cursor);
+  if (pending.occupancy === null) throw new Error('Movement occupancy was not frozen.');
+
+  const targetCounts = new Map<string, number>();
+  for (const proposal of pending.proposals) {
+    const key = cellKey(proposal.target);
+    targetCounts.set(key, (targetCounts.get(key) ?? 0) + 1);
+  }
+
+  const acceptedCitizenIds = new Set<CitizenId>();
+  for (const proposal of pending.proposals) {
+    const targetKey = cellKey(proposal.target);
+    const targetIsEmpty = !pending.occupancy.has(targetKey);
+    const targetIsUnopposed = targetCounts.get(targetKey) === 1;
+    if (targetIsEmpty && targetIsUnopposed) acceptedCitizenIds.add(proposal.citizenId);
+  }
+  pending.acceptedCitizenIds = acceptedCitizenIds;
+  return true;
+}
+
+function processCommitAcceptedMovement(pending: PendingTick): boolean {
+  const cursor = pending.cursors.commitAcceptedMovement;
+  consumeSingleStage(cursor);
+  const acceptedCitizenIds = pending.acceptedCitizenIds;
+  if (acceptedCitizenIds === null) throw new Error('Movement conflicts were not resolved.');
+
+  const nextPositions = new Map<CitizenId, GridPosition>();
+  const acceptedTargets = new Set<string>();
+  for (const proposal of pending.proposals) {
+    if (acceptedCitizenIds.has(proposal.citizenId)) {
+      const targetKey = cellKey(proposal.target);
+      if (acceptedTargets.has(targetKey)) {
+        throw new Error(`Duplicate accepted target ${targetKey}.`);
+      }
+      acceptedTargets.add(targetKey);
+      nextPositions.set(proposal.citizenId, proposal.target);
+      continue;
+    }
+
+    const blockedCitizen = pending.nextState.citizens.find(
+      (citizen) => citizen.id === proposal.citizenId,
+    );
+    if (blockedCitizen === undefined) throw new Error(`Unknown citizen ${proposal.citizenId}.`);
+    blockedCitizen.blockedMovementCount += 1;
+    pending.nextState.metrics.blockedMoves += 1;
+  }
+
+  for (const citizen of pending.nextState.citizens) {
+    const nextPosition = nextPositions.get(citizen.id);
+    if (nextPosition === undefined) continue;
+
+    citizen.position = copyPosition(nextPosition);
+    citizen.movementCredit -= FIXED_POINT_UNITS_PER_CELL;
+    if (citizen.movementCredit < 0) {
+      throw new Error(`Citizen ${citizen.id} moved without enough fixed-point credit.`);
+    }
+    if (citizen.path === null) throw new Error(`Citizen ${citizen.id} moved without a path.`);
+    citizen.pathIndex += 1;
+    citizen.blockedMovementCount = 0;
+    ensureChunkAt(pending.nextState.world, citizen.position);
+    pending.nextState.metrics.committedMoves += 1;
+  }
+  return true;
+}
+
+function processStage(pending: PendingTick, stage: TickStage): boolean {
   switch (stage) {
     case 'apply-queued-commands':
-      consumeStageCursor(pendingTick.cursors.applyQueuedCommands);
-      return;
+      return consumeSingleStage(pending.cursors.applyQueuedCommands);
     case 'apply-zone-removals':
-      consumeStageCursor(pendingTick.cursors.applyZoneRemovals);
-      return;
+      return consumeSingleStage(pending.cursors.applyZoneRemovals);
     case 'freeze-citizen-occupancy':
-      consumeStageCursor(pendingTick.cursors.freezeCitizenOccupancy);
-      return;
+      return processFreezeCitizenOccupancy(pending);
     case 'decrement-timers':
-      consumeStageCursor(pendingTick.cursors.decrementTimers);
-      return;
+      return consumeSingleStage(pending.cursors.decrementTimers);
     case 'complete-expired-activities':
-      consumeStageCursor(pendingTick.cursors.completeExpiredActivities);
-      return;
+      return consumeSingleStage(pending.cursors.completeExpiredActivities);
     case 'mark-citizens-requiring-goal':
-      consumeStageCursor(pendingTick.cursors.markCitizensRequiringGoal);
-      return;
+      return consumeSingleStage(pending.cursors.markCitizensRequiringGoal);
     case 'fill-construction-assignments':
-      consumeStageCursor(pendingTick.cursors.fillConstructionAssignments);
-      return;
+      return consumeSingleStage(pending.cursors.fillConstructionAssignments);
     case 'select-non-construction-goals':
-      consumeStageCursor(pendingTick.cursors.selectNonConstructionGoals);
-      return;
+      return processSelectNonConstructionGoals(pending);
     case 'advance-path-planning':
-      consumeStageCursor(pendingTick.cursors.advancePathPlanning);
-      return;
+      return processAdvancePathPlanning(pending);
     case 'accrue-movement-credit':
-      consumeStageCursor(pendingTick.cursors.accrueMovementCredit);
-      return;
+      return processAccrueMovementCredit(pending);
     case 'generate-movement-proposals':
-      consumeStageCursor(pendingTick.cursors.generateMovementProposals);
-      return;
+      return processGenerateMovementProposals(pending);
     case 'resolve-movement-conflicts':
-      consumeStageCursor(pendingTick.cursors.resolveMovementConflicts);
-      return;
+      return processResolveMovementConflicts(pending);
     case 'commit-accepted-movement':
-      consumeStageCursor(pendingTick.cursors.commitAcceptedMovement);
-      return;
+      return processCommitAcceptedMovement(pending);
     case 'process-arrivals':
-      consumeStageCursor(pendingTick.cursors.processArrivals);
-      return;
+      return consumeSingleStage(pending.cursors.processArrivals);
     case 'start-building-activities':
-      consumeStageCursor(pendingTick.cursors.startBuildingActivities);
-      return;
+      return consumeSingleStage(pending.cursors.startBuildingActivities);
     case 'produce-workplace-data':
-      consumeStageCursor(pendingTick.cursors.produceWorkplaceData);
-      return;
+      return consumeSingleStage(pending.cursors.produceWorkplaceData);
     case 'apply-construction-labor':
-      consumeStageCursor(pendingTick.cursors.applyConstructionLabor);
-      return;
+      return consumeSingleStage(pending.cursors.applyConstructionLabor);
     case 'complete-buildings':
-      consumeStageCursor(pendingTick.cursors.completeBuildings);
-      return;
+      return consumeSingleStage(pending.cursors.completeBuildings);
     case 'apply-assignment-changes':
-      consumeStageCursor(pendingTick.cursors.applyAssignmentChanges);
-      return;
+      return consumeSingleStage(pending.cursors.applyAssignmentChanges);
     case 'evaluate-population-growth':
-      consumeStageCursor(pendingTick.cursors.evaluatePopulationGrowth);
-      return;
+      return consumeSingleStage(pending.cursors.evaluatePopulationGrowth);
     case 'advance-building-planning':
-      consumeStageCursor(pendingTick.cursors.advanceBuildingPlanning);
-      return;
+      return consumeSingleStage(pending.cursors.advanceBuildingPlanning);
     case 'commit-completed-tick':
-      consumeStageCursor(pendingTick.cursors.commitCompletedTick);
-      return;
+      return consumeSingleStage(pending.cursors.commitCompletedTick);
   }
 }
 
@@ -306,6 +667,19 @@ function validateWorkBudget(maxWorkUnits: number): void {
       `maxWorkUnits must be a positive safe integer; received ${String(maxWorkUnits)}.`,
     );
   }
+}
+
+function hashableState(state: AuthoritativeState): unknown {
+  return {
+    seed: state.seed,
+    tick: state.tick,
+    data: state.data,
+    citizens: state.citizens,
+    chunks: getSortedChunks(state.world),
+    metrics: state.metrics,
+    zones: [],
+    buildings: [],
+  };
 }
 
 export function createSimulation(options: SimulationOptions = {}): Simulation {
@@ -324,15 +698,14 @@ export function createSimulation(options: SimulationOptions = {}): Simulation {
 
       while (workUnitsConsumed < maxWorkUnits) {
         const stage = TICK_STAGE_ORDER[activeTick.nextStageIndex];
-        if (stage === undefined) {
-          throw new Error('Pending tick has no remaining stage.');
-        }
+        if (stage === undefined) throw new Error('Pending tick has no remaining stage.');
 
-        processStage(activeTick, stage);
+        const stageComplete = processStage(activeTick, stage);
         workUnitsConsumed += 1;
         lastStage = stage;
 
         if (stage === 'commit-completed-tick') {
+          if (!stageComplete) throw new Error('Completed-tick stage did not finish.');
           committedState = activeTick.nextState;
           pendingTick = null;
           return {
@@ -342,7 +715,7 @@ export function createSimulation(options: SimulationOptions = {}): Simulation {
           };
         }
 
-        activeTick.nextStageIndex += 1;
+        if (stageComplete) activeTick.nextStageIndex += 1;
       }
 
       if (lastStage === undefined) {
@@ -358,15 +731,11 @@ export function createSimulation(options: SimulationOptions = {}): Simulation {
     getSnapshot(): SimulationSnapshot {
       return createSnapshot(committedState);
     },
+    getMetrics(): MovementMetrics {
+      return createMetricsSnapshot(committedState.metrics);
+    },
     getDeterminismHash(): string {
-      return stableHash({
-        seed: committedState.seed,
-        tick: committedState.tick,
-        data: committedState.data,
-        citizens: committedState.citizens,
-        zones: [],
-        buildings: [],
-      });
+      return stableHash(hashableState(committedState));
     },
   };
 }
