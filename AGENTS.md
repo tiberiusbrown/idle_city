@@ -1,78 +1,62 @@
 # AGENTS.md
 
-## Multi-agent orchestration
-
-When the primary thread uses GPT-5.6 Sol, Sol is the orchestrator.
-
-Sol owns:
-
-- interpreting the user request,
-- reading the implementation playbook,
-- decomposing work,
-- selecting bounded assignments,
-- resolving architectural questions,
-- reviewing worker results,
-- running or requesting final integration validation,
-- deciding whether the task gate is satisfied,
-- reporting final status to the user.
-
-Implementation must normally be delegated to the `luna_executor` custom agent.
-
-Review must normally be delegated to the `luna_reviewer` custom agent after implementation.
-
-Delegation rules:
-
-1. Spawn only named custom agents.
-2. Do not use an unnamed or built-in worker when `luna_executor` is available.
-3. Give each worker a complete, self-contained assignment.
-4. Include relevant paths, fixed contracts, exclusions, required tests, and expected report format.
-5. Wait for the executor before starting review.
-6. At most one workspace-write subagent may edit the current worktree at a time.
-7. Read-only exploration and review may run in parallel when their responsibilities do not overlap.
-8. Sol must inspect the resulting diff rather than accepting a worker's summary as proof.
-9. Sol owns final validation and scope auditing.
-10. Subagents may not begin later playbook steps.
-11. Subagents may not spawn further subagents.
-12. A failed or incomplete worker must receive a narrowly targeted correction task; do not restart the entire implementation without evidence that it is necessary.
-
----
-
 ## Purpose
 
 This repository contains **Idle City**, a browser-first, installable 3D incremental city simulation.
 
 The game uses:
 
-- TypeScript
-- Babylon.js
-- Vite
-- npm workspaces
-- Vitest
-- Playwright
-- `vite-plugin-pwa`
+* TypeScript
+* Babylon.js
+* Vite
+* npm workspaces
+* Vitest
+* Playwright
+* `vite-plugin-pwa`
 
-The player places broad district seeds and purchases simulation upgrades. Citizens, developers, construction, travel, and growth are autonomous.
+The player places broad Living, Working, and Leisure zones. Buildings are planned autonomously, citizens construct them, homes grow the population, and citizens commute between home and work to produce Data.
 
-Read `docs/design.md` and `docs/architecture.md` before broad changes.
+Read `docs/design.md` before broad gameplay or architectural changes.
+
+`docs/design.md` is the single target-state contract for:
+
+* Gameplay
+* Architecture
+* Simulation ordering
+* Determinism
+* Balance defaults
+* Rendering boundaries
+* Migration scope
+
+There is no separate architecture document.
 
 ---
 
-## Repository Truth
+## Target Design and Current Implementation
 
-Inspect the current checkout and tests before acting.
+The repository is being migrated toward the design in `docs/design.md`.
 
-Do not infer that a planned feature exists because it appears in:
+Keep these two kinds of truth separate:
 
-- `docs/design.md`
-- a roadmap
-- a prompt
-- an issue
-- an earlier conversation
-- an uncommitted agent run
+* `docs/design.md` defines the approved target.
+* The current branch defines what is presently implemented.
 
-The current branch is the source of truth for implementation state.
+Do not assume that a target mechanic already exists because it appears in the design document.
 
-At the time this file was updated, the committed baseline includes deterministic spatial demand. District seed work may exist on a later branch, but agents must inspect rather than assume.
+Do not assume an old mechanic must remain because it exists in the current implementation.
+
+During migration, temporary disagreement between code and design is expected.
+
+For each task:
+
+1. Inspect the current implementation.
+2. Identify the assigned migration boundary.
+3. Implement only that bounded step.
+4. Leave unrelated old systems alone unless their removal is part of the task.
+5. Do not opportunistically implement later design stages.
+6. Keep the repository runnable after the step.
+
+When old and new APIs must coexist temporarily, keep the compatibility layer narrow and clearly temporary.
 
 ---
 
@@ -91,26 +75,60 @@ At the time this file was updated, the committed baseline includes deterministic
 ├── tests/
 │   └── e2e/
 ├── docs/
-│   ├── design.md
-│   └── architecture.md
+│   └── design.md
 ├── .github/
 │   └── workflows/
 ├── AGENTS.md
+├── README.md
 └── package.json
 ```
 
 Use:
 
-- `docs/design.md` for player-facing mechanics and balance goals.
-- `docs/architecture.md` for state ownership, loops, data flow, and technical decisions.
-- `README.md` for setup, commands, and current capabilities.
-- `AGENTS.md` for coding-agent constraints.
+* `docs/design.md` for target gameplay and architecture.
+* `README.md` for setup, repository orientation, and migration status.
+* `AGENTS.md` for coding-agent behavior.
+* Current code and tests for present implementation details.
+
+---
+
+## Agent Orchestration
+
+The primary agent owns:
+
+* Interpreting the request
+* Reading the relevant design sections
+* Defining the bounded scope
+* Resolving architectural questions
+* Inspecting the final diff
+* Choosing proportionate validation
+* Reporting what was and was not verified
+
+Use delegation only when it improves the work.
+
+When named custom agents are available:
+
+* Use `luna_executor` for a bounded implementation assignment.
+* Use `luna_reviewer` for cross-package, determinism-sensitive, or otherwise high-risk changes.
+* Do not require a separate review agent for trivial documentation, formatting, or narrowly localized changes.
+* Do not split a small coherent task across multiple agents merely to create parallel work.
+
+Delegation rules:
+
+1. Give each worker a complete, self-contained assignment.
+2. Include relevant paths, fixed contracts, exclusions, and the expected output.
+3. At most one workspace-writing agent may edit the worktree at a time.
+4. Subagents may not begin later migration steps.
+5. Subagents may not spawn additional subagents.
+6. The primary agent must inspect the resulting diff.
+7. Correct a failed worker with a narrow follow-up rather than restarting all work.
+8. Do not use orchestration overhead that costs more than directly completing a small task.
 
 ---
 
 ## Dependency Direction
 
-The intended dependency direction is:
+The intended package dependency direction is:
 
 ```text
 shared <- simulation <- renderer <- game
@@ -118,148 +136,153 @@ shared <- simulation <- renderer <- game
              +-- balance-runner
 ```
 
-No package may introduce a reverse dependency without an intentional architecture change.
+Do not introduce a reverse dependency without an intentional design change.
+
+### `packages/shared`
+
+Contains small engine-independent primitives genuinely shared across packages.
+
+Appropriate examples include:
+
+* Grid coordinates
+* Chunk coordinates
+* Grid rectangles
+* Stable hashing
+* Stable comparison helpers
+* General fixed-point primitives
+
+Do not turn it into a miscellaneous utility package.
 
 ### `packages/simulation`
 
-The authoritative model.
+Owns authoritative state and behavior.
 
 It must:
 
-- Run under Node without a browser.
-- Advance only through explicit fixed logical steps.
-- Own seeded randomness.
-- Avoid Babylon.js.
-- Avoid DOM and browser APIs.
-- Avoid wall-clock-dependent decisions.
-- Avoid `Math.random()`.
-- Expose detached serializable snapshots.
-- Keep stable entity IDs.
-- Validate references and impossible states.
-- Define explicit ordering and tie-breaking.
-- Remain usable by the headless balance runner.
+* Run under Node without a browser
+* Import no Babylon.js modules
+* Use no DOM or browser APIs
+* Use no wall-clock-dependent gameplay decisions
+* Avoid `Math.random()`
+* Own deterministic randomness
+* Own stable entity IDs
+* Own command validation
+* Define explicit ordering and tie-breaking
+* Expose detached serializable snapshots
+* Keep snapshot observation mutation-free
+* Remain usable by the balance runner
 
 ### `packages/renderer`
 
-A downstream projection of snapshots.
+Projects completed simulation snapshots into Babylon.js state.
 
 It may own:
 
-- Babylon scenes
-- meshes and instances
-- materials
-- camera state
-- effects
-- interpolation
-- renderer-only caches
+* Scenes
+* Meshes and instances
+* Materials
+* Camera state
+* Interpolation
+* Effects
+* Visibility decisions
+* Renderer-only caches
 
 It must not:
 
-- decide authoritative behavior,
-- generate authoritative IDs,
-- mutate simulation state,
-- mutate snapshots,
-- use transforms as logical positions,
-- make simulation results frame-rate dependent.
+* Decide authoritative behavior
+* Generate authoritative IDs
+* Mutate simulation state
+* Mutate snapshots
+* Treat transforms as logical positions
+* Observe private partial-tick state
+* Make outcomes frame-rate dependent
 
 ### `apps/game`
 
 Owns:
 
-- browser startup
-- fixed-step loop wiring
-- DOM controls
-- input translation
-- PWA registration
-- speed controls
-- command submission
-- connecting simulation snapshots to renderer
+* Browser startup
+* DOM controls
+* Input translation
+* Zone placement and removal interactions
+* Pause and speed controls
+* Simulation-work orchestration
+* Command submission
+* PWA registration
+* Passing completed snapshots to the renderer
 
-Keep substantial simulation rules out of the game application.
-
-### `packages/shared`
-
-Contains only small engine-independent primitives that are genuinely shared.
-
-Do not use it as a miscellaneous utility package.
+Keep substantial simulation rules out of the browser application.
 
 ### `tools/balance-runner`
 
-Must:
+Runs the same authoritative simulation under Node.
 
-- run headlessly,
-- import no Babylon.js,
-- produce machine-readable stable output,
-- run deterministic scenarios,
-- report invariant failures,
-- support regression and balance analysis.
+It should:
 
----
+* Import no Babylon.js modules
+* Accept explicit seeds and scenarios
+* Produce machine-readable output
+* Report important invariant failures
+* Support deterministic regression and balance checks
 
-## Fixed-Step Simulation
-
-Simulation and rendering are separate:
-
-```text
-Simulation:
-    fixed logical ticks
-
-Rendering:
-    requestAnimationFrame
-    interpolation between snapshots
-```
-
-Each citizen moves at most one logical navigation cell per tick unless the design is deliberately revised.
-
-Interpolation progress belongs only to the renderer.
-
-When adding simulation behavior:
-
-1. Define the authoritative transition.
-2. Define ordering and tie-breaking.
-3. Make it deterministic.
-4. Add focused tests.
-5. Add invalid-state invariants.
-6. Expose only necessary snapshot state.
-7. Update headless metrics and scenarios.
-8. Verify repeated-run equality.
+Do not expand balance-runner output for every small feature unless the output is directly useful.
 
 ---
 
-## Player Actions and Scope
+## Core Gameplay Scope
 
-The main recurring player actions are:
+The target core loop is:
 
-1. Place a district seed.
-2. Buy a simulation upgrade.
+1. Place Living and Working zones.
+2. Autonomously plan building sites.
+3. Assign citizens to construction.
+4. Complete homes and workplaces.
+5. Assign citizens to homes and jobs.
+6. Commute and produce Data.
+7. Grow population from spare home capacity.
+8. Add Leisure zones and buildings.
+9. Visit Leisure buildings.
+10. Double qualifying work-entry Data during leisure cooldown.
+11. Use Data to expand.
 
-Starting seed kinds:
+The target core includes:
 
-- Living
-- Working
-- Services
+* Living, Working, and Leisure zones
+* Autonomous building planning
+* Incomplete and completed buildings
+* Construction labor
+* Home and work assignments
+* Population growth
+* Wandering
+* Commuting
+* Leisure visits
+* Data production
+* Fixed-point movement
+* Deterministic A*
+* Collision resolution
+* Tick slicing
+* Zone removal
+* Snapshot-based rendering
 
-Autonomous systems own:
+Unless explicitly requested, do not add or preserve as target systems:
 
-- citizen schedules
-- destination choice
-- path selection
-- building placement
-- construction
-- occupancy
-- traffic formation
-- redevelopment
-- city expansion
+* District seeds
+* Demand fields
+* Space, Access, or Activity indicators
+* Services Core
+* Research tracks
+* Specialization
+* Prestige
+* Metaprogression
+* Learning or Industry systems
+* Roads or transit
+* Congestion-based routing
+* Manual building placement
+* Manual citizen assignment
+* Individual building demolition
+* Redevelopment
 
-Do not reintroduce detailed zoning, individual road placement, building-by-building approval, or unit micromanagement without intentionally revising the design.
-
-The primary city concepts are:
-
-- Space
-- Access
-- Activity
-
-Prefer visible behavioral changes over hidden percentage bonuses.
+Old implementations of these systems may remain temporarily until the assigned migration step removes them.
 
 ---
 
@@ -267,441 +290,382 @@ Prefer visible behavioral changes over hidden percentage bonuses.
 
 Player intent enters the simulation through explicit validated commands.
 
-Examples:
+Initial target examples include:
 
-- `placeDistrictSeed(...)`
-- future upgrade-purchase commands
+```ts
+placeZone(...)
+removeZone(...)
+```
 
 Command rules:
 
-- Validate entirely in simulation.
-- Return structured accepted/rejected results.
-- Centralize costs and unlock rules.
-- Rejected commands must be mutation-free.
-- Rejected commands must not consume RNG or IDs.
-- The UI must not duplicate authoritative validation.
-- Identical commands at identical ticks must replay identically.
+* Validate entirely in the simulation.
+* Return structured accepted or rejected results.
+* Centralize costs and geometry.
+* Apply at defined tick boundaries.
+* Rejected commands must be mutation-free.
+* Rejected commands must not consume RNG or entity IDs.
+* The UI must not be the final source of validation.
+* Identical commands in identical states must replay identically.
 
-Avoid a generic command framework until multiple commands clearly require one.
-
----
-
-## Fine-Grained Logical Grid
-
-The logical navigation grid is intentionally finer than the visible building scale.
-
-A typical small building should occupy approximately `5 × 5` logical cells. Larger buildings may occupy larger rectangles. Citizens occupy and move over individual logical cells.
-
-Keep three coordinate concepts separate:
-
-1. **Logical grid coordinates**
-   - authoritative simulation positions
-   - used for movement, occupancy, entrances, demand, and placement
-
-2. **Building/project footprints**
-   - authoritative rectangles or explicit logical-cell regions
-   - cover multiple navigation cells
-
-3. **Babylon world coordinates**
-   - renderer-owned projections
-   - derived through centralized conversion functions
-
-Do not assume one logical cell equals one Babylon world unit.
-
-A reasonable initial scale is approximately:
-
-- logical map: `60 × 50`
-- logical cell: `0.25` world units
-- home: `5 × 5` cells
-- workplace: `7 × 7` cells
-
-These are starting points, not scattered literals. Keep chosen values centralized and documented.
+Avoid a generic command framework until several commands clearly benefit from one.
 
 ---
 
-## Building and Project Footprints
+## Transactional Tick Execution
 
-Use one authoritative footprint representation.
+Simulation and rendering are separate:
 
-Prefer a rectangle such as:
+```text
+Simulation:
+    fixed logical ticks
+    possibly completed over multiple work calls
 
-```ts
-interface GridRect {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-}
+Rendering:
+    requestAnimationFrame
+    interpolation between completed snapshots
 ```
 
-Derive occupied cells in stable row-major order.
+A logical tick is transactional.
 
-Do not store several redundant authoritative forms—such as anchor, center, dimensions, and occupied cells—unless consistency is enforced.
+Partial tick state:
 
-Every building type must define or derive:
+* Is private to the simulation
+* May contain resumable cursors and temporary buffers
+* Must not be rendered
+* Must not be exposed as a completed snapshot
+* Must not advance differently because of observation
 
-- footprint dimensions
-- occupied cells
-- one or more entrance candidates
-- selected entrance
-- capacity
-- orientation if orientation is implemented
+The browser may use elapsed time to decide how often to invoke simulation work, but the simulation receives deterministic work-unit budgets rather than millisecond budgets.
 
-All building footprint cells are non-walkable.
+Different work-unit budgets must eventually produce the same completed state for the same initial state and commands.
 
-Active construction projects reserve their entire footprint. Document the construction phase at which reserved cells become non-walkable.
+When modifying tick execution:
 
-Placement validation must check the complete footprint, not only an anchor cell.
+* Preserve stage ordering.
+* Preserve stable cursors.
+* Ensure an entity is not processed twice because work was split.
+* Keep movement proposal generation separate from simultaneous commit.
+* Keep rendering on completed snapshots.
 
-Reject placement when:
+Do not require a full work-budget equivalence test for every feature. Add or run one when the change directly affects resumable work, stage boundaries, or private partial-tick state.
 
-- any cell is out of bounds,
-- any cell overlaps a building,
-- any cell overlaps a reserved project,
-- any cell overlaps another reserved object,
-- the entrance is invalid,
-- the entrance is unreachable,
-- another documented buildability rule fails.
+---
+
+## Determinism
+
+Determinism is a core requirement.
+
+Authoritative behavior must not depend on:
+
+* Wall-clock time
+* Render frequency
+* CPU speed
+* Number of calls used to complete a tick
+* Snapshot-read frequency
+* Incidental collection iteration
+* Renderer ordering
+
+Never use `Math.random()` in `packages/simulation`.
+
+When introducing a decision, define what is needed for that decision:
+
+* Candidate set
+* Stable order
+* Tie-breaking
+* Integer or fixed-point arithmetic where appropriate
+* RNG key or RNG consumption order
+
+Prefer keyed deterministic randomness for local decisions such as:
+
+* Wandering targets
+* Building-interior destinations
+* Sidesteps
+* Planning rolls
+* Population rolls
+
+Do not add elaborate determinism instrumentation to a small change unless the change actually touches ordering, randomness, serialization, hashing, or resumable execution.
+
+---
+
+## World, Zones, and Buildings
+
+The authoritative world uses signed integer grid coordinates divided into lazily allocated chunks.
+
+Chunks are implementation details and must not affect gameplay at their boundaries.
+
+Zones are axis-aligned rectangles that:
+
+* May cross chunk boundaries
+* May contain citizens
+* May not overlap other zones
+* Permit only compatible building types
+* May be removed without a refund
+
+Buildings define:
+
+* A physical footprint
+* An exclusion shape
+* Assignment capacity
+* Construction-worker capacity
+* Required labor
+* Supported transformations
+
+Placement rules must validate complete shapes, not only anchors.
+
+Required relationships include:
+
+* Physical footprints do not overlap.
+* A physical footprint does not overlap another building’s exclusion shape.
+* An exclusion shape does not overlap another building’s physical footprint.
+* Exclusion shapes may overlap one another.
+* The complete exclusion shape remains inside the owning zone.
+
+Incomplete buildings reserve their geometry immediately.
 
 Use stable ordering for:
 
-- footprint cells
-- candidate anchors
-- building types
-- orientations
-- entrance candidates
-- equally scored placements
+* Zones
+* Archetypes
+* Transforms
+* Candidate anchors
+* Buildings
+* Equal planning choices
+
+Do not build a generalized geometry framework beyond what the assigned step requires.
 
 ---
 
-## Entrances
+## Citizens, Assignments, and Goals
 
-Citizens route to building entrances, not building centers or blocked interiors.
+Citizens may have:
 
-An entrance should normally be:
+* One home assignment
+* One work assignment
+* One construction assignment
+* One temporary leisure reservation
+* One active goal
 
-- outside the blocked footprint,
-- orthogonally adjacent to the perimeter,
-- in bounds,
-- walkable,
-- reachable from surrounding walkable space.
+Goal priority is:
 
-Citizens must never occupy blocked building-interior cells.
+1. Construction
+2. Leisure
+3. Home/work Data production
+4. Wandering
 
-It is acceptable before local collision avoidance is implemented for multiple inactive citizens to share an entrance cell. Once reservations are introduced, entrance throughput and queue semantics must be explicit.
+Citizens finish their current trip or building activity before selecting a new goal.
 
-Access and planned trip distance should use entrance-to-entrance travel, not arbitrary building-center distance.
+New construction opportunities do not interrupt active ordinary trips or activities.
 
-Demand proximity should use a documented spatial reference such as:
+Construction assignments remain until completion or invalidation.
 
-- nearest entrance,
-- distance to footprint,
-- or another intentionally chosen measure.
+Capacity meanings are distinct:
+
+* Home resident capacity
+* Workplace worker capacity
+* Leisure visitor capacity
+* Construction-worker capacity
+
+Do not conflate these capacities.
+
+Assignment and reassignment must use the rankings in `docs/design.md`.
+
+Avoid storing redundant authoritative state unless consistency is enforced.
 
 ---
 
-## Pathfinding
+## Navigation and Movement
 
-Pathfinding operates over individual logical cells.
+Pathfinding operates over orthogonally adjacent logical cells.
 
 It must:
 
-- accept or derive static walkability,
-- block complete building footprints,
-- block relevant project footprints,
-- leave valid entrances walkable,
-- use explicit deterministic neighbor ordering,
-- return adjacent moves,
-- remain in bounds,
-- handle no-path cases explicitly,
-- avoid Babylon.js and render transforms.
+* Use deterministic neighbor ordering
+* Use explicit tie-breaking
+* Handle no-path results
+* Block unrelated building footprints
+* Permit the citizen’s route source and destination building as defined by the design
+* Avoid treating all citizens as permanent global A* obstacles
+* Remain independent of Babylon.js state
 
-The current pathfinder's walkability callback is an appropriate seam. Do not replace it with a broad navigation framework without need.
+Citizen movement uses:
 
-Do not initially treat every citizen's current cell as a permanent global pathfinding obstacle. Doing so causes excessive replanning, oscillation, and deadlock.
+```text
+proposal
+resolution
+simultaneous commit
+```
 
----
+Do not sequentially mutate citizen positions while movement proposals are still being created.
 
-## Traffic Development Stages
+Movement resolution must support the design’s:
 
-Implement citizen traffic in stages.
+* Target conflict priorities
+* Dependency chains
+* Two-citizen swaps
+* Three-or-more occupancy cycles
+* Sidesteps
+* Bounded replanning
+* Emergency recovery
+* Global no-progress recovery
 
-### Stage 1: Route usage
+Changes to movement conflict resolution are high risk. They should receive at least one focused regression test covering the changed rule.
 
-Record deterministic logical edge or cell traversal usage.
-
-Prefer edge usage when direction and corridors matter.
-
-Requirements:
-
-- canonical stable keys,
-- bounded history,
-- logical-tick timing,
-- stable snapshot ordering,
-- no wall-clock decay.
-
-### Stage 2: Congestion-aware long-range routing
-
-Use historical traffic as a bounded path cost.
-
-Prefer integer costs to reduce floating-point ambiguity.
-
-Requirements:
-
-- base positive movement cost,
-- bounded congestion penalty,
-- explicit tie-breaking,
-- route calculation normally at trip start,
-- no per-tick global replanning,
-- current citizen positions are still not static obstacles.
-
-### Stage 3: Local movement reservations
-
-When immediate collision avoidance is implemented, use:
-
-1. proposal,
-2. resolution,
-3. simultaneous commit.
-
-Do not mutate citizens sequentially in a way that makes results depend on array order.
-
-Suggested conflict priority:
-
-1. greater wait age,
-2. fewer remaining route cells,
-3. earlier trip start,
-4. stable citizen ID.
-
-Define:
-
-- target-cell conflict policy,
-- opposite-direction edge-swap policy,
-- queue behavior,
-- anti-starvation behavior,
-- bounded deadlock recovery,
-- replan threshold.
-
-Do not add continuous crowd physics unless the design is intentionally changed.
+Do not add continuous crowd physics.
 
 ---
 
-## Demand, Indicators, and Data
+## Rendering
 
-The simulation currently exposes:
+Rendering is a downstream projection of completed snapshots.
 
-- Space
-- Access
-- Activity
-- Data
-- spatial Living, Working, and Services demand
-
-Demand cells must:
-
-- cover the logical grid,
-- use stable row-major order,
-- contain finite bounded values,
-- expose stable totals,
-- remain detached in snapshots.
-
-District seed influence should enter through authoritative simulation state and pure demand calculations.
-
-Data:
-
-- is authoritative,
-- changes only in logical simulation transitions,
-- uses centralized activity values and costs,
-- uses deterministic rounding,
-- must never depend on rendering or wall-clock timing.
-
----
-
-## Autonomous Developers and Construction
-
-Developer evaluation must:
-
-- run on a fixed cadence,
-- enumerate candidates in stable order,
-- validate complete footprints,
-- validate entrances,
-- use pure scoring where practical,
-- define exact tie-breaking,
-- avoid consuming RNG for rejected candidates,
-- save a player-readable reason.
-
-Construction projects must:
-
-- own stable IDs,
-- reserve complete footprints,
-- advance through tick-based phases,
-- eventually complete or fail explicitly,
-- create buildings with matching footprints and entrances,
-- expose enough state for rendering and explanation.
-
-Do not add demolition, conversion, redevelopment, or transit until the base build loop works.
-
----
-
-## Population and Occupancy
-
-Population growth must require compatible available capacity.
-
-Rules:
-
-- home and workplace references must exist,
-- references must match building types,
-- occupancy must not exceed capacity,
-- assignments use documented spatial cost,
-- equal assignments use stable tie-breaking,
-- population respects a configured cap,
-- citizen IDs are stable,
-- existing citizens are not silently reassigned unless relocation is the task.
-
-Footprint area does not automatically equal capacity.
-
----
-
-## Rendering Guidelines
-
-The visual style should use procedural voxel-like geometry, reusable modules, instances, grid lines, holograms, and clear silhouettes.
+Use centralized logical-to-world conversion.
 
 Prefer:
 
-- one ground mesh or chunked ground,
-- grid materials or shaders,
-- combined completed-building meshes,
-- thin instances for repeated details,
-- individual instanced voxels during construction,
-- dynamic overlays only for relevant cells/edges.
+* Bounded chunk or multi-chunk ground meshes
+* Reusable materials
+* Instances or thin instances
+* Stable-ID reconciliation
+* Bounded dynamic overlays
+* Procedural voxel-like geometry
 
-Do not create one permanent Babylon mesh per logical navigation cell on a large map.
+Do not create:
 
-Do not create one permanent mesh per voxel in completed large buildings.
+* One permanent mesh per logical cell
+* One permanent mesh per completed-building voxel at large scale
+* Renderer-owned authoritative positions
+* Renderer-generated authoritative IDs
 
-Centralize logical-to-world coordinate conversion.
-
-Dynamic renderer layers should reconcile by stable ID:
+Dynamic layers reconcile by stable ID:
 
 ```text
-renderer-only IDs -> dispose
-snapshot-only IDs -> create
-shared IDs        -> update
+snapshot-only ID -> create
+shared ID        -> update
+renderer-only ID -> dispose
 ```
 
 Repeated updates with an unchanged snapshot must not duplicate resources.
-
-Use `NullEngine` for renderer tests where possible.
 
 ---
 
 ## UI and Input
 
-The shipped interaction model is mouse- and touch-only.
+The normal interaction model is mouse- and touch-friendly.
 
 Use accessible DOM controls over the Babylon canvas.
 
-Requirements:
+Core interaction should not require:
 
-- large touch targets,
-- stable accessible names,
-- no required keyboard input,
-- no text entry for ordinary play,
-- no numeric steppers,
-- mobile viewport support,
-- pointer and touch Playwright coverage,
-- plain-language command rejection,
-- `aria-live` for important status.
+* Keyboard input
+* Text entry
+* Numeric steppers
+* Manual citizen assignment
+* Manual building placement
 
-Babylon renders the city. HTML/CSS renders menus, cards, indicators, and inspection panels.
+The UI may preview commands, but the simulation performs final validation.
 
-Pointer-to-logical-grid conversion must use centralized coordinate rules and must not make meshes authoritative.
+Prefer plain-language rejection messages and large touch targets.
+
+Do not add a large UI framework without clear need.
 
 ---
 
-## Testing
+## Testing Philosophy
 
-Every nontrivial change needs the smallest meaningful test at the correct layer.
+Testing should provide the smallest useful proof that a change did not break its intended behavior.
 
-### Unit tests
+Feature implementation should normally be the majority of the work.
 
-Use Vitest for:
+Do not spend more time building test infrastructure than implementing a bounded feature unless the feature is especially risky or the user explicitly requests exhaustive verification.
 
-- seeded randomness
-- pathfinding
-- footprints
-- entrances
-- placement validation
-- demand
-- command rejection
-- destination scoring
-- developer scoring
-- construction phases
-- occupancy
-- traffic costs
-- movement conflict resolution
-- serialization
-- stable hashes
-- economy calculations
-- invariants
+### Default rules
 
-### Simulation integration tests
+* Do not add a test for every helper, branch, or internal function.
+* Do not duplicate the same behavior across unit, integration, renderer, and E2E tests.
+* Do not create broad scenario matrices for a localized change.
+* Do not add large fixtures when a small direct setup proves the behavior.
+* Do not test implementation details that may be refactored safely.
+* Do not update many unrelated tests solely to increase coverage.
+* Do not run every validation command after every small edit.
+* Existing tests may be sufficient; a change does not automatically require a new test.
 
-Verify:
+Add a test when it protects one of these:
 
-- no exceptions
-- unique stable IDs
-- valid references
-- in-bounds positions
-- no building-interior citizen positions
-- valid adjacent routes
-- valid entrances
-- no overlap
-- capacity respected
-- deterministic replay
-- no negative counts
-- no permanently invalid agent state
-- long-run progress
+* A new player-visible behavior
+* A core simulation transition
+* A likely regression
+* A previous bug
+* A determinism-sensitive ordering rule
+* A movement or capacity invariant
+* A command rejection that could lose state or currency
 
-### Renderer tests
+For most feature steps, one to three focused tests are enough.
 
-Use `NullEngine` where possible.
+### Appropriate validation by change type
 
-Test:
+#### Documentation-only changes
 
-- scene creation/disposal
-- snapshot reconciliation
-- entity creation/removal
-- interpolation
-- footprint dimensions
-- project phases
-- no duplicate resources
-- no snapshot mutation
-- bounded ground mesh count
+Usually require no automated tests.
 
-### E2E tests
+Inspect formatting and links as appropriate.
 
-Use Playwright for:
+#### Local TypeScript refactors
 
-- startup
-- no console errors
-- canvas
-- speed controls
-- reset
-- seed placement
-- touch-sized viewport
-- construction visibility
-- dynamic population
-- traffic overlay when implemented
-- upgrades and saves only when implemented
+Normally run:
 
-Do not replace deterministic simulation tests with screenshot tests.
+```bash
+npm run typecheck
+```
 
----
+Run a focused existing test only when the refactor touches behavior.
 
-## Validation Commands
+#### Simulation behavior
 
-Run focused tests first, then the full relevant suite.
+Normally:
 
-Expected root commands:
+1. Add or update the smallest focused test that proves the main transition, when existing coverage is insufficient.
+2. Run that test file or pattern.
+3. Run type checking.
+
+Do not automatically run every simulation scenario.
+
+#### Renderer changes
+
+Normally:
+
+* Run the relevant renderer test when one exists.
+* Run the production build.
+
+Add a renderer test only for meaningful resource reconciliation or projection behavior that is otherwise easy to regress.
+
+#### Browser interaction changes
+
+Run a focused E2E test only when:
+
+* The user-facing interaction changed, and
+* Lower-level tests or a build cannot adequately verify it.
+
+Do not run the complete E2E suite for every UI change.
+
+#### Cross-package or high-risk changes
+
+Use broader validation when the change affects:
+
+* Public package APIs
+* Tick execution
+* Serialization or hashes
+* Movement resolution
+* Zone removal
+* Capacity accounting
+* Build configuration
+* Multiple application layers
+
+Even then, choose the smallest set of commands that exercises the affected paths.
+
+### Full validation
+
+The following are comprehensive tools, not mandatory per-task rituals:
 
 ```bash
 npm run format:check
@@ -714,18 +678,47 @@ npm run sim:run -- --seed 1234 --ticks 1000
 npm run validate
 ```
 
-When deterministic behavior changes:
+Run the full suite when:
 
-- run the same headless command at least twice,
-- compare the complete JSON,
-- confirm the hash matches,
-- repeat important named scenarios.
+* The user explicitly requests it.
+* Preparing a broad integration or release change.
+* A cross-cutting migration step affects most packages.
+* Focused tests reveal uncertainty about wider breakage.
+* CI or repository policy requires it.
 
-Do not claim a command passed unless it actually ran successfully.
+Do not run `npm run validate`, all E2E tests, repeated balance scenarios, and repeated deterministic hashes by default for a small change.
 
-Report exact environmental limitations and unverified items.
+### Deterministic replay checks
 
-### Windows PowerShell command shims
+Repeat identical simulations only when a change directly affects:
+
+* Randomness
+* Stable ordering
+* Hashing
+* Serialization
+* Tick slicing
+* Movement conflict resolution
+* Planning selection
+* Population selection
+
+One repeated comparison is normally sufficient unless debugging a failure.
+
+### Reporting
+
+Never claim a command passed unless it ran successfully.
+
+Report:
+
+* Commands actually run
+* Exact failures
+* Relevant environmental limitations
+* Important checks deliberately not run
+
+Do not apologize for skipping irrelevant checks. State that validation was scoped to the change.
+
+---
+
+## Validation Commands on Windows
 
 Under Windows PowerShell, use:
 
@@ -739,147 +732,118 @@ from the first package-manager command.
 Examples:
 
 ```powershell
-npm.cmd ci
-npm.cmd run validate
-npm.cmd test
-npx.cmd playwright install chromium
+npm.cmd run typecheck
+npm.cmd test -- <test-pattern>
+npm.cmd run build
+npx.cmd playwright test <test-file>
 ```
-
-Do not first attempt bare `npm` or `npx`.
 
 Do not change:
 
-- PowerShell execution policy,
-- registry,
-- user profile,
-- machine policy
+* PowerShell execution policy
+* Registry
+* User profile
+* Machine policy
 
 to work around `npm.ps1` or `npx.ps1`.
 
 Platform rule:
 
-- Windows PowerShell: `npm.cmd`, `npx.cmd`
-- Other shells: `npm`, `npx`
+* Windows PowerShell: `npm.cmd`, `npx.cmd`
+* Other shells: `npm`, `npx`
 
-Report the command actually executed, including `.cmd`.
-
----
-
-## Determinism
-
-Determinism is a core requirement.
-
-When adding decisions:
-
-- define input state,
-- define candidate order,
-- define tie-breaking,
-- define rounding,
-- define RNG consumption order if RNG is necessary.
-
-Never:
-
-- use `Math.random()` in simulation,
-- use wall-clock time,
-- depend on render frequency,
-- depend on incidental object iteration,
-- depend on renderer object order,
-- consume RNG for rejected/no-op operations without documenting it.
-
-Prefer:
-
-- sorted arrays,
-- stable entity IDs,
-- integer costs,
-- fixed logical windows,
-- explicit comparators,
-- deterministic serialization.
-
-If a hash changes intentionally, explain which authoritative state or transition changed.
+Report the command actually executed.
 
 ---
 
 ## Coding Style
 
-- TypeScript strict mode
-- no implicit `any`
-- explicit domain types
-- small modules with clear ownership
-- narrow public APIs
-- pure functions for scoring and transitions where practical
-- no broad singleton state
-- no global mutable state
-- no dependency-injection framework
-- no ECS unless deliberately adopted
-- no speculative generic framework
-- no premature optimization
-- comments for invariants and non-obvious reasoning
-- descriptive domain names
-- Node scripts over shell-specific scripts
-- no generated artifacts committed
+Use:
 
-Avoid generic names such as `Manager`, `Helper`, or `Util`.
+* TypeScript strict mode
+* Explicit domain types
+* Narrow public APIs
+* Small modules with clear ownership
+* Pure functions where they make transitions easier to understand
+* Descriptive domain names
+* Comments for invariants and non-obvious decisions
+* Node scripts instead of shell-specific scripts where practical
+
+Avoid:
+
+* Implicit `any`
+* Broad singleton state
+* Global mutable state
+* Dependency-injection frameworks
+* ECS architecture unless deliberately adopted
+* Speculative generic frameworks
+* Premature optimization
+* Generic names such as `Manager`, `Helper`, or `Util`
+* Generated artifacts committed to the repository
+
+Prefer direct domain code over abstraction added for hypothetical future features.
 
 ---
 
 ## Performance
 
-Measure before optimizing, but preserve scalable structures.
+Preserve scalable structures, but measure before optimizing.
 
 Prefer:
 
-- bounded renderer mesh counts,
-- instances/thin instances,
-- stable spatial occupancy views,
-- data-oriented loops where justified,
-- reusable allocations in hot paths,
-- staggered AI updates,
-- headless scenarios and benchmarks.
+* Lazy chunk allocation
+* Bounded simulation work
+* Bounded renderer resource counts
+* Instances and thin instances
+* Stable spatial indexes
+* Reusable allocations in demonstrated hot paths
+* Incremental jobs for expensive searches
 
-Do not compromise correctness or determinism for speculative performance.
+Do not:
 
-A finer logical grid must not imply one render object per cell.
+* Compromise determinism for speculative speed
+* Introduce worker threads before measurement
+* Build a complex performance framework before the core loop works
+* Treat one logical cell as one permanent renderer object
 
 ---
 
 ## Change Workflow
 
-For each task:
+For a normal implementation task:
 
-1. Inspect current files, branch, and tests.
-2. Read relevant design and architecture sections.
-3. Identify the smallest coherent implementation.
-4. State authoritative data and ordering.
-5. Preserve package boundaries.
-6. Implement.
-7. Add focused tests.
-8. Add/update invariants and balance scenarios.
-9. Run focused validation.
-10. Run the full relevant suite.
-11. Repeat deterministic scenarios.
-12. Inspect `git diff` and `git status`.
-13. Remove generated/accidental files.
-14. Report exact results.
+1. Read the relevant part of `docs/design.md`.
+2. Inspect the current code and nearby tests.
+3. Define the smallest coherent change.
+4. Preserve package ownership and deterministic ordering.
+5. Implement the feature.
+6. Add or update only the minimal useful test coverage.
+7. Run focused validation.
+8. Inspect the diff and repository status.
+9. Remove accidental or generated files.
+10. Report exact results and remaining limitations.
+
+Do not turn a bounded feature into a broad cleanup.
 
 Do not stop at a plan when implementation was requested.
 
-Do not ask for confirmation when a reasonable decision can be made from current code and docs.
+Do not ask for confirmation when the design and current code support a reasonable decision.
 
 ---
 
 ## Git Practices
 
-- Keep changes scoped.
-- Do not rewrite unrelated code.
-- Do not modify global Git configuration.
-- Do not force-push.
-- Do not commit secrets.
-- Do not commit generated output.
-- Do not silently update dependencies.
-- Explain lockfile changes.
-- Keep status clean except intentional changes.
+* Keep changes scoped.
+* Do not rewrite unrelated code.
+* Do not modify global Git configuration.
+* Do not force-push.
+* Do not commit secrets.
+* Do not commit generated output.
+* Do not silently update dependencies.
+* Explain lockfile changes.
+* Keep repository status clean except for intentional changes.
 
-For repository ownership warnings, use a repository-local or one-command safe-directory override rather than global configuration.
+For ownership warnings, use a repository-local or one-command safe-directory override instead of global configuration.
 
 ---
 
@@ -887,40 +851,41 @@ For repository ownership warnings, use a repository-local or one-command safe-di
 
 Unless explicitly requested, defer:
 
-- multiplayer
-- backend services
-- cloud saves
-- continuous crowd physics
-- transit before walking traffic works
-- detailed business finance
-- complex voxel meshing
-- Capacitor/desktop wrappers
-- large UI frameworks
-- external art pipelines
-- audio
-- prestige before the base loop
-- advanced redevelopment
-- worker threads before measurement
+* Multiplayer
+* Backend services
+* Cloud saves
+* Continuous crowd physics
+* Roads or transit
+* Congestion-based routing
+* Detailed business finance
+* Advanced voxel meshing
+* Large UI frameworks
+* External art pipelines
+* Audio
+* Prestige
+* Specialization
+* Research systems
+* Advanced redevelopment
+* Worker threads
+* Packaging wrappers
 
-Build tested vertical slices.
+Build the target core loop through small, working migration steps.
 
 ---
 
 ## Completion Report
 
+Keep completion reports concise and factual.
+
 Report:
 
-- what changed,
-- architectural decisions,
-- ordering/tie-breaking,
-- files changed,
-- tests added,
-- scenarios added,
-- commands run,
-- exact results,
-- repeated-run comparison,
-- intentional hash changes,
-- remaining limitations,
-- one next logical task.
+* What changed
+* Files changed
+* Important architectural or ordering decisions
+* Tests added or updated, when any
+* Commands run and exact results
+* Important checks not run
+* Remaining limitations
+* The next logical migration step, when relevant
 
-Keep the report factual.
+Do not provide a long testing inventory when only a focused check was necessary.

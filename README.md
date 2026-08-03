@@ -1,10 +1,47 @@
 # Idle City
 
-Idle City is a browser-first, installable 3D incremental city simulation. This repository contains a deliberately small vertical slice: citizens deterministically commute between multi-cell voxel homes and workplaces, travel to active construction sites, and provide authoritative labor while deterministic developers score district demand and stage footprint-aware construction in a lazy, signed-world chunk model.
+Idle City is a browser-first, installable 3D incremental city simulation.
 
-## Architecture
+The player places broad Living, Working, and Leisure zones. Buildings are planned autonomously, citizens construct them, homes grow the population, and citizens commute between home and work to produce Data.
 
-The npm workspace dependency flow is one-way:
+The repository is being migrated toward a simpler core gameplay loop focused on:
+
+* Zone placement
+* Autonomous building planning
+* Citizen construction
+* Home and work assignments
+* Population growth
+* Commuting
+* Leisure visits
+* Data production
+* Deterministic, scalable simulation
+
+Research, specialization, prestige, spatial demand, district seeds, and other progression systems are outside the current target.
+
+## Design
+
+[`docs/design.md`](docs/design.md) is the single target-state contract for both gameplay and architecture.
+
+It defines:
+
+* The core gameplay loop
+* Authoritative simulation rules
+* Tick slicing
+* Determinism
+* World and chunk representation
+* Zones and buildings
+* Citizen movement and assignments
+* Rendering boundaries
+* Balance defaults
+* Migration rules
+
+The current codebase is being migrated incrementally and may temporarily contain older systems that are not part of the target design.
+
+The current branch is the source of truth for what is implemented today. The design document is the source of truth for the intended destination.
+
+## Repository Architecture
+
+The npm workspace dependency direction is:
 
 ```text
 shared <- simulation <- renderer <- game
@@ -12,16 +49,18 @@ shared <- simulation <- renderer <- game
              +-- balance-runner
 ```
 
-- `packages/shared` contains platform-neutral primitives and stable hashing.
-- `packages/simulation` owns authoritative state, lazy chunk/ROW storage, footprints, circulation envelopes, entrances, chunk-aware A*, incremental developer jobs, schedules, and seeded randomness. It has no Babylon.js, DOM, or browser dependencies.
-- `packages/renderer` translates immutable simulation snapshots into Babylon.js scene state.
-- `apps/game` owns the fixed-step browser loop, controls, PWA shell, and DOM overlay.
-- `tools/balance-runner` steps the same simulation directly under Node and emits JSON.
-- `tests/e2e` verifies the assembled browser experience.
+* `packages/shared` contains small platform-neutral primitives.
+* `packages/simulation` owns authoritative state, deterministic behavior, pathfinding, world storage, and serializable snapshots.
+* `packages/renderer` translates completed snapshots into Babylon.js scene state.
+* `apps/game` owns browser startup, controls, input, timing orchestration, and the PWA shell.
+* `tools/balance-runner` runs the same simulation headlessly under Node.
+* `tests/e2e` contains browser-level Playwright checks.
 
-See [docs/architecture.md](docs/architecture.md) for design details.
+Simulation code has no Babylon.js, DOM, or browser dependency.
 
-## Setup and development
+Rendering never determines authoritative outcomes.
+
+## Setup
 
 Use Node.js 22 or newer and npm 10 or newer.
 
@@ -30,51 +69,159 @@ npm install
 npm run dev
 ```
 
-Vite prints the local URL. The game supports mouse drag, mouse-wheel zoom, touch rotation, and pinch zoom. A production PWA build is available through `npm run build`.
+Vite prints the local development URL.
 
-## Validation
+The browser experience supports mouse and touch controls. A production build is available through:
 
 ```bash
-npm run format:check
-npm run lint
-npm run typecheck
-npm test
 npm run build
+```
+
+## Common Commands
+
+### Development
+
+```bash
+npm run dev
+```
+
+### Type checking
+
+```bash
+npm run typecheck
+```
+
+### Focused tests
+
+```bash
+npm test -- <test-file-or-pattern>
+```
+
+### All Vitest tests
+
+```bash
+npm test
+```
+
+### Production build
+
+```bash
+npm run build
+```
+
+### Browser E2E tests
+
+```bash
 npm run test:e2e
+```
+
+### Comprehensive validation
+
+```bash
 npm run validate
 ```
 
-`validate` runs formatting, lint, strict TypeScript checking, unit/integration tests, the deterministic simulation smoke test, and the production PWA build. Browser E2E remains a separate command because it requires an installed Playwright Chromium binary.
+`validate` is intended for broad integration checks. It is not necessary after every small change.
 
-## Headless balance runner
+Development should normally use the smallest relevant validation:
 
-Run thousands of logical ticks without a browser or graphics stack:
+* Type checking for local TypeScript changes
+* One focused test for a simulation behavior
+* A build for renderer or browser integration
+* Focused E2E only for an interaction that cannot be verified at a lower layer
+
+See [`AGENTS.md`](AGENTS.md) for the repository’s focused testing policy.
+
+## Headless Balance Runner
+
+Run the simulation without a browser or graphics stack:
 
 ```bash
 npm run sim:run -- --seed 1234 --ticks 1000
-npm run sim:run -- --scenario long-commute --seed 1234 --ticks 1000
 ```
 
-Step 10.5 adds deterministic four-profile equal-cost route ties, baseline
-stuck recovery at waits 4, 8, 12, and so on, and per-project critical-builder
-state after 12 zero-labor ticks. Recovery uses only current start-of-tick
-occupancy and wait state; historical traffic is deliberately excluded until
-the future ACCESS-2 congestion-routing upgrade. District influence is an
-axis-aligned square with Chebyshev distance: Living/Working/Services use
-radius and side lengths 10/21, 12/25, and 8/17. The Build flow reads these
-authoritative values and uses a responsive selector, scrollable details, and
-persistent confirmation dock.
+Named scenarios may also be available:
 
-The command prints one JSON object containing the scenario, seed, executed ticks, citizen count and population cap, completed trips and work/service activities, service trips/uses/waits, Data by work/service source, Services Core state and purchase results, demand totals, the three normalized city indicators, active/allocated chunk and ROW counters, demand dirty/evaluation counts, incremental developer job progress and budget peaks, construction labor counters, path instrumentation, scheduled command previews/results, invariant failures, and a stable final-state hash. Named scenarios also cover `sparse-expansion`, `extent`, `localized-demand`, `long-route`, `living-led`, `working-led`, `equal-score`, `obstacle-constrained`, `no-valid-footprint`, `long-run-construction`, `housing-surplus`, `workplace-surplus`, `balanced-expansion`, `tie`, `capped-growth`, `long-run-city`, `seed-boundary`, `multiple-same-type-seeds`, `sparse-development`, `two-connected-row-buildings`, `narrow-connector`, `dense-circulation`, `development-supersession`, `long-incremental-development`, `step9-dense-movement`, `one-worker-slow-build`, `full-staff-build`, `workers-competing-one-corridor`, `staging-cell-queue`, `worker-blocked-replans`, `no-eligible-workers`, `phase-cap-decrease`, `construction-dense-commute`, `off-screen-construction`, `repeated-deterministic-construction`, `services-core-progression`, `no-service-shortage`, `one-service-near-homes`, `one-service-near-workplaces`, `competing-services`, `service-capacity-bottleneck`, `services-seed-development`, and `dense-service-commute`. Omitting `--scenario` preserves the baseline command. Repeating identical inputs must produce byte-identical JSON and the same hash.
+```bash
+npm run sim:run -- --scenario <scenario-name> --seed 1234 --ticks 1000
+```
 
-## Determinism and timing
+The balance runner is used for:
 
-All random decisions use an explicit `SeededRandom` instance. Never use `Math.random()` in the simulation package. Each call to `simulation.step()` advances exactly one tick and citizens move by no more than one logical cell. The world is a signed coordinate space with only explicitly active chunks allocated; negative coordinates use floor-based chunk conversion. Demand refresh occurs during deterministic simulation transitions, and snapshots/queries are observation-pure. The browser runs steps at 5 Hz while Babylon renders independently. Render positions are interpolated from each citizen's previous and current logical positions; interpolation never feeds back into simulation state.
+* Deterministic smoke checks
+* Economy experiments
+* Long-running simulation scenarios
+* Movement and gridlock scenarios
+* Stable state hashes
+* Machine-readable metrics
 
-## Current limitations
+Scenario names and output fields may change during the migration to the new design.
 
-The slice uses a finite active-chunk set, fixed-radius Living/Working/Services district seeds with exact preview and confirmation, Services Core with tier-1 focus selection, compact public ROW, one-cell circulation envelopes, deterministic two-cell connectors, multi-cell buildings and construction projects, three-cell worker staging, exterior entrances, deterministic population growth over compatible home/work capacity, entrance-distance assignment, a simple home/work/service schedule, construction commute and labor states, deterministic A* routes, bounded internal traffic telemetry, chunked demand influence, incremental deterministic developer scoring, labor-driven survey/blueprint/foundation/frame/completion phases, deterministic Data plus Space/Access/Activity indicators with work/service source accounting, and dynamic stable-ID renderer reconciliation for buildings, citizens, projects, and seeds. Automatic expansion policy, congestion response, player-facing Traffic Analysis, paved roads or transit, demolition or ROW removal, backend, audio, and wrapper packaging are not implemented.
+## Determinism and Timing
 
-## Recommended next steps
+The authoritative simulation uses fixed logical ticks.
 
-The current slice includes Services Core, tier-1 focus selection, Services seed placement, service-building construction, citizen service need/use, Services demand, and headless service scenarios. Rank-1 research effects remain deferred; the next focused slice is limited to tier-1 research.
+The target normal speed is five ticks per second, while Babylon.js renders independently.
+
+A logical tick may be completed across multiple bounded work calls. Partial tick state remains private to the simulation, and the renderer interpolates only between completed snapshots.
+
+Authoritative behavior must not depend on:
+
+* Render frame rate
+* CPU speed
+* Wall-clock timing
+* Snapshot-read frequency
+* Number of work calls used to complete a tick
+
+Simulation randomness is explicit and deterministic. `Math.random()` must not be used in the simulation package.
+
+## Target Opening
+
+The target default opening contains:
+
+* Four wandering citizens near `(0, 0)`
+* 10 Data
+* No zones
+* No buildings
+* No home assignments
+* No work assignments
+
+The first Living zone costs 4 Data, and the first Working zone costs 6 Data.
+
+This allows the player to establish the initial Living and Working zones immediately and begin the autonomous construction loop.
+
+## Migration Status
+
+The project is transitioning from its earlier district-seed, demand, research, and service-oriented vertical slice.
+
+Migration work should proceed through small, working steps:
+
+1. Establish the new authoritative types and boundaries.
+2. Introduce resumable transactional tick execution.
+3. Add zones and autonomous building planning.
+4. Migrate citizen movement and building interiors.
+5. Add the new construction rules.
+6. Add assignments, commuting, and Data production.
+7. Add population growth.
+8. Add Leisure behavior.
+9. Replace old UI and renderer concepts.
+10. Remove remaining obsolete systems.
+
+Each step should keep the repository runnable. Temporary compatibility code is acceptable when narrowly scoped.
+
+## Contribution Guidance
+
+Read these files before broad changes:
+
+* [`docs/design.md`](docs/design.md)
+* [`AGENTS.md`](AGENTS.md)
+
+Key principles:
+
+* Keep simulation behavior authoritative and deterministic.
+* Preserve the package dependency direction.
+* Keep rendering downstream of completed snapshots.
+* Implement only the assigned migration step.
+* Prefer direct domain code over speculative frameworks.
+* Use the smallest meaningful tests and validation for the change.
+* Do not preserve retired systems as future design requirements.
