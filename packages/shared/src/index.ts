@@ -1,34 +1,3 @@
-export interface GridPosition {
-  readonly x: number;
-  readonly y: number;
-}
-
-export interface GridRect {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-}
-
-export interface ChunkCoordinate {
-  readonly x: number;
-  readonly y: number;
-}
-
-export function positionsEqual(left: GridPosition, right: GridPosition): boolean {
-  return left.x === right.x && left.y === right.y;
-}
-
-/** Returns the Chebyshev distance used by square district influence fields. */
-export function squareDistance(left: GridPosition, right: GridPosition): number {
-  return Math.max(Math.abs(left.x - right.x), Math.abs(left.y - right.y));
-}
-
-/** Returns the orthogonal grid distance used by movement and travel metrics. */
-export function orthogonalDistance(left: GridPosition, right: GridPosition): number {
-  return Math.abs(left.x - right.x) + Math.abs(left.y - right.y);
-}
-
 function ordered(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(ordered);
   if (value !== null && typeof value === 'object') {
@@ -41,15 +10,12 @@ function ordered(value: unknown): unknown {
   return value;
 }
 
-export function stableStringify(value: unknown): string {
-  return JSON.stringify(ordered(value));
-}
-
+/** Creates a small deterministic hash for serializable values. */
 export function stableHash(value: unknown): string {
-  const input = stableStringify(value);
+  const input = JSON.stringify(ordered(value));
   let hash = 0x811c9dc5;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
+  for (const character of input) {
+    hash ^= character.charCodeAt(0);
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0).toString(16).padStart(8, '0');
