@@ -3,6 +3,7 @@ import {
   getChunkKey,
   type ChunkCoordinates,
   type GridPosition,
+  type GridRect,
 } from '@idle-city/shared';
 
 /** The intentionally minimal authoritative record for an allocated chunk. */
@@ -24,6 +25,10 @@ export function cloneWorld(world: WorldState): WorldState {
 /** Allocates only the chunk containing the requested cell. */
 export function ensureChunkAt(world: WorldState, position: GridPosition): ChunkRecord {
   const coordinates = getChunkCoordinates(position);
+  return ensureChunkAtCoordinates(world, coordinates);
+}
+
+function ensureChunkAtCoordinates(world: WorldState, coordinates: ChunkCoordinates): ChunkRecord {
   const key = getChunkKey(coordinates);
   const existing = world.chunks.get(key);
   if (existing !== undefined) return existing;
@@ -31,6 +36,21 @@ export function ensureChunkAt(world: WorldState, position: GridPosition): ChunkR
   const chunk: ChunkRecord = Object.freeze({ x: coordinates.x, y: coordinates.y });
   world.chunks.set(key, chunk);
   return chunk;
+}
+
+/** Allocates every chunk intersected by a non-empty logical rectangle. */
+export function ensureChunksForRect(world: WorldState, rect: GridRect): void {
+  const minimum = getChunkCoordinates({ x: rect.x, y: rect.y });
+  const maximum = getChunkCoordinates({
+    x: rect.x + rect.width - 1,
+    y: rect.y + rect.height - 1,
+  });
+
+  for (let chunkY = minimum.y; chunkY <= maximum.y; chunkY += 1) {
+    for (let chunkX = minimum.x; chunkX <= maximum.x; chunkX += 1) {
+      ensureChunkAtCoordinates(world, { x: chunkX, y: chunkY });
+    }
+  }
 }
 
 /** Returns chunk records in a stable order for diagnostics and hashing. */

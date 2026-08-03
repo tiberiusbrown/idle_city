@@ -1,9 +1,13 @@
 import {
   createCitizenId,
+  createGridRect,
   createGridPosition,
+  createZoneId,
   stableHash,
   type CitizenId,
   type GridPosition,
+  type GridRect,
+  type ZoneId,
 } from '@idle-city/shared';
 import { createAStarSearch, type AStarAdvanceResult, type AStarSearch } from './pathfinding';
 import {
@@ -13,11 +17,19 @@ import {
   type MovementProposal,
   type MovementResolution,
 } from './movement';
-import { cloneWorld, createWorld, ensureChunkAt, getSortedChunks, type WorldState } from './world';
+import {
+  cloneWorld,
+  createWorld,
+  ensureChunkAt,
+  ensureChunksForRect,
+  getSortedChunks,
+  type WorldState,
+} from './world';
 
-export type { CitizenId, GridPosition } from '@idle-city/shared';
+export type { CitizenId, GridPosition, GridRect, ZoneId } from '@idle-city/shared';
 export {
   CHUNK_SIZE,
+  createGridRect,
   getChunkCoordinates,
   getChunkKey,
   getChunkLocalPosition,
@@ -49,6 +61,91 @@ export const WANDERING_CHEBYSHEV_RADIUS = 16;
 export const MOVEMENT_UNITS_PER_CELL = FIXED_POINT_UNITS_PER_CELL;
 export const CITIZEN_MOVEMENT_SPEED = DEFAULT_CITIZEN_MOVEMENT_SPEED;
 export const WANDER_RADIUS = WANDERING_CHEBYSHEV_RADIUS;
+
+export type ZoneType = 'living' | 'working' | 'leisure';
+
+export interface ZoneDefinition {
+  readonly width: number;
+  readonly height: number;
+  readonly baseCost: number;
+}
+
+function createZoneDefinition(width: number, height: number, baseCost: number): ZoneDefinition {
+  return Object.freeze({ width, height, baseCost });
+}
+
+export const ZONE_DEFINITIONS: Readonly<Record<ZoneType, ZoneDefinition>> = Object.freeze({
+  living: createZoneDefinition(13, 13, 4),
+  working: createZoneDefinition(13, 13, 6),
+  leisure: createZoneDefinition(8, 8, 40),
+});
+
+export function isZoneType(value: unknown): value is ZoneType {
+  return value === 'living' || value === 'working' || value === 'leisure';
+}
+
+/** Calculates the next cost from the number of active zones of the same type. */
+export function calculateZoneCost(zoneType: ZoneType, activeSameTypeZoneCount: number): number {
+  if (!Number.isSafeInteger(activeSameTypeZoneCount) || activeSameTypeZoneCount < 0) {
+    throw new Error(
+      `Active zone counts must be nonnegative safe integers; received ${String(activeSameTypeZoneCount)}.`,
+    );
+  }
+
+  const definition = ZONE_DEFINITIONS[zoneType];
+  const cost = Math.ceil(definition.baseCost * 1.25 ** activeSameTypeZoneCount);
+  if (!Number.isSafeInteger(cost)) {
+    throw new Error(`Zone cost exceeded the safe integer range for ${zoneType}.`);
+  }
+  return cost;
+}
+
+export interface ZoneSnapshot {
+  readonly id: ZoneId;
+  readonly type: ZoneType;
+  readonly rect: GridRect;
+  readonly placementTick: number;
+  readonly immediatePlanningOpportunity: boolean;
+}
+
+export interface PlaceZoneCommand {
+  readonly type: 'place-zone';
+  readonly zoneType: ZoneType;
+  readonly rect: GridRect;
+  readonly expectedCost: number;
+}
+
+export type SimulationCommand = PlaceZoneCommand;
+
+export type PlaceZoneRejectionReason =
+  | 'invalid-type'
+  | 'invalid-dimensions'
+  | 'invalid-coordinates'
+  | 'invalid-cost'
+  | 'stale-cost'
+  | 'overlap'
+  | 'insufficient-data';
+
+export interface ZonePlacementPreview {
+  readonly valid: boolean;
+  readonly rect: GridRect;
+  readonly currentCost: number;
+  readonly reason?: PlaceZoneRejectionReason;
+}
+
+export type PlaceZoneCommandResult =
+  | {
+      readonly accepted: true;
+      readonly tick: number;
+      readonly cost: number;
+      readonly zone: ZoneSnapshot;
+    }
+  | {
+      readonly accepted: false;
+      readonly tick: number;
+      readonly currentCost: number;
+      readonly reason: PlaceZoneRejectionReason;
+    };
 
 export interface SimulationOptions {
   readonly seed?: number;
@@ -109,12 +206,19 @@ export interface SimulationSnapshot {
   readonly data: number;
   readonly population: number;
   readonly citizens: readonly CitizenSnapshot[];
-  readonly zones: readonly never[];
+  readonly zones: readonly ZoneSnapshot[];
+  readonly nextZoneCosts: Readonly<Record<ZoneType, number>>;
   readonly buildings: readonly never[];
 }
 
 export interface Simulation {
   advanceTickWork(maxWorkUnits: number): TickWorkResult;
+  /** Queues a command for the next tick command stage. */
+  queueCommand(command: SimulationCommand): void;
+  /** Queues the narrow placement command; retained as the direct public verb. */
+  placeZone(command: PlaceZoneCommand): void;
+  getZonePlacementPreview(command: PlaceZoneCommand): ZonePlacementPreview;
+  getLastCommandResults(): readonly PlaceZoneCommandResult[];
   getSnapshot(): SimulationSnapshot;
   getMetrics(): MovementMetrics;
   getDeterminismHash(): string;
@@ -144,11 +248,21 @@ interface CitizenState {
   replanWithOccupancy: boolean;
 }
 
+interface ZoneState {
+  readonly id: ZoneId;
+  readonly type: ZoneType;
+  readonly rect: GridRect;
+  readonly placementTick: number;
+  readonly immediatePlanningOpportunity: boolean;
+}
+
 interface AuthoritativeState {
   readonly seed: number;
   readonly tick: number;
-  readonly data: number;
+  data: number;
   readonly citizens: CitizenState[];
+  readonly zones: ZoneState[];
+  nextZoneId: number;
   readonly world: WorldState;
   readonly metrics: MutableMovementMetrics;
   movementNoProgressTicks: number;
@@ -190,6 +304,8 @@ interface TickCursors {
 interface PendingTick {
   readonly nextState: AuthoritativeState;
   readonly cursors: TickCursors;
+  readonly commands: readonly SimulationCommand[];
+  readonly commandResults: PlaceZoneCommandResult[];
   nextStageIndex: number;
   occupancy: Map<string, CitizenId> | null;
   readonly pathSearches: Map<CitizenId, AStarSearch>;
@@ -316,6 +432,157 @@ function createCitizenState(id: CitizenId, position: GridPosition): CitizenState
   };
 }
 
+function copyRect(rect: GridRect): GridRect {
+  return createGridRect(rect.x, rect.y, rect.width, rect.height);
+}
+
+function copyRawRect(rect: GridRect): GridRect {
+  return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+}
+
+function copySnapshotRect(rect: GridRect): GridRect {
+  return copyRawRect(rect);
+}
+
+function copyZoneState(zone: ZoneState): ZoneState {
+  return {
+    id: zone.id,
+    type: zone.type,
+    rect: copyRect(zone.rect),
+    placementTick: zone.placementTick,
+    immediatePlanningOpportunity: zone.immediatePlanningOpportunity,
+  };
+}
+
+function createZoneSnapshot(zone: ZoneState): ZoneSnapshot {
+  return {
+    id: zone.id,
+    type: zone.type,
+    rect: copySnapshotRect(zone.rect),
+    placementTick: zone.placementTick,
+    immediatePlanningOpportunity: zone.immediatePlanningOpportunity,
+  };
+}
+
+function countZonesByType(zones: readonly ZoneState[]): Record<ZoneType, number> {
+  const counts: Record<ZoneType, number> = {
+    living: 0,
+    working: 0,
+    leisure: 0,
+  };
+  for (const zone of zones) counts[zone.type] += 1;
+  return counts;
+}
+
+function createNextZoneCosts(zones: readonly ZoneState[]): Readonly<Record<ZoneType, number>> {
+  const counts = countZonesByType(zones);
+  return {
+    living: calculateZoneCost('living', counts.living),
+    working: calculateZoneCost('working', counts.working),
+    leisure: calculateZoneCost('leisure', counts.leisure),
+  };
+}
+
+function rectanglesOverlap(left: GridRect, right: GridRect): boolean {
+  return (
+    left.x < right.x + right.width &&
+    right.x < left.x + left.width &&
+    left.y < right.y + right.height &&
+    right.y < left.y + left.height
+  );
+}
+
+function isSafeRectCoordinate(value: number): boolean {
+  return Number.isSafeInteger(value);
+}
+
+function isValidRectShape(rect: GridRect, definition: ZoneDefinition): boolean {
+  return (
+    isSafeRectCoordinate(rect.width) &&
+    isSafeRectCoordinate(rect.height) &&
+    rect.width === definition.width &&
+    rect.height === definition.height
+  );
+}
+
+function isValidRectCoordinates(rect: GridRect): boolean {
+  return (
+    isSafeRectCoordinate(rect.x) &&
+    isSafeRectCoordinate(rect.y) &&
+    isSafeRectCoordinate(rect.x + rect.width - 1) &&
+    isSafeRectCoordinate(rect.y + rect.height - 1)
+  );
+}
+
+interface ValidatedPlaceZone {
+  readonly zoneType: ZoneType;
+  readonly rect: GridRect;
+  readonly cost: number;
+}
+
+type PlaceZoneValidation =
+  | { readonly accepted: true; readonly placement: ValidatedPlaceZone }
+  | {
+      readonly accepted: false;
+      readonly reason: PlaceZoneRejectionReason;
+      readonly currentCost: number;
+    };
+
+function validatePlaceZoneCommand(
+  state: AuthoritativeState,
+  command: PlaceZoneCommand,
+): PlaceZoneValidation {
+  if (command.type !== 'place-zone' || !isZoneType(command.zoneType)) {
+    return { accepted: false, reason: 'invalid-type', currentCost: 0 };
+  }
+
+  const definition = ZONE_DEFINITIONS[command.zoneType];
+  const rect = command.rect;
+  if (rect === null || typeof rect !== 'object' || !isValidRectShape(rect, definition)) {
+    return {
+      accepted: false,
+      reason: 'invalid-dimensions',
+      currentCost: calculateZoneCost(
+        command.zoneType,
+        countZonesByType(state.zones)[command.zoneType],
+      ),
+    };
+  }
+
+  if (!isValidRectCoordinates(rect)) {
+    return {
+      accepted: false,
+      reason: 'invalid-coordinates',
+      currentCost: calculateZoneCost(
+        command.zoneType,
+        countZonesByType(state.zones)[command.zoneType],
+      ),
+    };
+  }
+
+  const counts = countZonesByType(state.zones);
+  const currentCost = calculateZoneCost(command.zoneType, counts[command.zoneType]);
+  if (!Number.isSafeInteger(command.expectedCost) || command.expectedCost < 0) {
+    return { accepted: false, reason: 'invalid-cost', currentCost };
+  }
+  if (command.expectedCost !== currentCost) {
+    return { accepted: false, reason: 'stale-cost', currentCost };
+  }
+
+  const normalizedRect = copyRect(rect);
+  if (state.zones.some((zone) => rectanglesOverlap(zone.rect, normalizedRect))) {
+    return { accepted: false, reason: 'overlap', currentCost };
+  }
+  if (state.data < currentCost) {
+    return { accepted: false, reason: 'insufficient-data', currentCost };
+  }
+
+  return {
+    accepted: true,
+    placement: { zoneType: command.zoneType, rect: normalizedRect, cost: currentCost },
+  };
+}
+
 function createInitialState(seed: number): AuthoritativeState {
   const validatedSeed = validateSeed(seed);
   const world = createWorld();
@@ -330,6 +597,8 @@ function createInitialState(seed: number): AuthoritativeState {
     tick: 0,
     data: 10,
     citizens,
+    zones: [],
+    nextZoneId: 1,
     world,
     metrics: createMutableMetrics(),
     movementNoProgressTicks: 0,
@@ -355,6 +624,55 @@ function copyCitizenForPending(citizen: CitizenState): CitizenState {
   };
 }
 
+function copyPlaceZoneCommand(command: PlaceZoneCommand): PlaceZoneCommand {
+  return {
+    type: command.type,
+    zoneType: command.zoneType,
+    rect: copyRawRect(command.rect),
+    expectedCost: command.expectedCost,
+  };
+}
+
+function copyCommandResult(result: PlaceZoneCommandResult): PlaceZoneCommandResult {
+  if (!result.accepted) return { ...result };
+  return { ...result, zone: { ...result.zone, rect: copySnapshotRect(result.zone.rect) } };
+}
+
+function applyPlaceZoneCommand(
+  state: AuthoritativeState,
+  command: PlaceZoneCommand,
+  tick: number,
+): PlaceZoneCommandResult {
+  const validation = validatePlaceZoneCommand(state, command);
+  if (!validation.accepted) {
+    return {
+      accepted: false,
+      tick,
+      currentCost: validation.currentCost,
+      reason: validation.reason,
+    };
+  }
+
+  const zone = {
+    id: createZoneId(`zone-${String(state.nextZoneId)}`),
+    type: validation.placement.zoneType,
+    rect: copyRect(validation.placement.rect),
+    placementTick: tick,
+    immediatePlanningOpportunity: true,
+  } satisfies ZoneState;
+  state.zones.push(zone);
+  state.nextZoneId += 1;
+  state.data -= validation.placement.cost;
+  ensureChunksForRect(state.world, zone.rect);
+
+  return {
+    accepted: true,
+    tick,
+    cost: validation.placement.cost,
+    zone: createZoneSnapshot(zone),
+  };
+}
+
 function createSnapshot(state: AuthoritativeState): SimulationSnapshot {
   return {
     tick: state.tick,
@@ -367,7 +685,8 @@ function createSnapshot(state: AuthoritativeState): SimulationSnapshot {
       movementCredit: citizen.movementCredit,
       wanderingAnchor: copySnapshotPosition(citizen.wanderingAnchor),
     })),
-    zones: [],
+    zones: state.zones.map(createZoneSnapshot),
+    nextZoneCosts: createNextZoneCosts(state.zones),
     buildings: [],
   };
 }
@@ -412,18 +731,25 @@ function createTickCursors(): TickCursors {
   };
 }
 
-function createPendingTick(state: AuthoritativeState): PendingTick {
+function createPendingTick(
+  state: AuthoritativeState,
+  commands: readonly SimulationCommand[],
+): PendingTick {
   return {
     nextState: {
       seed: state.seed,
       tick: state.tick + 1,
       data: state.data,
       citizens: state.citizens.map(copyCitizenForPending),
+      zones: state.zones.map(copyZoneState),
+      nextZoneId: state.nextZoneId,
       world: cloneWorld(state.world),
       metrics: copyMetrics(state.metrics),
       movementNoProgressTicks: state.movementNoProgressTicks,
     },
     cursors: createTickCursors(),
+    commands: commands.map(copyPlaceZoneCommand),
+    commandResults: [],
     nextStageIndex: 0,
     occupancy: null,
     pathSearches: new Map(),
@@ -767,10 +1093,22 @@ function processCommitAcceptedMovement(pending: PendingTick): boolean {
   return true;
 }
 
+function processApplyQueuedCommands(pending: PendingTick): boolean {
+  const cursor = pending.cursors.applyQueuedCommands;
+  consumeSingleStage(cursor);
+
+  for (const command of pending.commands) {
+    pending.commandResults.push(
+      applyPlaceZoneCommand(pending.nextState, command, pending.nextState.tick),
+    );
+  }
+  return true;
+}
+
 function processStage(pending: PendingTick, stage: TickStage): boolean {
   switch (stage) {
     case 'apply-queued-commands':
-      return consumeSingleStage(pending.cursors.applyQueuedCommands);
+      return processApplyQueuedCommands(pending);
     case 'apply-zone-removals':
       return consumeSingleStage(pending.cursors.applyZoneRemovals);
     case 'freeze-citizen-occupancy':
@@ -830,9 +1168,10 @@ function hashableState(state: AuthoritativeState): unknown {
     tick: state.tick,
     data: state.data,
     citizens: state.citizens,
+    zones: state.zones,
+    nextZoneId: state.nextZoneId,
     chunks: getSortedChunks(state.world),
     metrics: state.metrics,
-    zones: [],
     buildings: [],
   };
 }
@@ -840,12 +1179,45 @@ function hashableState(state: AuthoritativeState): unknown {
 export function createSimulation(options: SimulationOptions = {}): Simulation {
   let committedState = createInitialState(options.seed ?? 0);
   let pendingTick: PendingTick | null = null;
+  let queuedCommands: SimulationCommand[] = [];
+  let lastCommandResults: readonly PlaceZoneCommandResult[] = [];
 
   return {
+    queueCommand(command: SimulationCommand): void {
+      queuedCommands.push(copyPlaceZoneCommand(command));
+    },
+    placeZone(command: PlaceZoneCommand): void {
+      queuedCommands.push(copyPlaceZoneCommand(command));
+    },
+    getZonePlacementPreview(command: PlaceZoneCommand): ZonePlacementPreview {
+      const validation = validatePlaceZoneCommand(committedState, command);
+      if (validation.accepted) {
+        return {
+          valid: true,
+          rect: copyRect(validation.placement.rect),
+          currentCost: validation.placement.cost,
+        };
+      }
+
+      return {
+        valid: false,
+        rect: copyRawRect(command.rect),
+        currentCost: validation.currentCost,
+        reason: validation.reason,
+      };
+    },
+    getLastCommandResults(): readonly PlaceZoneCommandResult[] {
+      return lastCommandResults.map(copyCommandResult);
+    },
     advanceTickWork(maxWorkUnits: number): TickWorkResult {
       validateWorkBudget(maxWorkUnits);
 
-      const activeTick = pendingTick ?? createPendingTick(committedState);
+      if (pendingTick === null) {
+        const commandsForTick = queuedCommands;
+        queuedCommands = [];
+        pendingTick = createPendingTick(committedState, commandsForTick);
+      }
+      const activeTick = pendingTick;
       pendingTick = activeTick;
 
       let workUnitsConsumed = 0;
@@ -862,6 +1234,7 @@ export function createSimulation(options: SimulationOptions = {}): Simulation {
         if (stage === 'commit-completed-tick') {
           if (!stageComplete) throw new Error('Completed-tick stage did not finish.');
           committedState = activeTick.nextState;
+          lastCommandResults = activeTick.commandResults.map(copyCommandResult);
           pendingTick = null;
           return {
             status: 'committed',

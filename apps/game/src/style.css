@@ -77,6 +77,66 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.zone-controls {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+  pointer-events: auto;
+}
+
+.zone-heading {
+  margin: 0 0 2px;
+  color: #aebbd2;
+  font-size: 0.85rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.zone-controls button,
+.speed-controls button {
+  min-height: 42px;
+  padding: 8px 12px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 10px;
+  color: #dce8ff;
+  background: #17233a;
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.zone-controls button {
+  text-align: left;
+}
+
+.zone-controls button[aria-pressed='true'] {
+  border-color: #8ab4ff;
+  color: #08101e;
+  background: #8ab4ff;
+}
+
+.zone-controls button:last-child {
+  color: #b9c6dc;
+  background: #111a2c;
+}
+
+.placement-status {
+  max-width: 260px;
+  min-height: 2.6em;
+  margin: 12px 0 0;
+  color: #b9c6dc;
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.placement-status.valid {
+  color: #8ee6a0;
+}
+
+.placement-status.invalid {
+  color: #ff9a9e;
+}
+
 .speed-controls {
   display: flex;
   flex-wrap: wrap;
@@ -87,14 +147,6 @@ body {
 
 .speed-controls button {
   min-width: 72px;
-  min-height: 38px;
-  padding: 8px 12px;
-  border: 1px solid rgb(255 255 255 / 18%);
-  border-radius: 10px;
-  color: #dce8ff;
-  background: #17233a;
-  font: inherit;
-  cursor: pointer;
 }
 
 .speed-controls button[aria-pressed='true'] {

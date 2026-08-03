@@ -1,4 +1,5 @@
 import { ArcRotateCamera } from '@babylonjs/core/Cameras/arcRotateCamera';
+import '@babylonjs/core/Culling/ray';
 import type { AbstractEngine } from '@babylonjs/core/Engines/abstractEngine';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
 import { Color3, Color4 } from '@babylonjs/core/Maths/math.color';
@@ -7,21 +8,153 @@ import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Scene } from '@babylonjs/core/scene';
-import type { CitizenId } from '@idle-city/shared';
+import type { CitizenId, GridRect, ZoneId } from '@idle-city/shared';
 import type { SimulationSnapshot } from '@idle-city/simulation';
-import { DEFAULT_LOGICAL_CELL_WORLD_SCALE, interpolatedLogicalToWorld } from './coordinates';
+import type { ZoneType } from '@idle-city/simulation';
+import {
+  DEFAULT_LOGICAL_CELL_WORLD_SCALE,
+  interpolatedLogicalToWorld,
+  logicalRectToWorldCenter,
+  worldToLogical,
+} from './coordinates';
 
 export {
   DEFAULT_LOGICAL_CELL_WORLD_SCALE,
   interpolatedLogicalToWorld,
   logicalToWorld,
+  logicalRectToWorldCenter,
+  worldToLogical,
 } from './coordinates';
+
+export interface ZonePlacementPreview {
+  readonly zoneType: ZoneType;
+  readonly rect: GridRect;
+  readonly valid: boolean;
+}
 
 export interface CityScene {
   readonly scene: Scene;
   update(snapshot: SimulationSnapshot, interpolationAlpha?: number): void;
+  setZonePlacementPreview(preview: ZonePlacementPreview | undefined): void;
+  pickLogicalCell(clientX: number, clientY: number): ReturnType<typeof worldToLogical> | undefined;
   resize(): void;
   dispose(): void;
+}
+
+interface ZoneVisual {
+  readonly type: ZoneType;
+  readonly width: number;
+  readonly height: number;
+  readonly fill: Mesh;
+  readonly outline: readonly Mesh[];
+}
+
+interface ZoneMaterials {
+  readonly fill: StandardMaterial;
+  readonly outline: StandardMaterial;
+}
+
+function createZoneVisual(
+  scene: Scene,
+  name: string,
+  type: ZoneType,
+  rect: GridRect,
+  materials: ZoneMaterials,
+  cellWorldScale: number,
+): ZoneVisual {
+  const fill = MeshBuilder.CreateGround(
+    `${name}-fill`,
+    { width: rect.width * cellWorldScale, height: rect.height * cellWorldScale },
+    scene,
+  );
+  fill.material = materials.fill;
+  fill.isPickable = false;
+
+  const outlineThickness = 0.14 * cellWorldScale;
+  const outlineHeight = 0.12 * cellWorldScale;
+  const outline = [
+    MeshBuilder.CreateBox(
+      `${name}-outline-north`,
+      {
+        width: rect.width * cellWorldScale + outlineThickness * 2,
+        height: outlineHeight,
+        depth: outlineThickness,
+      },
+      scene,
+    ),
+    MeshBuilder.CreateBox(
+      `${name}-outline-east`,
+      { width: outlineThickness, height: outlineHeight, depth: rect.height * cellWorldScale },
+      scene,
+    ),
+    MeshBuilder.CreateBox(
+      `${name}-outline-south`,
+      {
+        width: rect.width * cellWorldScale + outlineThickness * 2,
+        height: outlineHeight,
+        depth: outlineThickness,
+      },
+      scene,
+    ),
+    MeshBuilder.CreateBox(
+      `${name}-outline-west`,
+      { width: outlineThickness, height: outlineHeight, depth: rect.height * cellWorldScale },
+      scene,
+    ),
+  ];
+  for (const mesh of outline) {
+    mesh.material = materials.outline;
+    mesh.isPickable = false;
+  }
+
+  const visual = { type, width: rect.width, height: rect.height, fill, outline };
+  updateZoneVisual(visual, rect, cellWorldScale);
+  return visual;
+}
+
+function updateZoneVisual(visual: ZoneVisual, rect: GridRect, cellWorldScale: number): void {
+  const center = logicalRectToWorldCenter(rect, cellWorldScale);
+  visual.fill.position.copyFrom(center);
+  visual.fill.position.y = 0.025 * cellWorldScale;
+
+  const halfWidth = (rect.width / 2) * cellWorldScale;
+  const halfHeight = (rect.height / 2) * cellWorldScale;
+  const outlineThickness = 0.14 * cellWorldScale;
+  const outlineY = 0.09 * cellWorldScale;
+  const [north, east, south, west] = visual.outline;
+  if (north === undefined || east === undefined || south === undefined || west === undefined) {
+    throw new Error('Zone outline was missing a side.');
+  }
+
+  north.position.set(center.x, outlineY, center.z - halfHeight - outlineThickness / 2);
+  east.position.set(center.x + halfWidth + outlineThickness / 2, outlineY, center.z);
+  south.position.set(center.x, outlineY, center.z + halfHeight + outlineThickness / 2);
+  west.position.set(center.x - halfWidth - outlineThickness / 2, outlineY, center.z);
+}
+
+function setZoneVisualVisibility(visual: ZoneVisual, visible: boolean): void {
+  visual.fill.isVisible = visible;
+  for (const mesh of visual.outline) mesh.isVisible = visible;
+}
+
+function disposeZoneVisual(visual: ZoneVisual): void {
+  visual.fill.dispose();
+  for (const mesh of visual.outline) mesh.dispose();
+}
+
+function createZoneMaterial(
+  scene: Scene,
+  name: string,
+  color: Color3,
+  alpha: number,
+): StandardMaterial {
+  const material = new StandardMaterial(name, scene);
+  material.diffuseColor = color;
+  material.emissiveColor = color.scale(0.12);
+  material.specularColor = new Color3(0.04, 0.04, 0.04);
+  material.alpha = alpha;
+  material.backFaceCulling = false;
+  return material;
 }
 
 export function createCityScene(
@@ -57,6 +190,126 @@ export function createCityScene(
   groundMaterial.diffuseColor = new Color3(0.16, 0.19, 0.24);
   groundMaterial.specularColor = new Color3(0.03, 0.04, 0.06);
   ground.material = groundMaterial;
+
+  const zoneMaterials: Record<ZoneType, ZoneMaterials> = {
+    living: {
+      fill: createZoneMaterial(scene, 'living-zone-fill', new Color3(0.38, 0.82, 0.45), 0.42),
+      outline: createZoneMaterial(scene, 'living-zone-outline', new Color3(0.18, 0.68, 0.28), 0.95),
+    },
+    working: {
+      fill: createZoneMaterial(scene, 'working-zone-fill', new Color3(0.38, 0.6, 0.98), 0.42),
+      outline: createZoneMaterial(scene, 'working-zone-outline', new Color3(0.16, 0.4, 0.9), 0.95),
+    },
+    leisure: {
+      fill: createZoneMaterial(scene, 'leisure-zone-fill', new Color3(0.98, 0.64, 0.3), 0.42),
+      outline: createZoneMaterial(scene, 'leisure-zone-outline', new Color3(0.9, 0.4, 0.1), 0.95),
+    },
+  };
+  const placementInvalidFill = createZoneMaterial(
+    scene,
+    'placement-zone-invalid-fill',
+    new Color3(0.95, 0.22, 0.26),
+    0.48,
+  );
+  const placementInvalidOutline = createZoneMaterial(
+    scene,
+    'placement-zone-invalid-outline',
+    new Color3(0.98, 0.12, 0.16),
+    0.98,
+  );
+
+  const zoneVisuals = new Map<ZoneId, ZoneVisual>();
+  let placementPreview: ZoneVisual | undefined;
+
+  const reconcileZones = (snapshot: SimulationSnapshot): void => {
+    const seenIds = new Set<ZoneId>();
+    for (const zone of snapshot.zones) {
+      if (seenIds.has(zone.id)) throw new Error(`Duplicate zone ID ${zone.id}.`);
+      seenIds.add(zone.id);
+
+      let visual = zoneVisuals.get(zone.id);
+      if (
+        visual !== undefined &&
+        (visual.type !== zone.type ||
+          visual.width !== zone.rect.width ||
+          visual.height !== zone.rect.height)
+      ) {
+        disposeZoneVisual(visual);
+        zoneVisuals.delete(zone.id);
+        visual = undefined;
+      }
+      if (visual === undefined) {
+        visual = createZoneVisual(
+          scene,
+          `zone-${zone.id}`,
+          zone.type,
+          zone.rect,
+          zoneMaterials[zone.type],
+          DEFAULT_LOGICAL_CELL_WORLD_SCALE,
+        );
+        zoneVisuals.set(zone.id, visual);
+      }
+      updateZoneVisual(visual, zone.rect, DEFAULT_LOGICAL_CELL_WORLD_SCALE);
+      setZoneVisualVisibility(visual, true);
+    }
+
+    for (const [id, visual] of zoneVisuals) {
+      if (seenIds.has(id)) continue;
+      disposeZoneVisual(visual);
+      zoneVisuals.delete(id);
+    }
+  };
+
+  const setZonePlacementPreview = (preview: ZonePlacementPreview | undefined): void => {
+    if (disposed) throw new Error('Cannot update a disposed city scene.');
+    if (preview === undefined) {
+      if (placementPreview !== undefined) setZoneVisualVisibility(placementPreview, false);
+      return;
+    }
+
+    if (
+      placementPreview !== undefined &&
+      (placementPreview.type !== preview.zoneType ||
+        placementPreview.width !== preview.rect.width ||
+        placementPreview.height !== preview.rect.height)
+    ) {
+      disposeZoneVisual(placementPreview);
+      placementPreview = undefined;
+    }
+    if (placementPreview === undefined) {
+      placementPreview = createZoneVisual(
+        scene,
+        'zone-placement-preview',
+        preview.zoneType,
+        preview.rect,
+        zoneMaterials[preview.zoneType],
+        DEFAULT_LOGICAL_CELL_WORLD_SCALE,
+      );
+    }
+
+    const previewMaterials = preview.valid
+      ? zoneMaterials[preview.zoneType]
+      : { fill: placementInvalidFill, outline: placementInvalidOutline };
+    placementPreview.fill.material = previewMaterials.fill;
+    for (const mesh of placementPreview.outline) mesh.material = previewMaterials.outline;
+    updateZoneVisual(placementPreview, preview.rect, DEFAULT_LOGICAL_CELL_WORLD_SCALE);
+    setZoneVisualVisibility(placementPreview, true);
+  };
+
+  const pickLogicalCell = (
+    clientX: number,
+    clientY: number,
+  ): ReturnType<typeof worldToLogical> | undefined => {
+    if (canvas === null) return undefined;
+    const bounds = canvas.getBoundingClientRect();
+    const picked = scene.pick(
+      clientX - bounds.left,
+      clientY - bounds.top,
+      (mesh) => mesh === ground,
+    );
+    if (!picked.hit || picked.pickedPoint === null) return undefined;
+    return worldToLogical(picked.pickedPoint);
+  };
 
   const citizenMaterial = new StandardMaterial('citizen-material', scene);
   citizenMaterial.diffuseColor = new Color3(0.98, 0.62, 0.26);
@@ -104,6 +357,7 @@ export function createCityScene(
   const update = (snapshot: SimulationSnapshot, interpolationAlpha = 1): void => {
     if (disposed) throw new Error('Cannot update a disposed city scene.');
     const clampedInterpolationAlpha = Math.min(1, Math.max(0, interpolationAlpha));
+    reconcileZones(snapshot);
     reconcileCitizens(snapshot, clampedInterpolationAlpha);
   };
 
@@ -112,6 +366,8 @@ export function createCityScene(
   return {
     scene,
     update,
+    setZonePlacementPreview,
+    pickLogicalCell,
     resize(): void {
       if (disposed) return;
       engine.resize();
@@ -119,6 +375,9 @@ export function createCityScene(
     dispose(): void {
       if (disposed) return;
       camera.detachControl();
+      if (placementPreview !== undefined) disposeZoneVisual(placementPreview);
+      for (const visual of zoneVisuals.values()) disposeZoneVisual(visual);
+      zoneVisuals.clear();
       citizenVisuals.clear();
       scene.dispose();
       disposed = true;

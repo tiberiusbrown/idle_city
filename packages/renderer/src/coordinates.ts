@@ -1,5 +1,5 @@
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
-import type { GridPosition } from '@idle-city/shared';
+import { createGridPosition, type GridPosition, type GridRect } from '@idle-city/shared';
 
 export const DEFAULT_LOGICAL_CELL_WORLD_SCALE = 1;
 
@@ -17,6 +17,30 @@ export function logicalToWorld(
 ): Vector3 {
   validateCellWorldScale(cellWorldScale);
   return new Vector3((position.x + 0.5) * cellWorldScale, 0, (position.y + 0.5) * cellWorldScale);
+}
+
+/** Converts a Babylon world point to the logical cell containing it. */
+export function worldToLogical(
+  position: Vector3,
+  cellWorldScale = DEFAULT_LOGICAL_CELL_WORLD_SCALE,
+): GridPosition {
+  validateCellWorldScale(cellWorldScale);
+  const x = Math.floor(position.x / cellWorldScale);
+  const y = Math.floor(position.z / cellWorldScale);
+  return createGridPosition(x, y);
+}
+
+/** Returns the world-space center of a logical rectangle. */
+export function logicalRectToWorldCenter(
+  rect: GridRect,
+  cellWorldScale = DEFAULT_LOGICAL_CELL_WORLD_SCALE,
+): Vector3 {
+  validateCellWorldScale(cellWorldScale);
+  return new Vector3(
+    (rect.x + rect.width / 2) * cellWorldScale,
+    0,
+    (rect.y + rect.height / 2) * cellWorldScale,
+  );
 }
 
 /** Projects two committed logical positions into an interpolated world position. */

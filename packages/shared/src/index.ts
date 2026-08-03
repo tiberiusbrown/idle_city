@@ -4,6 +4,14 @@ export interface GridPosition {
   readonly y: number;
 }
 
+/** An axis-aligned rectangle of logical grid cells. */
+export interface GridRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
 /** The centralized logical chunk width and height. */
 export const CHUNK_SIZE = 32;
 
@@ -29,6 +37,26 @@ export function createGridPosition(x: number, y: number): GridPosition {
   }
 
   return Object.freeze({ x, y });
+}
+
+/** Creates an immutable, non-empty rectangle of safe integer grid cells. */
+export function createGridRect(x: number, y: number, width: number, height: number): GridRect {
+  if (
+    !Number.isSafeInteger(x) ||
+    !Number.isSafeInteger(y) ||
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    width <= 0 ||
+    height <= 0 ||
+    !Number.isSafeInteger(x + width - 1) ||
+    !Number.isSafeInteger(y + height - 1)
+  ) {
+    throw new Error(
+      `Grid rectangles must be non-empty and fit within safe integer coordinates; received (${String(x)}, ${String(y)}, ${String(width)}, ${String(height)}).`,
+    );
+  }
+
+  return Object.freeze({ x, y, width, height });
 }
 
 /**
@@ -72,6 +100,19 @@ export type CitizenId = string & {
 export function createCitizenId(value: string): CitizenId {
   if (value.length === 0) throw new Error('Citizen IDs must not be empty.');
   return value as CitizenId;
+}
+
+declare const zoneIdBrand: unique symbol;
+
+/** A stable authoritative identifier for a zone. */
+export type ZoneId = string & {
+  readonly [zoneIdBrand]: 'ZoneId';
+};
+
+/** Brands a serialized zone identifier without changing its runtime value. */
+export function createZoneId(value: string): ZoneId {
+  if (value.length === 0) throw new Error('Zone IDs must not be empty.');
+  return value as ZoneId;
 }
 
 function ordered(value: unknown): unknown {

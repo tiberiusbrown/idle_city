@@ -18,6 +18,37 @@
           <p><span>Population</span><strong id="population-value">4</strong></p>
           <p><span>Tick</span><strong id="tick-value">0</strong></p>
         </div>
+        <div class="zone-controls" role="group" aria-label="Zone placement">
+          <p class="zone-heading">Place a zone</p>
+          <button
+            id="living-zone-button"
+            data-zone-type="living"
+            type="button"
+            aria-pressed="false"
+          >
+            Living · 4 Data
+          </button>
+          <button
+            id="working-zone-button"
+            data-zone-type="working"
+            type="button"
+            aria-pressed="false"
+          >
+            Working · 6 Data
+          </button>
+          <button
+            id="leisure-zone-button"
+            data-zone-type="leisure"
+            type="button"
+            aria-pressed="false"
+          >
+            Leisure · 40 Data
+          </button>
+          <button id="cancel-zone-button" type="button">Cancel</button>
+        </div>
+        <p id="placement-status" class="placement-status" role="status" aria-live="polite">
+          Select a zone type, then click the grid to place it.
+        </p>
         <div class="speed-controls" role="group" aria-label="Simulation speed">
           <button id="pause-button" type="button">Pause</button>
           <button id="normal-button" type="button">Normal</button>

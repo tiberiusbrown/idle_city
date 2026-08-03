@@ -43,6 +43,11 @@ describe('simulation skeleton', () => {
         },
       ],
       zones: [],
+      nextZoneCosts: {
+        living: 4,
+        working: 6,
+        leisure: 40,
+      },
       buildings: [],
     });
     expect(second).toEqual(first);
