@@ -1,4 +1,5 @@
 import {
+  createBuildingId,
   createCitizenId,
   createGridRect,
   createGridPosition,
@@ -11,11 +12,27 @@ import {
 } from '@idle-city/shared';
 import {
   cloneBuildingInstance,
+  createBuildingInstance,
   createBuildingSnapshot,
+  getBuildingArchetype,
+  type BuildingArchetypeId,
+  type BuildingGeometry,
   type BuildingInstance,
   type BuildingSnapshot,
+  type BuildingTransform,
 } from './buildings';
 import { createAStarSearch, type AStarAdvanceResult, type AStarSearch } from './pathfinding';
+import {
+  calculatePlanningChance,
+  calculateZoneFreeSpaceRatio,
+  comparePlanningZoneIds,
+  keyedPlanningUnit,
+  orderPlanningAnchors,
+  orderPlanningTransforms,
+  planningRollSucceeds,
+  validatePlanningCandidate,
+  DEFAULT_PLANNING_CHANCE,
+} from './planning';
 import {
   movementCellKey,
   resolveMovementProposals,
@@ -59,6 +76,11 @@ export type {
   MovementResolutionOptions,
 } from './movement';
 export * from './buildings';
+export {
+  calculatePlanningChance,
+  calculateZoneFreeSpaceRatio,
+  DEFAULT_PLANNING_CHANCE,
+} from './planning';
 
 export const FIXED_POINT_UNITS_PER_CELL = 1024;
 export const DEFAULT_CITIZEN_MOVEMENT_SPEED = 512;
@@ -113,6 +135,8 @@ export interface ZoneSnapshot {
   readonly rect: GridRect;
   readonly placementTick: number;
   readonly immediatePlanningOpportunity: boolean;
+  readonly planningSequence: number;
+  readonly planningSaturated: boolean;
 }
 
 export interface PlaceZoneCommand {
@@ -156,6 +180,8 @@ export type PlaceZoneCommandResult =
 
 export interface SimulationOptions {
   readonly seed?: number;
+  /** Overrides the default 0.02 planning coefficient for controlled scenarios. */
+  readonly planningChance?: number;
 }
 
 /** The authoritative order of work inside one logical tick. */
@@ -198,6 +224,20 @@ export interface MovementMetrics {
   readonly committedMoves: number;
   readonly blockedMoves: number;
   readonly pathfindingExpansions: number;
+  readonly planningAttempts: number;
+  readonly planningSuccesses: number;
+  readonly planningCandidateChecks: number;
+}
+
+export type PlanningJobStatus = 'idle' | 'accepted' | 'saturated';
+
+/** The last completed planning job, without exposing private candidate lists. */
+export interface PlanningJobSnapshot {
+  readonly status: PlanningJobStatus;
+  readonly zoneId: ZoneId | null;
+  readonly archetypeId: BuildingArchetypeId | null;
+  readonly planningSequence: number;
+  readonly candidateChecks: number;
 }
 
 export interface CitizenSnapshot {
@@ -216,6 +256,7 @@ export interface SimulationSnapshot {
   readonly zones: readonly ZoneSnapshot[];
   readonly nextZoneCosts: Readonly<Record<ZoneType, number>>;
   readonly buildings: readonly BuildingSnapshot[];
+  readonly planningJob: PlanningJobSnapshot;
 }
 
 export interface Simulation {
@@ -236,6 +277,9 @@ interface MutableMovementMetrics {
   committedMoves: number;
   blockedMoves: number;
   pathfindingExpansions: number;
+  planningAttempts: number;
+  planningSuccesses: number;
+  planningCandidateChecks: number;
 }
 
 interface CitizenState {
@@ -261,6 +305,9 @@ interface ZoneState {
   readonly rect: GridRect;
   readonly placementTick: number;
   readonly immediatePlanningOpportunity: boolean;
+  immediatePlanningPending: boolean;
+  planningSequence: number;
+  planningSaturated: boolean;
 }
 
 interface AuthoritativeState {
@@ -271,9 +318,31 @@ interface AuthoritativeState {
   readonly zones: ZoneState[];
   readonly buildings: BuildingInstance[];
   nextZoneId: number;
+  nextBuildingId: number;
   readonly world: WorldState;
   readonly metrics: MutableMovementMetrics;
+  readonly planningChance: number;
+  lastPlanningJob: PlanningJobSnapshot;
   movementNoProgressTicks: number;
+}
+
+interface SelectedPlanningCandidate {
+  readonly origin: GridPosition;
+  readonly transform: BuildingTransform;
+  readonly geometry: BuildingGeometry;
+}
+
+interface BuildingPlanningJob {
+  readonly zoneId: ZoneId;
+  readonly archetypeId: BuildingArchetypeId;
+  readonly archetypeOrder: readonly BuildingArchetypeId[];
+  readonly transformOrder: readonly BuildingTransform[];
+  readonly anchorOrder: readonly GridPosition[];
+  readonly planningSequence: number;
+  candidateCursor: number;
+  validCandidatesFound: number;
+  workConsumed: number;
+  selectedCandidate: SelectedPlanningCandidate | null;
 }
 
 /**
@@ -319,6 +388,7 @@ interface PendingTick {
   readonly pathSearches: Map<CitizenId, AStarSearch>;
   readonly proposals: MovementProposal[];
   movementResolution: MovementResolution | null;
+  planningJob: BuildingPlanningJob | null;
 }
 
 const INITIAL_CITIZEN_POSITIONS: readonly GridPosition[] = [
@@ -334,6 +404,9 @@ function createMutableMetrics(): MutableMovementMetrics {
     committedMoves: 0,
     blockedMoves: 0,
     pathfindingExpansions: 0,
+    planningAttempts: 0,
+    planningSuccesses: 0,
+    planningCandidateChecks: 0,
   };
 }
 
@@ -343,6 +416,19 @@ function copyMetrics(metrics: MutableMovementMetrics): MutableMovementMetrics {
     committedMoves: metrics.committedMoves,
     blockedMoves: metrics.blockedMoves,
     pathfindingExpansions: metrics.pathfindingExpansions,
+    planningAttempts: metrics.planningAttempts,
+    planningSuccesses: metrics.planningSuccesses,
+    planningCandidateChecks: metrics.planningCandidateChecks,
+  };
+}
+
+function createIdlePlanningJobSnapshot(): PlanningJobSnapshot {
+  return {
+    status: 'idle',
+    zoneId: null,
+    archetypeId: null,
+    planningSequence: 0,
+    candidateChecks: 0,
   };
 }
 
@@ -351,6 +437,15 @@ function validateSeed(seed: number): number {
     throw new Error(`Simulation seeds must be safe integers; received ${String(seed)}.`);
   }
   return seed;
+}
+
+function validatePlanningChance(planningChance: number): number {
+  if (!Number.isFinite(planningChance) || planningChance < 0 || planningChance > 1) {
+    throw new Error(
+      `Planning chance must be a finite number between 0 and 1; received ${String(planningChance)}.`,
+    );
+  }
+  return planningChance;
 }
 
 function copyPosition(position: GridPosition): GridPosition {
@@ -459,6 +554,9 @@ function copyZoneState(zone: ZoneState): ZoneState {
     rect: copyRect(zone.rect),
     placementTick: zone.placementTick,
     immediatePlanningOpportunity: zone.immediatePlanningOpportunity,
+    immediatePlanningPending: zone.immediatePlanningPending,
+    planningSequence: zone.planningSequence,
+    planningSaturated: zone.planningSaturated,
   };
 }
 
@@ -469,6 +567,8 @@ function createZoneSnapshot(zone: ZoneState): ZoneSnapshot {
     rect: copySnapshotRect(zone.rect),
     placementTick: zone.placementTick,
     immediatePlanningOpportunity: zone.immediatePlanningOpportunity,
+    planningSequence: zone.planningSequence,
+    planningSaturated: zone.planningSaturated,
   };
 }
 
@@ -591,8 +691,9 @@ function validatePlaceZoneCommand(
   };
 }
 
-function createInitialState(seed: number): AuthoritativeState {
+function createInitialState(seed: number, planningChance: number): AuthoritativeState {
   const validatedSeed = validateSeed(seed);
+  const validatedPlanningChance = validatePlanningChance(planningChance);
   const world = createWorld();
   const citizens = INITIAL_CITIZEN_POSITIONS.map((position, index) => {
     const citizen = createCitizenState(createCitizenId(`citizen-${String(index + 1)}`), position);
@@ -608,8 +709,11 @@ function createInitialState(seed: number): AuthoritativeState {
     zones: [],
     buildings: [],
     nextZoneId: 1,
+    nextBuildingId: 1,
     world,
     metrics: createMutableMetrics(),
+    planningChance: validatedPlanningChance,
+    lastPlanningJob: createIdlePlanningJobSnapshot(),
     movementNoProgressTicks: 0,
   };
 }
@@ -668,6 +772,9 @@ function applyPlaceZoneCommand(
     rect: copyRect(validation.placement.rect),
     placementTick: tick,
     immediatePlanningOpportunity: true,
+    immediatePlanningPending: true,
+    planningSequence: 0,
+    planningSaturated: false,
   } satisfies ZoneState;
   state.zones.push(zone);
   state.nextZoneId += 1;
@@ -697,6 +804,7 @@ function createSnapshot(state: AuthoritativeState): SimulationSnapshot {
     zones: state.zones.map(createZoneSnapshot),
     nextZoneCosts: createNextZoneCosts(state.zones),
     buildings: state.buildings.map(createBuildingSnapshot),
+    planningJob: { ...state.lastPlanningJob },
   };
 }
 
@@ -706,6 +814,9 @@ function createMetricsSnapshot(metrics: MutableMovementMetrics): MovementMetrics
     committedMoves: metrics.committedMoves,
     blockedMoves: metrics.blockedMoves,
     pathfindingExpansions: metrics.pathfindingExpansions,
+    planningAttempts: metrics.planningAttempts,
+    planningSuccesses: metrics.planningSuccesses,
+    planningCandidateChecks: metrics.planningCandidateChecks,
   };
 }
 
@@ -753,8 +864,11 @@ function createPendingTick(
       zones: state.zones.map(copyZoneState),
       buildings: state.buildings.map(cloneBuildingInstance),
       nextZoneId: state.nextZoneId,
+      nextBuildingId: state.nextBuildingId,
       world: cloneWorld(state.world),
       metrics: copyMetrics(state.metrics),
+      planningChance: state.planningChance,
+      lastPlanningJob: { ...state.lastPlanningJob },
       movementNoProgressTicks: state.movementNoProgressTicks,
     },
     cursors: createTickCursors(),
@@ -765,6 +879,7 @@ function createPendingTick(
     pathSearches: new Map(),
     proposals: [],
     movementResolution: null,
+    planningJob: null,
   };
 }
 
@@ -792,6 +907,286 @@ function startWanderingSegment(state: AuthoritativeState, citizen: CitizenState)
   citizen.replanWithOccupancy = false;
   ensureChunkAt(state.world, citizen.wanderingAnchor);
   ensureChunkAt(state.world, citizen.wanderingTarget);
+}
+
+const PLANNING_ARCHETYPE_BY_ZONE_TYPE: Readonly<Record<ZoneType, BuildingArchetypeId>> =
+  Object.freeze({
+    living: 'single-house',
+    working: 'small-shop',
+    leisure: 'small-park',
+  });
+
+function countConstructionAssignedCitizens(state: AuthoritativeState): number {
+  const assignedCitizenIds = new Set<CitizenId>();
+  for (const building of state.buildings) {
+    if (building.state.kind !== 'incomplete') continue;
+    for (const citizenId of building.assignments.constructionWorkerIds) {
+      assignedCitizenIds.add(citizenId);
+    }
+  }
+  return assignedCitizenIds.size;
+}
+
+function isPlanningEligible(state: AuthoritativeState): boolean {
+  const population = state.citizens.length;
+  if (population === 0) return true;
+  return countConstructionAssignedCitizens(state) * 4 < population;
+}
+
+function selectPlanningZone(options: {
+  readonly seed: number;
+  readonly tick: number;
+  readonly successes: readonly {
+    readonly zone: ZoneState;
+    readonly freeSpaceRatio: number;
+  }[];
+}): { readonly zone: ZoneState; readonly freeSpaceRatio: number } | null {
+  if (options.successes.length === 0) return null;
+
+  const ranked = options.successes.map((success) => {
+    const unit = keyedPlanningUnit({
+      seed: options.seed,
+      tick: options.tick,
+      zoneId: success.zone.id,
+      planningSequence: success.zone.planningSequence,
+      purpose: 'building-planning-zone-selection',
+    });
+    return {
+      ...success,
+      priority: Math.log(unit) / success.freeSpaceRatio,
+    };
+  });
+
+  ranked.sort(
+    (left, right) =>
+      right.priority - left.priority || comparePlanningZoneIds(left.zone.id, right.zone.id),
+  );
+  const selected = ranked[0];
+  return selected === undefined
+    ? null
+    : { zone: selected.zone, freeSpaceRatio: selected.freeSpaceRatio };
+}
+
+function beginPlanningOpportunity(pending: PendingTick): void {
+  if (pending.planningJob !== null) return;
+
+  const state = pending.nextState;
+  if (!isPlanningEligible(state)) return;
+
+  const existingBuildings = state.buildings;
+  const orderedZones = [...state.zones].sort((left, right) =>
+    comparePlanningZoneIds(left.id, right.id),
+  );
+  const successes: { readonly zone: ZoneState; readonly freeSpaceRatio: number }[] = [];
+
+  for (const zone of orderedZones) {
+    if (zone.planningSaturated) continue;
+
+    const freeSpaceRatio = calculateZoneFreeSpaceRatio(zone, existingBuildings);
+    const planningSequence = zone.planningSequence + 1;
+    const chance = calculatePlanningChance(freeSpaceRatio, state.planningChance);
+    const succeeds = planningRollSucceeds({
+      seed: state.seed,
+      tick: state.tick,
+      zoneId: zone.id,
+      planningSequence,
+      chance,
+    });
+
+    zone.planningSequence = planningSequence;
+    zone.immediatePlanningPending = false;
+    state.metrics.planningAttempts += 1;
+    if (succeeds) successes.push({ zone, freeSpaceRatio });
+  }
+
+  const selected = selectPlanningZone({
+    seed: state.seed,
+    tick: state.tick,
+    successes,
+  });
+  if (selected === null) return;
+
+  const archetypeId = PLANNING_ARCHETYPE_BY_ZONE_TYPE[selected.zone.type];
+  const archetype = getBuildingArchetype(archetypeId);
+  const planningSequence = selected.zone.planningSequence;
+  pending.planningJob = {
+    zoneId: selected.zone.id,
+    archetypeId,
+    archetypeOrder: Object.freeze([archetypeId]),
+    transformOrder: orderPlanningTransforms({
+      seed: state.seed,
+      zoneId: selected.zone.id,
+      planningSequence,
+      archetype,
+    }),
+    anchorOrder: orderPlanningAnchors({
+      seed: state.seed,
+      zoneId: selected.zone.id,
+      planningSequence,
+      archetypeId,
+      rect: selected.zone.rect,
+    }),
+    planningSequence,
+    candidateCursor: 0,
+    validCandidatesFound: 0,
+    workConsumed: 0,
+    selectedCandidate: null,
+  };
+}
+
+function invalidateRoutesCrossingFootprint(
+  state: AuthoritativeState,
+  physicalCells: readonly GridPosition[],
+): void {
+  const physicalCellKeys = new Set(physicalCells.map(cellKey));
+  for (const citizen of state.citizens) {
+    if (citizen.path === null) continue;
+    if (!citizen.path.some((position) => physicalCellKeys.has(cellKey(position)))) continue;
+    citizen.path = null;
+    citizen.pathIndex = 0;
+    citizen.routeNeedsReplan = true;
+    citizen.replanWithOccupancy = false;
+  }
+}
+
+function acceptPlanningCandidate(
+  pending: PendingTick,
+  job: BuildingPlanningJob,
+  zone: ZoneState,
+  candidate: SelectedPlanningCandidate,
+): void {
+  const state = pending.nextState;
+  const archetype = getBuildingArchetype(job.archetypeId);
+  const building = createBuildingInstance({
+    id: createBuildingId(`building-${String(state.nextBuildingId)}`),
+    zoneId: zone.id,
+    archetype,
+    origin: candidate.origin,
+    transform: candidate.transform,
+    state: {
+      kind: 'incomplete',
+      laborCompleted: 0,
+      laborRequired: archetype.labor,
+    },
+  });
+
+  state.buildings.push(building);
+  state.nextBuildingId += 1;
+  state.metrics.planningSuccesses += 1;
+  invalidateRoutesCrossingFootprint(state, candidate.geometry.physicalCells);
+  state.lastPlanningJob = {
+    status: 'accepted',
+    zoneId: zone.id,
+    archetypeId: job.archetypeId,
+    planningSequence: job.planningSequence,
+    candidateChecks: job.candidateCursor,
+  };
+}
+
+function markPlanningSaturated(
+  pending: PendingTick,
+  job: BuildingPlanningJob,
+  zone: ZoneState,
+): void {
+  zone.planningSaturated = true;
+  pending.nextState.lastPlanningJob = {
+    status: 'saturated',
+    zoneId: zone.id,
+    archetypeId: job.archetypeId,
+    planningSequence: job.planningSequence,
+    candidateChecks: job.candidateCursor,
+  };
+}
+
+function processAdvanceBuildingPlanning(pending: PendingTick): boolean {
+  const cursor = pending.cursors.advanceBuildingPlanning;
+  if (pending.planningJob === null) beginPlanningOpportunity(pending);
+
+  const job = pending.planningJob;
+  if (job === null) {
+    cursor.workIndex = 1;
+    return true;
+  }
+
+  const zone = pending.nextState.zones.find((candidate) => candidate.id === job.zoneId);
+  if (zone === undefined) throw new Error(`Planning job references unknown zone ${job.zoneId}.`);
+  const archetypeId = job.archetypeOrder[0];
+  if (archetypeId === undefined || archetypeId !== job.archetypeId) {
+    throw new Error(`Planning job ${job.zoneId} has an invalid archetype order.`);
+  }
+  const archetype = getBuildingArchetype(archetypeId);
+  const totalCandidates = job.transformOrder.length * job.anchorOrder.length;
+
+  if (job.candidateCursor >= totalCandidates) {
+    markPlanningSaturated(pending, job, zone);
+    pending.planningJob = null;
+    cursor.workIndex = 1;
+    return true;
+  }
+
+  const anchorCount = job.anchorOrder.length;
+  if (anchorCount === 0) throw new Error(`Planning job ${job.zoneId} has no candidate anchors.`);
+  const transformIndex = Math.floor(job.candidateCursor / anchorCount);
+  const anchorIndex = job.candidateCursor % anchorCount;
+  const transform = job.transformOrder[transformIndex];
+  const origin = job.anchorOrder[anchorIndex];
+  if (transform === undefined || origin === undefined) {
+    throw new Error(`Planning job ${job.zoneId} candidate cursor exceeded its order.`);
+  }
+
+  const validation = validatePlanningCandidate({
+    archetype,
+    zone,
+    origin,
+    transform,
+    existingBuildings: pending.nextState.buildings,
+    citizens: pending.nextState.citizens,
+  });
+  job.candidateCursor += 1;
+  job.workConsumed += 1;
+  job.validCandidatesFound += validation === null ? 0 : 1;
+  pending.nextState.metrics.planningCandidateChecks += 1;
+
+  if (validation !== null) {
+    job.selectedCandidate = {
+      origin: validation.origin,
+      transform: validation.transform,
+      geometry: validation.geometry,
+    };
+    acceptPlanningCandidate(pending, job, zone, job.selectedCandidate);
+    pending.planningJob = null;
+    cursor.workIndex = 1;
+    return true;
+  }
+
+  if (job.candidateCursor >= totalCandidates) {
+    markPlanningSaturated(pending, job, zone);
+    pending.planningJob = null;
+    cursor.workIndex = 1;
+    return true;
+  }
+
+  return false;
+}
+
+function isStaticCellWalkable(
+  state: AuthoritativeState,
+  citizen: CitizenState,
+  position: GridPosition,
+): boolean {
+  const positionKeyValue = cellKey(position);
+  if (positionKeyValue === cellKey(citizen.position)) return true;
+
+  const sourceBuilding = state.buildings.find((building) =>
+    building.physicalCells.some((cell) => cellKey(cell) === cellKey(citizen.position)),
+  );
+  if (sourceBuilding?.physicalCells.some((cell) => cellKey(cell) === positionKeyValue)) {
+    return true;
+  }
+
+  return !state.buildings.some((building) =>
+    building.physicalCells.some((cell) => cellKey(cell) === positionKeyValue),
+  );
 }
 
 function processFreezeCitizenOccupancy(pending: PendingTick): boolean {
@@ -852,6 +1247,7 @@ function processAdvancePathPlanning(pending: PendingTick): boolean {
       goal: citizen.wanderingTarget,
       isWalkable: (position) =>
         isWithinWanderingBounds(citizen.wanderingAnchor, position) &&
+        isStaticCellWalkable(pending.nextState, citizen, position) &&
         (!useTemporaryOccupancy ||
           cellKey(position) === cellKey(citizen.position) ||
           !pending.occupancy?.has(cellKey(position))),
@@ -932,6 +1328,7 @@ function selectSidestepTarget(
     const candidate = createGridPosition(x, y);
     if (
       isWithinWanderingBounds(citizen.wanderingAnchor, candidate) &&
+      isStaticCellWalkable(state, citizen, candidate) &&
       !occupancy.has(cellKey(candidate))
     ) {
       candidates.push(candidate);
@@ -1019,7 +1416,11 @@ function processResolveMovementConflicts(pending: PendingTick): boolean {
       const citizen = pending.nextState.citizens.find(
         (candidate) => candidate.id === participant.id,
       );
-      return citizen !== undefined && isWithinWanderingBounds(citizen.wanderingAnchor, target);
+      return (
+        citizen !== undefined &&
+        isWithinWanderingBounds(citizen.wanderingAnchor, target) &&
+        isStaticCellWalkable(pending.nextState, citizen, target)
+      );
     },
   });
   return true;
@@ -1158,7 +1559,7 @@ function processStage(pending: PendingTick, stage: TickStage): boolean {
     case 'evaluate-population-growth':
       return consumeSingleStage(pending.cursors.evaluatePopulationGrowth);
     case 'advance-building-planning':
-      return consumeSingleStage(pending.cursors.advanceBuildingPlanning);
+      return processAdvanceBuildingPlanning(pending);
     case 'commit-completed-tick':
       return consumeSingleStage(pending.cursors.commitCompletedTick);
   }
@@ -1181,13 +1582,19 @@ function hashableState(state: AuthoritativeState): unknown {
     zones: state.zones,
     buildings: state.buildings,
     nextZoneId: state.nextZoneId,
+    nextBuildingId: state.nextBuildingId,
+    planningChance: state.planningChance,
+    lastPlanningJob: state.lastPlanningJob,
     chunks: getSortedChunks(state.world),
     metrics: state.metrics,
   };
 }
 
 export function createSimulation(options: SimulationOptions = {}): Simulation {
-  let committedState = createInitialState(options.seed ?? 0);
+  let committedState = createInitialState(
+    options.seed ?? 0,
+    options.planningChance ?? DEFAULT_PLANNING_CHANCE,
+  );
   let pendingTick: PendingTick | null = null;
   let queuedCommands: SimulationCommand[] = [];
   let lastCommandResults: readonly PlaceZoneCommandResult[] = [];

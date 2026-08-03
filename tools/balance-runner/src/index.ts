@@ -35,6 +35,17 @@ while (completedTicks < ticks) {
 
 const snapshot = simulation.getSnapshot();
 const metrics = simulation.getMetrics();
+const buildingCounts = {
+  'single-house': { incomplete: 0, complete: 0 },
+  'small-shop': { incomplete: 0, complete: 0 },
+  'small-park': { incomplete: 0, complete: 0 },
+};
+let constructionWorkerCount = 0;
+for (const building of snapshot.buildings) {
+  const counts = buildingCounts[building.archetypeId];
+  counts[building.state.kind] += 1;
+  constructionWorkerCount += building.assignments.constructionWorkerIds.length;
+}
 
 process.stdout.write(
   `${JSON.stringify({
@@ -42,6 +53,12 @@ process.stdout.write(
     data: snapshot.data,
     population: snapshot.population,
     citizens: snapshot.citizens,
+    buildings: buildingCounts,
+    constructionWorkerCount,
+    planningJob: snapshot.planningJob,
+    planningAttempts: metrics.planningAttempts,
+    planningSuccesses: metrics.planningSuccesses,
+    planningCandidateChecks: metrics.planningCandidateChecks,
     movementProposals: metrics.movementProposals,
     committedMoves: metrics.committedMoves,
     blockedMoves: metrics.blockedMoves,

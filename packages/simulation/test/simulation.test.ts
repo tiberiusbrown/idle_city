@@ -49,6 +49,13 @@ describe('simulation skeleton', () => {
         leisure: 40,
       },
       buildings: [],
+      planningJob: {
+        status: 'idle',
+        zoneId: null,
+        archetypeId: null,
+        planningSequence: 0,
+        candidateChecks: 0,
+      },
     });
     expect(second).toEqual(first);
     expect(first).not.toBe(second);
