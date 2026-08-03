@@ -9,6 +9,12 @@ import {
   type GridRect,
   type ZoneId,
 } from '@idle-city/shared';
+import {
+  cloneBuildingInstance,
+  createBuildingSnapshot,
+  type BuildingInstance,
+  type BuildingSnapshot,
+} from './buildings';
 import { createAStarSearch, type AStarAdvanceResult, type AStarSearch } from './pathfinding';
 import {
   movementCellKey,
@@ -26,7 +32,7 @@ import {
   type WorldState,
 } from './world';
 
-export type { CitizenId, GridPosition, GridRect, ZoneId } from '@idle-city/shared';
+export type { BuildingId, CitizenId, GridPosition, GridRect, ZoneId } from '@idle-city/shared';
 export {
   CHUNK_SIZE,
   createGridRect,
@@ -52,6 +58,7 @@ export type {
   MovementResolution,
   MovementResolutionOptions,
 } from './movement';
+export * from './buildings';
 
 export const FIXED_POINT_UNITS_PER_CELL = 1024;
 export const DEFAULT_CITIZEN_MOVEMENT_SPEED = 512;
@@ -208,7 +215,7 @@ export interface SimulationSnapshot {
   readonly citizens: readonly CitizenSnapshot[];
   readonly zones: readonly ZoneSnapshot[];
   readonly nextZoneCosts: Readonly<Record<ZoneType, number>>;
-  readonly buildings: readonly never[];
+  readonly buildings: readonly BuildingSnapshot[];
 }
 
 export interface Simulation {
@@ -262,6 +269,7 @@ interface AuthoritativeState {
   data: number;
   readonly citizens: CitizenState[];
   readonly zones: ZoneState[];
+  readonly buildings: BuildingInstance[];
   nextZoneId: number;
   readonly world: WorldState;
   readonly metrics: MutableMovementMetrics;
@@ -598,6 +606,7 @@ function createInitialState(seed: number): AuthoritativeState {
     data: 10,
     citizens,
     zones: [],
+    buildings: [],
     nextZoneId: 1,
     world,
     metrics: createMutableMetrics(),
@@ -687,7 +696,7 @@ function createSnapshot(state: AuthoritativeState): SimulationSnapshot {
     })),
     zones: state.zones.map(createZoneSnapshot),
     nextZoneCosts: createNextZoneCosts(state.zones),
-    buildings: [],
+    buildings: state.buildings.map(createBuildingSnapshot),
   };
 }
 
@@ -742,6 +751,7 @@ function createPendingTick(
       data: state.data,
       citizens: state.citizens.map(copyCitizenForPending),
       zones: state.zones.map(copyZoneState),
+      buildings: state.buildings.map(cloneBuildingInstance),
       nextZoneId: state.nextZoneId,
       world: cloneWorld(state.world),
       metrics: copyMetrics(state.metrics),
@@ -1169,10 +1179,10 @@ function hashableState(state: AuthoritativeState): unknown {
     data: state.data,
     citizens: state.citizens,
     zones: state.zones,
+    buildings: state.buildings,
     nextZoneId: state.nextZoneId,
     chunks: getSortedChunks(state.world),
     metrics: state.metrics,
-    buildings: [],
   };
 }
 

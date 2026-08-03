@@ -115,6 +115,19 @@ export function createZoneId(value: string): ZoneId {
   return value as ZoneId;
 }
 
+declare const buildingIdBrand: unique symbol;
+
+/** A stable authoritative identifier for a building. */
+export type BuildingId = string & {
+  readonly [buildingIdBrand]: 'BuildingId';
+};
+
+/** Brands a serialized building identifier without changing its runtime value. */
+export function createBuildingId(value: string): BuildingId {
+  if (value.length === 0) throw new Error('Building IDs must not be empty.');
+  return value as BuildingId;
+}
+
 function ordered(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(ordered);
   if (value !== null && typeof value === 'object') {
