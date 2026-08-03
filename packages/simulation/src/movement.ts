@@ -3,7 +3,7 @@ import { stableHash, type CitizenId, type GridPosition } from '@idle-city/shared
 const MOVEMENT_UNITS_PER_CELL = 1024;
 const MAX_WATCHDOG_CHAIN_LENGTH = 8;
 
-export type MovementProposalKind = 'route' | 'sidestep' | 'recovery' | 'emergency';
+export type MovementProposalKind = 'route' | 'internal' | 'sidestep' | 'recovery' | 'emergency';
 
 export interface MovementParticipant {
   readonly id: CitizenId;

@@ -19,6 +19,8 @@ describe('simulation skeleton', () => {
           previousPosition: { x: 0, y: 0 },
           movementCredit: 0,
           wanderingAnchor: { x: 0, y: 0 },
+          route: null,
+          activity: null,
         },
         {
           id: 'citizen-2',
@@ -26,6 +28,8 @@ describe('simulation skeleton', () => {
           previousPosition: { x: 1, y: 0 },
           movementCredit: 0,
           wanderingAnchor: { x: 1, y: 0 },
+          route: null,
+          activity: null,
         },
         {
           id: 'citizen-3',
@@ -33,6 +37,8 @@ describe('simulation skeleton', () => {
           previousPosition: { x: 0, y: 1 },
           movementCredit: 0,
           wanderingAnchor: { x: 0, y: 1 },
+          route: null,
+          activity: null,
         },
         {
           id: 'citizen-4',
@@ -40,6 +46,8 @@ describe('simulation skeleton', () => {
           previousPosition: { x: 1, y: 1 },
           movementCredit: 0,
           wanderingAnchor: { x: 1, y: 1 },
+          route: null,
+          activity: null,
         },
       ],
       zones: [],

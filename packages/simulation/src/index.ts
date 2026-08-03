@@ -4,6 +4,7 @@ import {
   createGridRect,
   createGridPosition,
   createZoneId,
+  type BuildingId,
   stableHash,
   type CitizenId,
   type GridPosition,
@@ -22,6 +23,12 @@ import {
   type BuildingTransform,
 } from './buildings';
 import { createAStarSearch, type AStarAdvanceResult, type AStarSearch } from './pathfinding';
+import {
+  createBuildingPassabilityCallback,
+  decrementBuildingActivityTicks,
+  isBuildingPassable,
+  selectInternalBuildingDestinationCell,
+} from './navigation';
 import {
   calculatePlanningChance,
   calculateZoneFreeSpaceRatio,
@@ -59,6 +66,20 @@ export {
 } from '@idle-city/shared';
 export type { ChunkCoordinates } from '@idle-city/shared';
 export { createAStarSearch } from './pathfinding';
+export {
+  createBuildingPassabilityCallback,
+  createBuildingTrip,
+  decrementBuildingActivityTicks,
+  isBuildingPassable,
+  selectBuildingDestinationCell,
+  selectInternalBuildingDestinationCell,
+} from './navigation';
+export type {
+  BuildingDestinationCellOptions,
+  BuildingPassabilityOptions,
+  BuildingTrip,
+  BuildingTripOptions,
+} from './navigation';
 export type {
   AStarAdvanceResult,
   AStarAdvanceStatus,
@@ -85,6 +106,8 @@ export {
 export const FIXED_POINT_UNITS_PER_CELL = 1024;
 export const DEFAULT_CITIZEN_MOVEMENT_SPEED = 512;
 export const WANDERING_CHEBYSHEV_RADIUS = 16;
+/** Generic activity duration used until domain-specific stay rules are added. */
+export const DEFAULT_GENERIC_BUILDING_ACTIVITY_TICKS = 1;
 
 /** Compatibility aliases for callers that name the balance values directly. */
 export const MOVEMENT_UNITS_PER_CELL = FIXED_POINT_UNITS_PER_CELL;
@@ -240,12 +263,30 @@ export interface PlanningJobSnapshot {
   readonly candidateChecks: number;
 }
 
+export type BuildingActivityKind = 'generic';
+
+export interface CitizenRouteSnapshot {
+  readonly sourceBuildingId: BuildingId | null;
+  readonly destinationBuildingId: BuildingId | null;
+  readonly destinationCell: GridPosition | null;
+  readonly tripSequence: number;
+}
+
+export interface BuildingActivitySnapshot {
+  readonly buildingId: BuildingId;
+  readonly kind: BuildingActivityKind;
+  readonly ticksRemaining: number;
+  readonly internalWanderingSequence: number;
+}
+
 export interface CitizenSnapshot {
   readonly id: CitizenId;
   readonly position: GridPosition;
   readonly previousPosition: GridPosition;
   readonly movementCredit: number;
   readonly wanderingAnchor: GridPosition;
+  readonly route: CitizenRouteSnapshot | null;
+  readonly activity: BuildingActivitySnapshot | null;
 }
 
 export interface SimulationSnapshot {
@@ -282,6 +323,20 @@ interface MutableMovementMetrics {
   planningCandidateChecks: number;
 }
 
+interface CitizenRouteState {
+  readonly sourceBuildingId: BuildingId | null;
+  readonly destinationBuildingId: BuildingId | null;
+  readonly destinationCell: GridPosition | null;
+  readonly tripSequence: number;
+}
+
+interface BuildingActivityState {
+  buildingId: BuildingId;
+  kind: BuildingActivityKind;
+  ticksRemaining: number;
+  internalWanderingSequence: number;
+}
+
 interface CitizenState {
   readonly id: CitizenId;
   position: GridPosition;
@@ -295,6 +350,13 @@ interface CitizenState {
   path: GridPosition[] | null;
   pathIndex: number;
   goalStartTick: number;
+  tripSequence: number;
+  route: CitizenRouteState | null;
+  activity: BuildingActivityState | null;
+  internalTarget: GridPosition | null;
+  internalPath: GridPosition[] | null;
+  internalPathIndex: number;
+  internalPathNeedsReplan: boolean;
   routeNeedsReplan: boolean;
   replanWithOccupancy: boolean;
 }
@@ -387,6 +449,7 @@ interface PendingTick {
   occupancy: Map<string, CitizenId> | null;
   readonly pathSearches: Map<CitizenId, AStarSearch>;
   readonly proposals: MovementProposal[];
+  readonly arrivedBuildingIds: Map<CitizenId, BuildingId>;
   movementResolution: MovementResolution | null;
   planningJob: BuildingPlanningJob | null;
 }
@@ -450,6 +513,26 @@ function validatePlanningChance(planningChance: number): number {
 
 function copyPosition(position: GridPosition): GridPosition {
   return createGridPosition(position.x, position.y);
+}
+
+function copyRoute(route: CitizenRouteState | null): CitizenRouteState | null {
+  if (route === null) return null;
+  return {
+    sourceBuildingId: route.sourceBuildingId,
+    destinationBuildingId: route.destinationBuildingId,
+    destinationCell: route.destinationCell === null ? null : copyPosition(route.destinationCell),
+    tripSequence: route.tripSequence,
+  };
+}
+
+function copyActivity(activity: BuildingActivityState | null): BuildingActivityState | null {
+  if (activity === null) return null;
+  return {
+    buildingId: activity.buildingId,
+    kind: activity.kind,
+    ticksRemaining: activity.ticksRemaining,
+    internalWanderingSequence: activity.internalWanderingSequence,
+  };
 }
 
 function copySnapshotPosition(position: GridPosition): GridPosition {
@@ -530,6 +613,13 @@ function createCitizenState(id: CitizenId, position: GridPosition): CitizenState
     path: null,
     pathIndex: 0,
     goalStartTick: 0,
+    tripSequence: 0,
+    route: null,
+    activity: null,
+    internalTarget: null,
+    internalPath: null,
+    internalPathIndex: 0,
+    internalPathNeedsReplan: false,
     routeNeedsReplan: false,
     replanWithOccupancy: false,
   };
@@ -732,6 +822,13 @@ function copyCitizenForPending(citizen: CitizenState): CitizenState {
     path: citizen.path?.map(copyPosition) ?? null,
     pathIndex: citizen.pathIndex,
     goalStartTick: citizen.goalStartTick,
+    tripSequence: citizen.tripSequence,
+    route: copyRoute(citizen.route),
+    activity: copyActivity(citizen.activity),
+    internalTarget: citizen.internalTarget === null ? null : copyPosition(citizen.internalTarget),
+    internalPath: citizen.internalPath?.map(copyPosition) ?? null,
+    internalPathIndex: citizen.internalPathIndex,
+    internalPathNeedsReplan: citizen.internalPathNeedsReplan,
     routeNeedsReplan: citizen.routeNeedsReplan,
     replanWithOccupancy: citizen.replanWithOccupancy,
   };
@@ -800,6 +897,27 @@ function createSnapshot(state: AuthoritativeState): SimulationSnapshot {
       previousPosition: copySnapshotPosition(citizen.previousPosition),
       movementCredit: citizen.movementCredit,
       wanderingAnchor: copySnapshotPosition(citizen.wanderingAnchor),
+      route:
+        citizen.route === null
+          ? null
+          : {
+              sourceBuildingId: citizen.route.sourceBuildingId,
+              destinationBuildingId: citizen.route.destinationBuildingId,
+              destinationCell:
+                citizen.route.destinationCell === null
+                  ? null
+                  : copySnapshotPosition(citizen.route.destinationCell),
+              tripSequence: citizen.route.tripSequence,
+            },
+      activity:
+        citizen.activity === null
+          ? null
+          : {
+              buildingId: citizen.activity.buildingId,
+              kind: citizen.activity.kind,
+              ticksRemaining: citizen.activity.ticksRemaining,
+              internalWanderingSequence: citizen.activity.internalWanderingSequence,
+            },
     })),
     zones: state.zones.map(createZoneSnapshot),
     nextZoneCosts: createNextZoneCosts(state.zones),
@@ -878,6 +996,7 @@ function createPendingTick(
     occupancy: null,
     pathSearches: new Map(),
     proposals: [],
+    arrivedBuildingIds: new Map(),
     movementResolution: null,
     planningJob: null,
   };
@@ -889,6 +1008,153 @@ function consumeSingleStage(cursor: StageCursor): boolean {
   }
   cursor.workIndex = 1;
   return true;
+}
+
+function findBuildingById(
+  state: AuthoritativeState,
+  buildingId: BuildingId,
+): BuildingInstance | undefined {
+  return state.buildings.find((building) => building.id === buildingId);
+}
+
+function buildingContainsCell(building: BuildingInstance, position: GridPosition): boolean {
+  const key = cellKey(position);
+  return building.physicalCells.some((cell) => cellKey(cell) === key);
+}
+
+function isCitizenMovementCellWithinBounds(
+  state: AuthoritativeState,
+  citizen: CitizenState,
+  position: GridPosition,
+): boolean {
+  if (citizen.activity !== null) {
+    const building = findBuildingById(state, citizen.activity.buildingId);
+    return building !== undefined && buildingContainsCell(building, position);
+  }
+  if (citizen.route !== null) return true;
+  return isWithinWanderingBounds(citizen.wanderingAnchor, position);
+}
+
+function findBuildingContainingCell(
+  state: AuthoritativeState,
+  position: GridPosition,
+): BuildingInstance | undefined {
+  return state.buildings.find((building) => buildingContainsCell(building, position));
+}
+
+/** The next construction step can replace this with its project authorization rule. */
+function isAuthorizedForIncompleteBuilding(
+  citizen: CitizenState,
+  building: BuildingInstance,
+): boolean {
+  return building.assignments.constructionWorkerIds.includes(citizen.id);
+}
+
+function clearBuildingRoute(citizen: CitizenState): void {
+  citizen.route = null;
+  citizen.path = null;
+  citizen.pathIndex = 0;
+  citizen.routeNeedsReplan = false;
+  citizen.replanWithOccupancy = false;
+}
+
+function clearBuildingActivity(citizen: CitizenState): void {
+  citizen.activity = null;
+  citizen.internalTarget = null;
+  citizen.internalPath = null;
+  citizen.internalPathIndex = 0;
+  citizen.internalPathNeedsReplan = false;
+}
+
+function clearInvalidBuildingDestinations(state: AuthoritativeState): void {
+  for (const citizen of state.citizens) {
+    if (citizen.route !== null) {
+      const destinationId = citizen.route.destinationBuildingId;
+      const destination =
+        destinationId === null ? undefined : findBuildingById(state, destinationId);
+      const destinationCell = citizen.route.destinationCell;
+      const destinationIsValid =
+        destination !== undefined &&
+        destinationCell !== null &&
+        buildingContainsCell(destination, destinationCell);
+      const sourceIsValid =
+        citizen.route.sourceBuildingId === null ||
+        findBuildingById(state, citizen.route.sourceBuildingId) !== undefined;
+
+      if (!destinationIsValid || !sourceIsValid) clearBuildingRoute(citizen);
+    }
+
+    if (citizen.activity !== null) {
+      const activityBuilding = findBuildingById(state, citizen.activity.buildingId);
+      if (
+        activityBuilding === undefined ||
+        !buildingContainsCell(activityBuilding, citizen.position)
+      ) {
+        clearBuildingActivity(citizen);
+      }
+    }
+  }
+}
+
+function selectNextInternalActivityTarget(
+  state: AuthoritativeState,
+  citizen: CitizenState,
+): boolean {
+  const activity = citizen.activity;
+  if (activity === null) return false;
+  const building = findBuildingById(state, activity.buildingId);
+  if (building === undefined || !buildingContainsCell(building, citizen.position)) {
+    clearBuildingActivity(citizen);
+    return false;
+  }
+
+  activity.internalWanderingSequence += 1;
+  citizen.internalTarget = selectInternalBuildingDestinationCell({
+    worldSeed: state.seed,
+    citizenId: citizen.id,
+    buildingId: building.id,
+    tripSequence: activity.internalWanderingSequence,
+    physicalCells: building.physicalCells,
+  });
+  citizen.internalPath = null;
+  citizen.internalPathIndex = 0;
+  citizen.internalPathNeedsReplan = false;
+  return true;
+}
+
+function startGenericBuildingActivity(
+  state: AuthoritativeState,
+  citizen: CitizenState,
+  buildingId: BuildingId,
+): void {
+  const building = findBuildingById(state, buildingId);
+  if (building === undefined || !buildingContainsCell(building, citizen.position)) {
+    clearBuildingRoute(citizen);
+    return;
+  }
+  if (
+    building.state.kind === 'incomplete' &&
+    !isAuthorizedForIncompleteBuilding(citizen, building)
+  ) {
+    clearBuildingRoute(citizen);
+    return;
+  }
+
+  citizen.activity = {
+    buildingId,
+    kind: 'generic',
+    ticksRemaining: DEFAULT_GENERIC_BUILDING_ACTIVITY_TICKS,
+    internalWanderingSequence: 0,
+  };
+  citizen.route = null;
+  citizen.path = null;
+  citizen.pathIndex = 0;
+  citizen.routeNeedsReplan = false;
+  citizen.replanWithOccupancy = false;
+  citizen.internalTarget = null;
+  citizen.internalPath = null;
+  citizen.internalPathIndex = 0;
+  citizen.internalPathNeedsReplan = false;
 }
 
 function startWanderingSegment(state: AuthoritativeState, citizen: CitizenState): void {
@@ -903,8 +1169,7 @@ function startWanderingSegment(state: AuthoritativeState, citizen: CitizenState)
   citizen.path = null;
   citizen.pathIndex = 0;
   citizen.goalStartTick = state.tick;
-  citizen.routeNeedsReplan = false;
-  citizen.replanWithOccupancy = false;
+  clearBuildingRoute(citizen);
   ensureChunkAt(state.world, citizen.wanderingAnchor);
   ensureChunkAt(state.world, citizen.wanderingTarget);
 }
@@ -1041,7 +1306,13 @@ function invalidateRoutesCrossingFootprint(
   const physicalCellKeys = new Set(physicalCells.map(cellKey));
   for (const citizen of state.citizens) {
     if (citizen.path === null) continue;
-    if (!citizen.path.some((position) => physicalCellKeys.has(cellKey(position)))) continue;
+    if (
+      !citizen.path.some(
+        (position, index) => index >= citizen.pathIndex && physicalCellKeys.has(cellKey(position)),
+      )
+    ) {
+      continue;
+    }
     citizen.path = null;
     citizen.pathIndex = 0;
     citizen.routeNeedsReplan = true;
@@ -1175,23 +1446,42 @@ function isStaticCellWalkable(
   position: GridPosition,
 ): boolean {
   const positionKeyValue = cellKey(position);
-  if (positionKeyValue === cellKey(citizen.position)) return true;
-
-  const sourceBuilding = state.buildings.find((building) =>
-    building.physicalCells.some((cell) => cellKey(cell) === cellKey(citizen.position)),
-  );
-  if (sourceBuilding?.physicalCells.some((cell) => cellKey(cell) === positionKeyValue)) {
-    return true;
+  if (citizen.activity !== null) {
+    const activityBuilding = findBuildingById(state, citizen.activity.buildingId);
+    return (
+      activityBuilding !== undefined &&
+      buildingContainsCell(activityBuilding, position) &&
+      (activityBuilding.state.kind === 'complete' ||
+        isAuthorizedForIncompleteBuilding(citizen, activityBuilding))
+    );
   }
 
-  return !state.buildings.some((building) =>
-    building.physicalCells.some((cell) => cellKey(cell) === positionKeyValue),
-  );
+  const building = findBuildingContainingCell(state, position);
+  if (positionKeyValue === cellKey(citizen.position)) {
+    if (building === undefined) return true;
+    const route = citizen.route;
+    return isBuildingPassable(building, {
+      sourceBuildingId: route?.sourceBuildingId ?? null,
+      destinationBuildingId: route?.destinationBuildingId ?? null,
+      isAuthorizedForIncompleteBuilding: (candidate) =>
+        isAuthorizedForIncompleteBuilding(citizen, candidate),
+    });
+  }
+  if (building === undefined) return true;
+
+  const route = citizen.route;
+  return isBuildingPassable(building, {
+    sourceBuildingId: route?.sourceBuildingId ?? null,
+    destinationBuildingId: route?.destinationBuildingId ?? null,
+    isAuthorizedForIncompleteBuilding: (candidate) =>
+      isAuthorizedForIncompleteBuilding(citizen, candidate),
+  });
 }
 
 function processFreezeCitizenOccupancy(pending: PendingTick): boolean {
   const cursor = pending.cursors.freezeCitizenOccupancy;
   consumeSingleStage(cursor);
+  clearInvalidBuildingDestinations(pending.nextState);
 
   const occupancy = new Map<string, CitizenId>();
   for (const citizen of pending.nextState.citizens) {
@@ -1201,11 +1491,18 @@ function processFreezeCitizenOccupancy(pending: PendingTick): boolean {
     }
     occupancy.set(key, citizen.id);
 
-    if (citizen.blockedMovementCount >= 8 && !citizen.routeNeedsReplan) {
-      citizen.routeNeedsReplan = true;
-      citizen.replanWithOccupancy = true;
-      citizen.path = null;
-      citizen.pathIndex = 0;
+    if (citizen.blockedMovementCount >= 8) {
+      if (citizen.activity !== null && !citizen.internalPathNeedsReplan) {
+        citizen.internalPathNeedsReplan = true;
+        citizen.replanWithOccupancy = true;
+        citizen.internalPath = null;
+        citizen.internalPathIndex = 0;
+      } else if (citizen.activity === null && !citizen.routeNeedsReplan) {
+        citizen.routeNeedsReplan = true;
+        citizen.replanWithOccupancy = true;
+        citizen.path = null;
+        citizen.pathIndex = 0;
+      }
     }
   }
   pending.occupancy = occupancy;
@@ -1217,7 +1514,23 @@ function processSelectNonConstructionGoals(pending: PendingTick): boolean {
   consumeSingleStage(cursor);
 
   for (const citizen of pending.nextState.citizens) {
+    if (citizen.activity !== null) continue;
     if (citizen.routeNeedsReplan) continue;
+
+    if (citizen.route !== null) {
+      if (citizen.path === null) continue;
+      if (citizen.pathIndex < citizen.path.length) continue;
+      if (
+        citizen.route.destinationCell !== null &&
+        cellKey(citizen.route.destinationCell) === cellKey(citizen.position)
+      ) {
+        continue;
+      }
+      clearBuildingRoute(citizen);
+      startWanderingSegment(pending.nextState, citizen);
+      continue;
+    }
+
     if (citizen.path !== null && citizen.pathIndex < citizen.path.length) continue;
     startWanderingSegment(pending.nextState, citizen);
   }
@@ -1232,7 +1545,26 @@ function processAdvancePathPlanning(pending: PendingTick): boolean {
   const citizen = citizens[cursor.workIndex];
   if (citizen === undefined) throw new Error('Path-planning cursor exceeded citizens.');
 
-  if (citizen.path !== null && !citizen.routeNeedsReplan) {
+  const isInternalActivity = citizen.activity !== null;
+  if (isInternalActivity) {
+    if (
+      citizen.internalPath !== null &&
+      citizen.internalPathIndex < citizen.internalPath.length &&
+      !citizen.internalPathNeedsReplan
+    ) {
+      cursor.workIndex += 1;
+      return cursor.workIndex >= citizens.length;
+    }
+    if (
+      citizen.internalTarget === null ||
+      (citizen.internalPath !== null && citizen.internalPathIndex >= citizen.internalPath.length)
+    ) {
+      if (!selectNextInternalActivityTarget(pending.nextState, citizen)) {
+        cursor.workIndex += 1;
+        return cursor.workIndex >= citizens.length;
+      }
+    }
+  } else if (citizen.path !== null && !citizen.routeNeedsReplan) {
     cursor.workIndex += 1;
     return cursor.workIndex >= citizens.length;
   }
@@ -1242,12 +1574,35 @@ function processAdvancePathPlanning(pending: PendingTick): boolean {
   let search = pending.pathSearches.get(citizen.id);
   if (search === undefined) {
     const useTemporaryOccupancy = citizen.replanWithOccupancy;
+    const activityBuilding =
+      citizen.activity === null
+        ? undefined
+        : findBuildingById(pending.nextState, citizen.activity.buildingId);
+    const route = citizen.route;
+    const buildingPassability = createBuildingPassabilityCallback({
+      buildings: pending.nextState.buildings,
+      sourceBuildingId: route?.sourceBuildingId ?? null,
+      destinationBuildingId: route?.destinationBuildingId ?? null,
+      isAuthorizedForIncompleteBuilding: (building) =>
+        isAuthorizedForIncompleteBuilding(citizen, building),
+    });
+    const target = isInternalActivity
+      ? citizen.internalTarget
+      : (route?.destinationCell ?? citizen.wanderingTarget);
+    if (target === null) {
+      throw new Error(`Citizen ${citizen.id} has no path target.`);
+    }
     search = createAStarSearch({
       start: citizen.position,
-      goal: citizen.wanderingTarget,
+      goal: target,
       isWalkable: (position) =>
-        isWithinWanderingBounds(citizen.wanderingAnchor, position) &&
-        isStaticCellWalkable(pending.nextState, citizen, position) &&
+        (isInternalActivity
+          ? activityBuilding !== undefined && buildingContainsCell(activityBuilding, position)
+          : (route === null ? isWithinWanderingBounds(citizen.wanderingAnchor, position) : true) &&
+            buildingPassability(position)) &&
+        (isInternalActivity || route !== null
+          ? isStaticCellWalkable(pending.nextState, citizen, position)
+          : true) &&
         (!useTemporaryOccupancy ||
           cellKey(position) === cellKey(citizen.position) ||
           !pending.occupancy?.has(cellKey(position))),
@@ -1259,10 +1614,18 @@ function processAdvancePathPlanning(pending: PendingTick): boolean {
   pending.nextState.metrics.pathfindingExpansions += result.expansions;
   if (result.status === 'budget-exhausted') return false;
 
-  citizen.path = result.status === 'found' ? (result.path?.map(copyPosition) ?? []) : [];
-  citizen.pathIndex = 0;
-  citizen.routeNeedsReplan = false;
-  citizen.replanWithOccupancy = false;
+  const path = result.status === 'found' ? (result.path?.map(copyPosition) ?? []) : [];
+  if (isInternalActivity) {
+    citizen.internalPath = path;
+    citizen.internalPathIndex = 0;
+    citizen.internalPathNeedsReplan = false;
+    citizen.replanWithOccupancy = false;
+  } else {
+    citizen.path = path;
+    citizen.pathIndex = 0;
+    citizen.routeNeedsReplan = false;
+    citizen.replanWithOccupancy = false;
+  }
   pending.pathSearches.delete(citizen.id);
   cursor.workIndex += 1;
   return cursor.workIndex >= citizens.length;
@@ -1327,7 +1690,7 @@ function selectSidestepTarget(
     if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y)) continue;
     const candidate = createGridPosition(x, y);
     if (
-      isWithinWanderingBounds(citizen.wanderingAnchor, candidate) &&
+      isCitizenMovementCellWithinBounds(state, citizen, candidate) &&
       isStaticCellWalkable(state, citizen, candidate) &&
       !occupancy.has(cellKey(candidate))
     ) {
@@ -1350,22 +1713,25 @@ function processGenerateMovementProposals(pending: PendingTick): boolean {
   const citizen = citizens[cursor.workIndex];
   if (citizen === undefined) throw new Error('Movement-proposal cursor exceeded citizens.');
 
+  const movementPath = citizen.activity === null ? citizen.path : citizen.internalPath;
+  const movementPathIndex =
+    citizen.activity === null ? citizen.pathIndex : citizen.internalPathIndex;
   if (
     citizen.movementCredit >= FIXED_POINT_UNITS_PER_CELL &&
-    citizen.path !== null &&
-    citizen.pathIndex < citizen.path.length
+    movementPath !== null &&
+    movementPathIndex < movementPath.length
   ) {
-    const routeTarget = citizen.path[citizen.pathIndex];
+    const routeTarget = movementPath[movementPathIndex];
     if (routeTarget === undefined) throw new Error('Movement path index exceeded path length.');
     if (!isAdjacent(citizen.position, routeTarget)) {
       throw new Error(`Movement path for ${citizen.id} was not orthogonal.`);
     }
-    if (!isWithinWanderingBounds(citizen.wanderingAnchor, routeTarget)) {
+    if (!isCitizenMovementCellWithinBounds(pending.nextState, citizen, routeTarget)) {
       throw new Error(`Movement path for ${citizen.id} exceeded its wandering anchor.`);
     }
 
     let target = routeTarget;
-    let kind: MovementProposal['kind'] = 'route';
+    let kind: MovementProposal['kind'] = citizen.activity === null ? 'route' : 'internal';
     if (citizen.blockedMovementCount >= 4) {
       const sidestepTarget = selectSidestepTarget(
         pending.nextState,
@@ -1403,7 +1769,13 @@ function processResolveMovementConflicts(pending: PendingTick): boolean {
     movementCredit: citizen.movementCredit,
     blockedMovementCount: citizen.blockedMovementCount,
     remainingRouteCells:
-      citizen.path === null ? 0 : Math.max(0, citizen.path.length - citizen.pathIndex),
+      citizen.activity === null
+        ? citizen.path === null
+          ? 0
+          : Math.max(0, citizen.path.length - citizen.pathIndex)
+        : citizen.internalPath === null
+          ? 0
+          : Math.max(0, citizen.internalPath.length - citizen.internalPathIndex),
     goalStartTick: citizen.goalStartTick,
   }));
   pending.movementResolution = resolveMovementProposals({
@@ -1418,7 +1790,7 @@ function processResolveMovementConflicts(pending: PendingTick): boolean {
       );
       return (
         citizen !== undefined &&
-        isWithinWanderingBounds(citizen.wanderingAnchor, target) &&
+        isCitizenMovementCellWithinBounds(pending.nextState, citizen, target) &&
         isStaticCellWalkable(pending.nextState, citizen, target)
       );
     },
@@ -1452,10 +1824,17 @@ function processCommitAcceptedMovement(pending: PendingTick): boolean {
     const previousBlockedCount = blockedCitizen.blockedMovementCount;
     blockedCitizen.blockedMovementCount += 1;
     if (previousBlockedCount < 8 && blockedCitizen.blockedMovementCount >= 8) {
-      blockedCitizen.routeNeedsReplan = true;
-      blockedCitizen.replanWithOccupancy = true;
-      blockedCitizen.path = null;
-      blockedCitizen.pathIndex = 0;
+      if (blockedCitizen.activity !== null) {
+        blockedCitizen.internalPathNeedsReplan = true;
+        blockedCitizen.internalPath = null;
+        blockedCitizen.internalPathIndex = 0;
+        blockedCitizen.replanWithOccupancy = true;
+      } else {
+        blockedCitizen.routeNeedsReplan = true;
+        blockedCitizen.replanWithOccupancy = true;
+        blockedCitizen.path = null;
+        blockedCitizen.pathIndex = 0;
+      }
     }
     pending.nextState.metrics.blockedMoves += 1;
   }
@@ -1476,15 +1855,32 @@ function processCommitAcceptedMovement(pending: PendingTick): boolean {
     }
 
     if (accepted.implicit) {
-      citizen.path = null;
-      citizen.pathIndex = 0;
-      citizen.routeNeedsReplan = true;
-      citizen.replanWithOccupancy = true;
+      if (citizen.activity !== null) {
+        citizen.internalPath = null;
+        citizen.internalPathIndex = 0;
+        citizen.internalPathNeedsReplan = true;
+      } else {
+        citizen.path = null;
+        citizen.pathIndex = 0;
+        citizen.routeNeedsReplan = true;
+        citizen.replanWithOccupancy = true;
+      }
+    } else if (accepted.kind === 'internal') {
+      if (citizen.internalPath === null) {
+        throw new Error(`Citizen ${citizen.id} moved internally without a path.`);
+      }
+      citizen.internalPathIndex += 1;
     } else if (accepted.kind === 'sidestep') {
-      citizen.path = null;
-      citizen.pathIndex = 0;
-      citizen.routeNeedsReplan = true;
-      citizen.replanWithOccupancy = false;
+      if (citizen.activity !== null) {
+        citizen.internalPath = null;
+        citizen.internalPathIndex = 0;
+        citizen.internalPathNeedsReplan = true;
+      } else {
+        citizen.path = null;
+        citizen.pathIndex = 0;
+        citizen.routeNeedsReplan = true;
+        citizen.replanWithOccupancy = false;
+      }
     } else {
       if (citizen.path === null) throw new Error(`Citizen ${citizen.id} moved without a path.`);
       citizen.pathIndex += 1;
@@ -1501,6 +1897,60 @@ function processCommitAcceptedMovement(pending: PendingTick): boolean {
     pending.nextState.movementNoProgressTicks = 0;
   }
 
+  return true;
+}
+
+function processDecrementTimers(pending: PendingTick): boolean {
+  const cursor = pending.cursors.decrementTimers;
+  consumeSingleStage(cursor);
+  for (const citizen of pending.nextState.citizens) {
+    if (citizen.activity !== null && citizen.activity.ticksRemaining > 0) {
+      citizen.activity.ticksRemaining = decrementBuildingActivityTicks(
+        citizen.activity.ticksRemaining,
+      );
+    }
+  }
+  return true;
+}
+
+function processCompleteExpiredActivities(pending: PendingTick): boolean {
+  const cursor = pending.cursors.completeExpiredActivities;
+  consumeSingleStage(cursor);
+  for (const citizen of pending.nextState.citizens) {
+    if (citizen.activity !== null && citizen.activity.ticksRemaining <= 0) {
+      clearBuildingActivity(citizen);
+    }
+  }
+  return true;
+}
+
+function processArrivals(pending: PendingTick): boolean {
+  const cursor = pending.cursors.processArrivals;
+  consumeSingleStage(cursor);
+  for (const citizen of pending.nextState.citizens) {
+    if (citizen.activity !== null || citizen.route === null) continue;
+    const destinationCell = citizen.route.destinationCell;
+    const destinationBuildingId = citizen.route.destinationBuildingId;
+    if (destinationCell === null || destinationBuildingId === null) continue;
+    if (cellKey(destinationCell) !== cellKey(citizen.position)) continue;
+    const destination = findBuildingById(pending.nextState, destinationBuildingId);
+    if (destination === undefined || !buildingContainsCell(destination, citizen.position)) {
+      clearBuildingRoute(citizen);
+      continue;
+    }
+    pending.arrivedBuildingIds.set(citizen.id, destination.id);
+  }
+  return true;
+}
+
+function processStartBuildingActivities(pending: PendingTick): boolean {
+  const cursor = pending.cursors.startBuildingActivities;
+  consumeSingleStage(cursor);
+  for (const citizen of pending.nextState.citizens) {
+    const buildingId = pending.arrivedBuildingIds.get(citizen.id);
+    if (buildingId === undefined) continue;
+    startGenericBuildingActivity(pending.nextState, citizen, buildingId);
+  }
   return true;
 }
 
@@ -1525,9 +1975,9 @@ function processStage(pending: PendingTick, stage: TickStage): boolean {
     case 'freeze-citizen-occupancy':
       return processFreezeCitizenOccupancy(pending);
     case 'decrement-timers':
-      return consumeSingleStage(pending.cursors.decrementTimers);
+      return processDecrementTimers(pending);
     case 'complete-expired-activities':
-      return consumeSingleStage(pending.cursors.completeExpiredActivities);
+      return processCompleteExpiredActivities(pending);
     case 'mark-citizens-requiring-goal':
       return consumeSingleStage(pending.cursors.markCitizensRequiringGoal);
     case 'fill-construction-assignments':
@@ -1545,9 +1995,9 @@ function processStage(pending: PendingTick, stage: TickStage): boolean {
     case 'commit-accepted-movement':
       return processCommitAcceptedMovement(pending);
     case 'process-arrivals':
-      return consumeSingleStage(pending.cursors.processArrivals);
+      return processArrivals(pending);
     case 'start-building-activities':
-      return consumeSingleStage(pending.cursors.startBuildingActivities);
+      return processStartBuildingActivities(pending);
     case 'produce-workplace-data':
       return consumeSingleStage(pending.cursors.produceWorkplaceData);
     case 'apply-construction-labor':
