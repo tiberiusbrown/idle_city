@@ -20,12 +20,12 @@
           <span class="signal" aria-hidden="true"></span>
         </header>
         <div class="metrics">
-          <div><span>Tick</span><strong data-testid="tick">0</strong></div>
-          <div><span>Citizens</span><strong data-testid="citizen-count">0</strong></div>
-          <div><span>Data</span><strong data-testid="data-metric">0</strong></div>
-          <div><span>Space</span><strong data-testid="space-metric">0%</strong></div>
-          <div><span>Access</span><strong data-testid="access-metric">0%</strong></div>
-          <div><span>Activity</span><strong data-testid="activity-metric">0%</strong></div>
+          <div class="metric-primary">
+            <span>Population</span><strong data-testid="citizen-count">0</strong>
+          </div>
+          <div class="metric-primary">
+            <span>Data</span><strong data-testid="data-metric">0</strong>
+          </div>
         </div>
         <div class="controls">
           <button
@@ -33,6 +33,7 @@
             data-action="build"
             aria-label="Open Build menu"
             aria-expanded="false"
+            aria-controls="build-panel"
           >
             Build
           </button>
@@ -41,27 +42,55 @@
             data-action="research"
             aria-label="Open Research menu"
             aria-expanded="false"
+            aria-controls="research-panel"
           >
             Research
           </button>
-          <button type="button" data-speed="pause" aria-label="Pause simulation">Pause</button>
-          <button type="button" data-speed="normal" aria-label="Run at normal speed" class="active">
-            Normal
+          <button type="button" data-action="gather-data" aria-label="Gather Data plus one">
+            Gather Data +1
           </button>
-          <button type="button" data-speed="fast" aria-label="Run at fast speed">Fast</button>
-          <button type="button" data-action="reset" aria-label="Reset simulation">Reset</button>
+          <button
+            type="button"
+            data-action="controls"
+            aria-expanded="false"
+            aria-controls="controls-panel"
+          >
+            Controls
+          </button>
         </div>
-        <p class="status">
+        <p class="status" role="status" aria-live="polite">
           <span></span><span data-testid="status">Simulation running at normal speed</span>
         </p>
-        <p class="entity-summary" aria-label="City entities">
-          <span data-testid="seed-count">0 seeds</span>
-          <span data-testid="building-count">2 buildings</span>
-          <span data-testid="project-count">0 projects</span>
-        </p>
+        <section id="controls-panel" class="controls-panel" data-testid="controls-panel" hidden>
+          <div class="secondary-metrics">
+            <div><span>Tick</span><strong data-testid="tick">0</strong></div>
+            <div><span>Space</span><strong data-testid="space-metric">0%</strong></div>
+            <div><span>Access</span><strong data-testid="access-metric">0%</strong></div>
+            <div><span>Activity</span><strong data-testid="activity-metric">0%</strong></div>
+          </div>
+          <div class="speed-controls" aria-label="Simulation speed">
+            <button type="button" data-speed="pause" aria-label="Pause simulation">Pause</button>
+            <button
+              type="button"
+              data-speed="normal"
+              aria-label="Run at normal speed"
+              class="active"
+            >
+              Normal
+            </button>
+            <button type="button" data-speed="fast" aria-label="Run at fast speed">Fast</button>
+            <button type="button" data-action="reset" aria-label="Reset simulation">Reset</button>
+          </div>
+          <p class="entity-summary" aria-label="City entities">
+            <span data-testid="seed-count">0 seeds</span>
+            <span data-testid="building-count">0 buildings</span>
+            <span data-testid="project-count">0 projects</span>
+          </p>
+        </section>
         <section
           class="research-panel"
           data-testid="research-panel"
+          id="research-panel"
           aria-labelledby="research-title"
           hidden
         >
@@ -99,7 +128,13 @@
             </button>
           </article>
         </section>
-        <section class="build-panel" data-testid="build-panel" aria-labelledby="build-title" hidden>
+        <section
+          id="build-panel"
+          class="build-panel"
+          data-testid="build-panel"
+          aria-labelledby="build-title"
+          hidden
+        >
           <div class="build-selector">
             <div class="panel-heading">
               <h2 id="build-title">Build</h2>

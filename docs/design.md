@@ -111,6 +111,17 @@ The simulation is authoritative and advances only through logical steps.
 - Simulation snapshots are detached and serializable.
 - Rejected commands do not mutate authoritative state.
 
+The default opening is intentionally empty: zero buildings, projects, and
+seeds, Data 0, and one idle citizen on the deterministic center-nearest active
+cell. Living and Working seeds are the first development inputs; no starter
+plaza or road is created.
+
+`gatherManualData()` is the opening bootstrap action. Each accepted activation
+adds exactly one Data without advancing the tick or consuming RNG. It remains
+available until both a Living and Working seed have been accepted, then rejects
+permanently. Automatic Data begins only after a citizen has both a completed
+home and workplace assignment.
+
 ### 4.2 Chunked world — Implemented
 
 The world uses signed logical coordinates divided into active chunks.
@@ -179,17 +190,15 @@ No randomness is used in the score or tie-breaker.
 
 ### 4.6 Circulation-aware development — Implemented Step 9.5
 
-Buildings reserve a one-cell circulation envelope around their complete
-footprint. The envelope is fully active, cannot overlap another completed or
-project footprint, and must provide at least three stable staging-capable
-cells. An entrance is selected from those staging cells and remains outside
-the blocked footprint.
+Buildings derive a one-cell building clearance zone by expanding their
+complete footprint. Clearance is placement geometry only and remains ordinary
+walkable land. A candidate cannot overlap another footprint or clearance zone.
 
-The simulation owns a compact public right-of-way (ROW) layer. ROW cells are
-active and walkable but never buildable. Starter-building envelopes are joined
-by a deterministic two-cell-wide connector. Later projects receive the same
-envelope and connector treatment; the player never draws roads or removes
-ROW.
+Active empty land is universally walkable and buildable. Inactive cells are
+neither walkable nor buildable, while completed and active construction
+footprints are blocked. Seeds influence demand only and never require a
+connector or network attachment. Distant seeded areas can develop when
+staging and labor are reachable across open land.
 
 Developer evaluation is an incremental deterministic job. It considers only
 relevant active chunks, checks at most 512 anchors per logical tick, retains
@@ -198,11 +207,9 @@ expands at most 2,048 paired corridor states per tick. A job is superseded by
 an explicit development-state version change. At most one project starts after
 a complete non-superseded evaluation.
 
-An accepted project reserves its footprint, envelope, and connector in one
-authoritative transition. Existing ROW is reused and never consumed. The
-simulation does not rerun every citizen route for every candidate; after a
-project is accepted it replans only citizens whose stored future route
-intersects the newly reserved footprint.
+An accepted project reserves its complete footprint and placement clearance in
+one authoritative transition. The simulation replans only citizens whose
+stored future route intersects the newly reserved footprint.
 
 ### 4.7 Citizen construction labor — Implemented Step 9.6
 
@@ -217,8 +224,8 @@ Projects reserve their complete footprint and progress through:
 Construction is performed by existing citizens. Each project stores exactly
 three distinct staging cells outside its footprint. The selected entrance is
 first; remaining staging cells are ordered by shortest perimeter distance from
-the entrance, then `y`, then `x`. Project staging cells are marked as ROW in
-the same authoritative transition that starts the project.
+the entrance, then `y`, then `x`. Project staging cells are ordinary active
+cells reserved only for their assigned workers during construction.
 
 The labor contract is:
 
@@ -350,7 +357,7 @@ rounded to six decimal places. Matching contributions add and cap at `1`.
 Different seed types may overlap without contributing to one another.
 
 The placement preview and placed influence overlay use the same square
-definition, while ROW corridors remain visible over the overlay.
+definition; ordinary buildings and open land remain visible beneath it.
 
 The configured radius is authoritative simulation balance data. UI previews must read the authoritative value rather than duplicate it.
 
@@ -388,7 +395,7 @@ A seed-placement command rejects when:
 - The type is locked.
 - The anchor is outside active space.
 - The anchor is not buildable.
-- The anchor is public right-of-way.
+- The anchor is not buildable under an explicit footprint or clearance rule.
 - Another seed already occupies the anchor.
 - The player lacks Data.
 - Another explicit future placement rule fails.
@@ -586,6 +593,15 @@ The main interface exposes only:
 - **Space** — whether sufficient compatible capacity exists.
 - **Access** — whether citizens can reach activities efficiently.
 - **Activity** — whether citizens and buildings are productively used.
+
+The browser opening keeps Population and Data as the prominent persistent HUD
+metrics. Build and Research are compact mutually exclusive drawers. Until both
+bootstrap seeds are accepted, a visible `Gather Data +1` control performs the
+authoritative manual-data action; it disappears once that action is no longer
+available. Entering Build mode desaturates existing buildings and projects,
+keeps Living/Working/Services seed influence colors vivid, and shows a single
+authoritative valid or invalid placement candidate. Leaving Build mode clears
+that transient candidate without spending Data.
 
 All three are normalized to `[0, 1]`.
 

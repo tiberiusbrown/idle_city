@@ -8,6 +8,8 @@ export interface CityMaterials {
   readonly home: PBRMaterial;
   readonly workplace: PBRMaterial;
   readonly service: PBRMaterial;
+  readonly planningBuilding: PBRMaterial;
+  readonly planningConstruction: PBRMaterial;
   readonly window: PBRMaterial;
   readonly citizen: PBRMaterial;
   readonly constructionCitizen: PBRMaterial;
@@ -46,9 +48,9 @@ function createMaterial(
 }
 
 export function createCityMaterials(scene: Scene): CityMaterials {
-  const living = new Color3(0.26, 0.45, 0.86);
-  const working = new Color3(0.59, 0.28, 0.8);
-  const services = new Color3(0.95, 0.48, 0.26);
+  const living = new Color3(0.2, 0.82, 0.42);
+  const working = new Color3(0.2, 0.42, 0.95);
+  const services = new Color3(0.96, 0.62, 0.12);
   const cyan = new Color3(0.33, 0.95, 0.82);
   return {
     ground: createMaterial(scene, 'ground-material', new Color3(0.035, 0.07, 0.11), 0.05),
@@ -61,6 +63,19 @@ export function createCityMaterials(scene: Scene): CityMaterials {
     home: createMaterial(scene, 'home-material', living, 0.1),
     workplace: createMaterial(scene, 'workplace-material', working, 0.12),
     service: createMaterial(scene, 'service-material', services, 0.2),
+    planningBuilding: createMaterial(
+      scene,
+      'planning-building-material',
+      new Color3(0.32, 0.38, 0.45),
+      0.03,
+    ),
+    planningConstruction: createMaterial(
+      scene,
+      'planning-construction-material',
+      new Color3(0.28, 0.34, 0.42),
+      0.05,
+      0.45,
+    ),
     window: createMaterial(scene, 'window-material', cyan, 0.7),
     citizen: createMaterial(scene, 'citizen-material', new Color3(0.98, 0.65, 0.27), 0.18),
     constructionCitizen: createMaterial(

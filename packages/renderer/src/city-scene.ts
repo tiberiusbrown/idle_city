@@ -55,11 +55,18 @@ export interface PickedLogicalCell {
   readonly chunk: ChunkCoordinate;
 }
 
+export interface CityPlanningModeOptions {
+  readonly active: boolean;
+  readonly candidate?: PlacementPreview | DistrictSeedPlacementInfo;
+  readonly selected?: boolean;
+}
+
 export interface CityScene {
   readonly scene: Scene;
   update(snapshot: SimulationSnapshot, interpolation: number): void;
   pickLogicalCell(clientX: number, clientY: number): PickedLogicalCell | undefined;
   setPlacementPreview(preview: PlacementPreview | DistrictSeedPlacementInfo | undefined): void;
+  setPlanningMode(options: CityPlanningModeOptions): void;
   setSeedInfluenceVisibility(options: SeedVisibilityOptions): void;
   setVisibleChunks(chunks: readonly ChunkCoordinate[]): void;
   getStructuralCounters(): CitySceneStructuralCounters;
@@ -157,6 +164,16 @@ export function createCityScene(
     setPlacementPreview(preview: PlacementPreview | DistrictSeedPlacementInfo | undefined): void {
       if (disposed) throw new Error('Cannot update a disposed city scene.');
       placementPreview.setPreview(preview);
+    },
+    setPlanningMode(options: CityPlanningModeOptions): void {
+      if (disposed) throw new Error('Cannot change planning mode on a disposed city scene.');
+      buildings.setPlanningMode(options.active);
+      construction.setPlanningMode(options.active);
+      seeds.setVisibility({ overlayActive: options.active, placing: options.active });
+      if (options.candidate !== undefined) {
+        if (options.selected === undefined) placementPreview.setPreview(options.candidate);
+        else placementPreview.setPreview({ ...options.candidate, selected: options.selected });
+      } else if (!options.active) placementPreview.setPreview(undefined);
     },
     setSeedInfluenceVisibility(options: SeedVisibilityOptions): void {
       if (disposed) throw new Error('Cannot change seed visibility on a disposed city scene.');

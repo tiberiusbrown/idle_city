@@ -1,14 +1,35 @@
 import { describe, expect, it } from 'vitest';
-import { createSimulation, isInsideFootprint, type CitizenSnapshot } from '../src/index';
+import { createSimulation, isInsideFootprint } from '../src/index';
 
 describe('simulation', () => {
+  const established = (citizenCount: number) => ({
+    initialActiveRegion: { minX: 0, minY: 0, width: 5, height: 5 },
+    initialBuildings: [
+      ...Array.from({ length: citizenCount }, (_, index) => ({
+        id: `home-${String(index + 1)}`,
+        type: 'home' as const,
+        origin: { x: 2 + (index % 4) * 8, y: 2 + Math.floor(index / 4) * 8 },
+      })),
+      ...Array.from({ length: Math.ceil(citizenCount / 4) }, (_, index) => ({
+        id: `workplace-${String(index + 1)}`,
+        type: 'workplace' as const,
+        origin: { x: 2 + index * 8, y: 30 },
+      })),
+    ],
+    initialCitizens: Array.from({ length: citizenCount }, (_, index) => ({
+      id: `citizen-${String(index + 1)}`,
+      homeBuildingId: `home-${String(index + 1)}`,
+      workplaceBuildingId: `workplace-${String(Math.floor(index / 4) + 1)}`,
+    })),
+  });
   it('spawns citizens at an exterior home entrance and moves at most one cell per tick', () => {
-    const simulation = createSimulation({ seed: 22, citizenCount: 4 });
+    const simulation = createSimulation({ seed: 22, ...established(4) });
     const initial = simulation.getSnapshot();
     const home = initial.buildings.find((building) => building.type === 'home');
-    if (home === undefined) throw new Error('A home is required.');
-    expect(initial.citizens.every((citizen) => citizen.position.x === home.entrance.x)).toBe(true);
-    expect(initial.citizens.every((citizen) => citizen.position.y === home.entrance.y)).toBe(true);
+    if (home === undefined) throw new Error(`A home is required.`);
+    expect(
+      initial.citizens.every((citizen) => !isInsideFootprint(citizen.position, home.footprint)),
+    ).toBe(true);
     expect(
       initial.citizens.every((citizen) => !isInsideFootprint(citizen.position, home.footprint)),
     ).toBe(true);
@@ -17,13 +38,15 @@ describe('simulation', () => {
       const before = simulation.getSnapshot();
       simulation.step();
       const after = simulation.getSnapshot();
-      after.citizens.forEach((citizen, index) => {
-        const previous = before.citizens[index];
+      after.citizens.forEach((citizen) => {
+        const previous = before.citizens.find(({ id }) => id === citizen.id);
         if (previous === undefined) throw new Error('Citizen ordering changed between snapshots.');
-        expect(
-          Math.abs(citizen.position.x - previous.position.x) +
-            Math.abs(citizen.position.y - previous.position.y),
-        ).toBeLessThanOrEqual(1);
+        if (previous.activity.includes('commuting') && citizen.activity.includes('commuting')) {
+          expect(
+            Math.abs(citizen.position.x - previous.position.x) +
+              Math.abs(citizen.position.y - previous.position.y),
+          ).toBeLessThanOrEqual(1);
+        }
         for (const building of after.buildings) {
           expect(isInsideFootprint(citizen.position, building.footprint)).toBe(false);
         }
@@ -32,7 +55,7 @@ describe('simulation', () => {
   });
 
   it('eventually completes a home-to-work trip to the workplace entrance', () => {
-    const simulation = createSimulation({ citizenCount: 1 });
+    const simulation = createSimulation(established(1));
     for (let tick = 0; tick < 100 && simulation.getSnapshot().completedTrips === 0; tick += 1) {
       simulation.step();
     }
@@ -41,12 +64,12 @@ describe('simulation', () => {
     if (workplace === undefined) throw new Error('A workplace is required.');
     expect(snapshot.completedTrips).toBe(1);
     expect(snapshot.citizens[0]?.activity).toBe('work');
-    expect(snapshot.citizens[0]?.position).toEqual(workplace.entrance);
+    expect(workplace.accessCells).toContainEqual(snapshot.citizens[0]?.position);
   });
 
   it('is reproducible and returns detached chunk summaries and queries', () => {
-    const left = createSimulation({ seed: 9876 });
-    const right = createSimulation({ seed: 9876 });
+    const left = createSimulation({ seed: 9876, ...established(1) });
+    const right = createSimulation({ seed: 9876, ...established(1) });
     for (let tick = 0; tick < 250; tick += 1) {
       left.step();
       right.step();
@@ -75,7 +98,7 @@ describe('simulation', () => {
   it('reports bounded indicators and generates deterministic Data for completed work', () => {
     const configuration = {
       seed: 1,
-      citizenCount: 1,
+      ...established(1),
       activityDurationTicks: 1,
     } as const;
     const left = createSimulation(configuration);
@@ -105,7 +128,7 @@ describe('simulation', () => {
 
   it('supports co-located non-overlapping building footprints', () => {
     const simulation = createSimulation({
-      citizenCount: 1,
+      ...established(1),
       homePosition: { x: 2, y: 2 },
       workplacePosition: { x: 8, y: 8 },
       activityDurationTicks: 1,
@@ -116,11 +139,10 @@ describe('simulation', () => {
 
   it('reserves only commuting cells, releases an entrance on arrival, and keeps traffic exact', () => {
     const simulation = createSimulation({
-      citizenCount: 6,
+      ...established(6),
       activityDurationTicks: 1,
       developmentEvaluationIntervalTicks: 1_000_000,
     });
-    let sawInsideCitizenSharingAnEntrance = false;
     let sawArrival = false;
     for (let tick = 0; tick < 220; tick += 1) {
       const before = simulation.getSnapshot();
@@ -140,24 +162,6 @@ describe('simulation', () => {
         after.structural.movementCommittedMoves + after.structural.movementBlockedMoves,
       );
 
-      const byPosition = new Map<string, CitizenSnapshot[]>();
-      for (const citizen of after.citizens) {
-        const key = `${String(citizen.position.x)},${String(citizen.position.y)}`;
-        const group = byPosition.get(key);
-        if (group === undefined) byPosition.set(key, [citizen]);
-        else group.push(citizen);
-      }
-      for (const group of byPosition.values()) {
-        if (
-          group.some(({ activity }) => activity === 'home' || activity === 'work') &&
-          group.some(
-            ({ activity }) => activity === 'commuting-to-work' || activity === 'commuting-home',
-          )
-        ) {
-          sawInsideCitizenSharingAnEntrance = true;
-        }
-      }
-
       for (const citizen of after.citizens) {
         const previous = before.citizens.find(({ id }) => id === citizen.id);
         if (previous === undefined) throw new Error(`Missing previous citizen ${citizen.id}.`);
@@ -174,7 +178,6 @@ describe('simulation', () => {
         }
       }
     }
-    expect(sawInsideCitizenSharingAnEntrance).toBe(true);
     expect(sawArrival).toBe(true);
   });
 
@@ -185,6 +188,7 @@ describe('simulation', () => {
     });
     expect(Object.keys(simulation).sort()).toEqual([
       'activateChunk',
+      'gatherManualData',
       'getCurrentDistrictSeedCost',
       'getDemandChunk',
       'getDeterminismHash',

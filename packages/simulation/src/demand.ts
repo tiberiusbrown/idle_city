@@ -19,8 +19,8 @@ import type {
 } from './types';
 
 export interface DemandCitizen {
-  readonly homeBuildingId: string;
-  readonly workplaceBuildingId: string;
+  readonly homeBuildingId: string | null;
+  readonly workplaceBuildingId: string | null;
   readonly serviceNeed?: number;
   readonly serviceBuildingId?: string | null;
 }
@@ -194,6 +194,7 @@ function buildOccupancy(
   const occupancy = new Map<string, number>();
   for (const citizen of citizens) {
     const buildingId = citizen[field];
+    if (buildingId === null) continue;
     const building = buildingsById.get(buildingId);
     if (building === undefined)
       throw new Error(`Citizen references missing building ${buildingId}.`);

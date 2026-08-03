@@ -63,7 +63,7 @@ export function districtSeedInfluenceRadius(kind: DistrictSeedKind): number {
   return DISTRICT_SEED_DEFINITIONS[kind].influenceRadius;
 }
 
-/** Complete matching-type square in stable row-major order. */
+/** Complete matching-type square in stable y-then-x order. */
 export function enumerateDistrictSeedInfluenceCells(
   position: GridPosition,
   kind: DistrictSeedKind,

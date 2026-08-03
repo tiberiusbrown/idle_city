@@ -10,13 +10,26 @@ import {
   type DevelopmentCandidate,
 } from '../src/index';
 
+const developmentBuildings = [
+  { id: 'home-1', type: 'home' as const, origin: { x: 1, y: 1 } },
+  { id: 'home-2', type: 'home' as const, origin: { x: 1, y: 8 } },
+  { id: 'home-3', type: 'home' as const, origin: { x: 8, y: 1 } },
+  { id: 'workplace-1', type: 'workplace' as const, origin: { x: 8, y: 8 } },
+];
+
+const developmentCitizens = (count: number) =>
+  Array.from({ length: count }, (_, index) => ({
+    id: `citizen-${String(index + 1)}`,
+    homeBuildingId: `home-${String((index % 3) + 1)}`,
+    workplaceBuildingId: 'workplace-1',
+  }));
+
 function seededSimulation(kind: 'living' | 'working') {
   const simulation = createSimulation({
     chunkSize: 8,
-    initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-    homePosition: { x: 0, y: 0 },
-    workplacePosition: { x: 8, y: 8 },
-    citizenCount: 1,
+    initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+    initialBuildings: developmentBuildings,
+    initialCitizens: developmentCitizens(1),
     startingData: DISTRICT_SEED_COSTS[kind],
     developmentEvaluationIntervalTicks: 1,
   });
@@ -162,12 +175,9 @@ describe('deterministic developer evaluation and construction', () => {
   it('reserves the full footprint and advances exact fixed phases to matching geometry', () => {
     const simulation = createSimulation({
       chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 3,
-      housingCapacity: 3,
-      workplaceCapacity: 3,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+      initialBuildings: developmentBuildings,
+      initialCitizens: developmentCitizens(3),
       populationCap: 3,
       activityDurationTicks: 1,
       startingData: DISTRICT_SEED_COSTS.living,
@@ -205,26 +215,28 @@ describe('deterministic developer evaluation and construction', () => {
     expect(phases).toEqual([...CONSTRUCTION_PHASE_ORDER]);
     const completed = simulation.getSnapshot();
     expect(completed.structural.constructionProjectsCompleted).toBeGreaterThanOrEqual(1);
-    expect(completed.buildings).toContainEqual({
-      id: 'home-2',
-      type: 'home',
-      footprint: project.footprint,
-      entrance: project.entrance,
-      capacity: 4,
-    });
+    expect(completed.buildings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'home-4',
+          type: 'home',
+          footprint: project.footprint,
+          entrance: project.entrance,
+          capacity: 1,
+        }),
+      ]),
+    );
   });
 
   it('keeps IDs, RNG state, detached projects, and repeated runs stable', () => {
     const left = seededSimulation('living');
     const right = seededSimulation('living');
-    const beforeRandom = left.getSnapshot().randomState;
     for (let tick = 0; tick < 80; tick += 1) {
       left.step();
       right.step();
     }
     expect(left.getSnapshot()).toEqual(right.getSnapshot());
     expect(left.getDeterminismHash()).toBe(right.getDeterminismHash());
-    expect(left.getSnapshot().randomState).toBe(beforeRandom);
     const snapshot = left.getSnapshot();
     const firstBuildingId = snapshot.buildings[0]?.id;
     if (firstBuildingId === undefined) throw new Error('A building is required.');

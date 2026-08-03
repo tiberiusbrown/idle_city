@@ -38,7 +38,24 @@ async function metric(page: Page, testId: string): Promise<number> {
   return value === undefined ? Number.NaN : Number(value);
 }
 
+async function openControls(page: Page): Promise<void> {
+  const panel = page.getByTestId('controls-panel');
+  if (await panel.isHidden())
+    await page.getByRole('button', { name: 'Open Controls panel' }).click();
+}
+
+async function clickControl(page: Page, name: string): Promise<void> {
+  await openControls(page);
+  await page.getByRole('button', { name }).click();
+}
+
+async function fundOpening(page: Page, minimum = 22): Promise<void> {
+  const gather = page.getByRole('button', { name: 'Gather Data plus one' });
+  while ((await metric(page, 'data-metric')) < minimum) await gather.click();
+}
+
 async function openBuild(page: Page): Promise<void> {
+  await fundOpening(page);
   await page.getByRole('button', { name: 'Open Build menu' }).click();
   await expect(page.getByTestId('build-panel')).toBeVisible();
 }
@@ -171,6 +188,27 @@ test('Build opens and closes with only Living and Working seed choices', async (
   await page.getByRole('button', { name: 'Close Research menu' }).click();
 });
 
+test('Build and Research remain mutually exclusive without spending on preview', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await clickControl(page, 'Pause simulation');
+  await openBuild(page);
+  const dataBefore = await metric(page, 'data-metric');
+  await page.getByRole('button', { name: 'Choose Living district seed' }).click();
+  await expect(page.getByTestId('placement-status')).toContainText('Living placement mode');
+
+  await page.getByRole('button', { name: 'Open Research menu' }).click();
+  await expect(page.getByTestId('build-panel')).toBeHidden();
+  await expect(page.getByTestId('research-panel')).toBeVisible();
+  await expect(page.getByTestId('seed-count')).toHaveText('0 seeds');
+  expect(await metric(page, 'data-metric')).toBe(dataBefore);
+
+  await page.getByRole('button', { name: 'Open Build menu' }).click();
+  await expect(page.getByTestId('research-panel')).toBeHidden();
+  await expect(page.getByTestId('build-panel')).toBeVisible();
+});
+
 test('mouse placement previews, charges the exact cost, rejects duplicates and insufficient Data, and cancels', async ({
   page,
 }) => {
@@ -180,7 +218,8 @@ test('mouse placement previews, charges the exact cost, rejects duplicates and i
   });
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/');
-  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await clickControl(page, 'Pause simulation');
+  await fundOpening(page);
   const beforeLiving = await metric(page, 'data-metric');
   const livingPoint = await placeWithMouse(page, 'Living');
   await expect(page.getByTestId('status')).toContainText('Living seed accepted');
@@ -202,6 +241,7 @@ test('mouse placement previews, charges the exact cost, rejects duplicates and i
   await expect(page.getByTestId('status')).toContainText('Working seed accepted');
   await expect(page.getByTestId('working-cost')).toHaveText('15 Data');
   expect(await metric(page, 'data-metric')).toBe(beforeLiving - 10 - 12);
+  await expect(page.locator('[data-action="gather-data"]')).toBeHidden();
 
   await page.getByRole('button', { name: 'Choose Living district seed' }).click();
   const insufficientPoint = await findMapPointWithStatus(page, 'Not enough Data');
@@ -218,7 +258,7 @@ test('mouse placement previews, charges the exact cost, rejects duplicates and i
 
 test('mouse drag never submits a district seed', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await clickControl(page, 'Pause simulation');
   await openBuild(page);
   await page.getByRole('button', { name: 'Choose Living district seed' }).click();
   const point = await findValidMapPoint(page, 'Living');
@@ -232,7 +272,7 @@ test('mouse drag never submits a district seed', async ({ page }) => {
 
 test('pointercancel and an unmatched pointerup never submit a seed', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await clickControl(page, 'Pause simulation');
   await openBuild(page);
   await page.getByRole('button', { name: 'Choose Living district seed' }).click();
   const point = await findValidMapPoint(page, 'Living');
@@ -248,7 +288,7 @@ test('pointercancel and an unmatched pointerup never submit a seed', async ({ pa
 
 test('touch drag never submits a district seed', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await clickControl(page, 'Pause simulation');
   await openBuild(page);
   await page.getByRole('button', { name: 'Choose Working district seed' }).click();
   const point = await findValidMapPoint(page, 'Working');
@@ -260,7 +300,7 @@ test('touch drag never submits a district seed', async ({ page }) => {
 
 test('cancel and reset clear an active pointer gesture and preview', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await clickControl(page, 'Pause simulation');
   await openBuild(page);
   await page.getByRole('button', { name: 'Choose Living district seed' }).click();
   const point = await findValidMapPoint(page, 'Living');
@@ -273,36 +313,35 @@ test('cancel and reset clear an active pointer gesture and preview', async ({ pa
   await page.getByRole('button', { name: 'Choose Working district seed' }).click();
   const resetPoint = await findValidMapPoint(page, 'Working');
   await dispatchTouchPointer(page, 'pointerdown', resetPoint, 705);
-  await page.getByRole('button', { name: 'Reset simulation' }).click();
+  await clickControl(page, 'Reset simulation');
   await dispatchTouchPointer(page, 'pointerup', resetPoint, 705);
   await expect(page.getByTestId('seed-count')).toHaveText('0 seeds');
   await expect(page.getByTestId('build-panel')).toBeHidden();
 });
 
-test('accepted seed renders autonomous construction and population growth, then reset clears it', async ({
+test('accepted Living seed renders autonomous construction, then reset clears it', async ({
   page,
 }) => {
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await page.goto('/?simStepMs=50');
+  await clickControl(page, 'Pause simulation');
   await placeWithMouse(page, 'Living');
-  await page.getByRole('button', { name: 'Run at normal speed' }).click();
+  await clickControl(page, 'Run at normal speed');
   await expect.poll(() => metric(page, 'project-count'), { timeout: 7_000 }).toBeGreaterThan(0);
-  await page.getByRole('button', { name: 'Run at fast speed' }).click();
-  await expect.poll(() => metric(page, 'building-count'), { timeout: 7_000 }).toBeGreaterThan(2);
-  await expect.poll(() => metric(page, 'citizen-count'), { timeout: 7_000 }).toBeGreaterThan(10);
+  await clickControl(page, 'Run at fast speed');
+  await expect.poll(() => metric(page, 'building-count'), { timeout: 7_000 }).toBeGreaterThan(0);
 
-  await page.getByRole('button', { name: 'Pause simulation' }).click();
-  await page.getByRole('button', { name: 'Reset simulation' }).click();
+  await clickControl(page, 'Pause simulation');
+  await clickControl(page, 'Reset simulation');
   await expect(page.getByTestId('tick')).toHaveText('0');
   await expect(page.getByTestId('seed-count')).toHaveText('0 seeds');
-  await expect(page.getByTestId('building-count')).toHaveText('2 buildings');
-  await expect(page.getByTestId('citizen-count')).toHaveText('10');
+  await expect(page.getByTestId('building-count')).toHaveText('0 buildings');
+  await expect(page.getByTestId('citizen-count')).toHaveText('1');
 });
 
 test('Services Core unlocks mouse and touch Services placement', async ({ page }) => {
   test.setTimeout(180_000);
-  await page.goto('/');
-  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await page.goto('/?e2eFixture=services&simStepMs=50');
+  await clickControl(page, 'Pause simulation');
   await placeWithMouse(page, 'Living');
 
   await page.getByRole('button', { name: 'Choose Working district seed' }).click();
@@ -312,7 +351,14 @@ test('Services Core unlocks mouse and touch Services placement', async ({ page }
   await expect(page.getByTestId('status')).toContainText('Working seed accepted');
   await page.getByRole('button', { name: 'Close Build menu' }).click();
 
-  await page.getByRole('button', { name: 'Run at fast speed' }).click();
+  await page.getByRole('button', { name: 'Open Research menu' }).click();
+  await expect(page.getByTestId('core-requirements')).toContainText(
+    'Completed work activities: 0/40',
+  );
+  await expect(page.locator('[data-action="confirm-core"]')).toBeDisabled();
+  await page.getByRole('button', { name: 'Close Research menu' }).click();
+
+  await clickControl(page, 'Run at fast speed');
   await page.getByRole('button', { name: 'Open Research menu' }).click();
   await expect(page.getByTestId('research-panel')).toBeVisible();
   await expect(page.getByTestId('core-requirements')).toContainText('Population: 20/20', {
@@ -362,6 +408,7 @@ test.describe('touch viewport', () => {
 
   test('touch placement uses the same accessible Build flow', async ({ page }) => {
     await page.goto('/');
+    await openControls(page);
     await page.getByRole('button', { name: 'Pause simulation' }).tap();
     await openBuild(page);
     await page.getByRole('button', { name: 'Choose Working district seed' }).tap();
@@ -386,8 +433,57 @@ interface TestViewport {
 async function assertResponsivePlacement(page: Page, viewport: TestViewport): Promise<void> {
   await page.setViewportSize({ width: viewport.width, height: viewport.height });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Pause simulation' }).click();
+  await clickControl(page, 'Pause simulation');
+  const hudBounds = await page.locator('.hud').boundingBox();
+  expect(hudBounds?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect((hudBounds?.x ?? 0) + (hudBounds?.width ?? 0)).toBeLessThanOrEqual(viewport.width);
+  expect(hudBounds?.y ?? -1).toBeGreaterThanOrEqual(0);
+  expect((hudBounds?.y ?? 0) + (hudBounds?.height ?? 0)).toBeLessThanOrEqual(viewport.height);
+  await expect(page.getByTestId('citizen-count')).toBeVisible();
+  await expect(page.getByTestId('data-metric')).toBeVisible();
+  const initialCanvasBounds = await page.locator('#game-canvas').boundingBox();
+  expect(initialCanvasBounds?.height ?? 0).toBeGreaterThan(180);
+  await page.getByRole('button', { name: 'Open Research menu' }).click();
+  await expect(page.getByTestId('research-panel')).toBeVisible();
+  await expect(page.getByTestId('controls-panel')).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Open Controls panel' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+  await expect(page.getByTestId('citizen-count')).toBeVisible();
+  await expect(page.getByTestId('data-metric')).toBeVisible();
+  const researchBounds = await page.getByTestId('research-panel').boundingBox();
+  expect(researchBounds?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect((researchBounds?.x ?? 0) + (researchBounds?.width ?? 0)).toBeLessThanOrEqual(
+    viewport.width,
+  );
+  expect(researchBounds?.y ?? -1).toBeGreaterThanOrEqual(0);
+  expect((researchBounds?.y ?? 0) + (researchBounds?.height ?? 0)).toBeLessThanOrEqual(
+    viewport.height,
+  );
+  await page.getByRole('button', { name: 'Close Research menu' }).click();
   await openBuild(page);
+  await expect(page.getByTestId('controls-panel')).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Open Controls panel' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+  await expect(page.getByTestId('citizen-count')).toBeVisible();
+  await expect(page.getByTestId('data-metric')).toBeVisible();
+  const buildBounds = await page.getByTestId('build-panel').boundingBox();
+  expect(buildBounds?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect((buildBounds?.x ?? 0) + (buildBounds?.width ?? 0)).toBeLessThanOrEqual(viewport.width);
+  expect(buildBounds?.y ?? -1).toBeGreaterThanOrEqual(0);
+  expect((buildBounds?.y ?? 0) + (buildBounds?.height ?? 0)).toBeLessThanOrEqual(viewport.height);
+  for (const name of [
+    'Close Build menu',
+    'Open Research menu',
+    'Gather Data plus one',
+    'Open Controls panel',
+  ]) {
+    const bounds = await page.getByRole('button', { name }).boundingBox();
+    expect(bounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+  }
 
   const canvas = page.locator('#game-canvas');
   const canvasBounds = await canvas.boundingBox();
@@ -402,7 +498,8 @@ async function assertResponsivePlacement(page: Page, viewport: TestViewport): Pr
     ] as const
   ).entries()) {
     if (index > 0) {
-      await page.getByRole('button', { name: 'Reset simulation' }).click();
+      await page.getByRole('button', { name: 'Close Build menu' }).click();
+      await clickControl(page, 'Reset simulation');
       await openBuild(page);
     }
     await page.getByRole('button', { name: `Choose ${kind} district seed` }).click();

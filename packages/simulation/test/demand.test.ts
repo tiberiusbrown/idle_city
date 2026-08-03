@@ -81,11 +81,13 @@ describe('chunked spatial demand', () => {
       chunkSize: 8,
       initialChunkRegion: { minX: -1, minY: -1, width: 3, height: 3 },
       seed: 9876,
-      citizenCount: 4,
-      housingCapacity: 2,
-      workplaceCapacity: 3,
-      homePosition: { x: -6, y: -6 },
-      workplacePosition: { x: 10, y: 10 },
+      initialBuildings: [
+        { id: 'home-1', type: 'home', origin: { x: -6, y: -6 } },
+        { id: 'workplace-1', type: 'workplace', origin: { x: 10, y: 10 } },
+      ],
+      initialCitizens: [
+        { id: 'citizen-1', homeBuildingId: 'home-1', workplaceBuildingId: 'workplace-1' },
+      ],
     } as const;
     const left = createSimulation(configuration);
     const right = createSimulation(configuration);

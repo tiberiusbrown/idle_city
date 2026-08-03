@@ -6,6 +6,7 @@ import {
   type DistrictSeedPlacementInfo,
   type DistrictSeedKind,
   type ResearchFocus,
+  type SimulationConfig,
   type SimulationSnapshot,
 } from '@idle-city/simulation';
 import { registerSW } from 'virtual:pwa-register';
@@ -26,6 +27,9 @@ const seedCountElement = document.querySelector<HTMLElement>('[data-testid="seed
 const buildingCountElement = document.querySelector<HTMLElement>('[data-testid="building-count"]');
 const projectCountElement = document.querySelector<HTMLElement>('[data-testid="project-count"]');
 const buildButton = document.querySelector<HTMLButtonElement>('[data-action="build"]');
+const gatherDataButton = document.querySelector<HTMLButtonElement>('[data-action="gather-data"]');
+const controlsButton = document.querySelector<HTMLButtonElement>('[data-action="controls"]');
+const controlsPanel = document.querySelector<HTMLElement>('[data-testid="controls-panel"]');
 const buildPanel = document.querySelector<HTMLElement>('[data-testid="build-panel"]');
 const researchButton = document.querySelector<HTMLButtonElement>('[data-action="research"]');
 const researchPanel = document.querySelector<HTMLElement>('[data-testid="research-panel"]');
@@ -84,6 +88,9 @@ if (
   buildingCountElement === null ||
   projectCountElement === null ||
   buildButton === null ||
+  gatherDataButton === null ||
+  controlsButton === null ||
+  controlsPanel === null ||
   buildPanel === null ||
   researchButton === null ||
   researchPanel === null ||
@@ -122,6 +129,9 @@ const seedCountDisplay = seedCountElement;
 const buildingCountDisplay = buildingCountElement;
 const projectCountDisplay = projectCountElement;
 const buildToggle = buildButton;
+const gatherDataToggle = gatherDataButton;
+const controlsToggle = controlsButton;
+const controlsMenu = controlsPanel;
 const buildMenu = buildPanel;
 const researchToggle = researchButton;
 const researchMenu = researchPanel;
@@ -144,21 +154,55 @@ const workingCostDisplay = workingCostElement;
 const servicesCostDisplay = servicesCostElement;
 const cancelButton = cancelPlacementButton;
 
-const configuration = {
-  width: 12,
-  height: 10,
-  seed: 1234,
-  citizenCount: 10,
-  housingCapacity: 20,
-  workplaceCapacity: 20,
-  populationCap: 20,
-  startingData: 30,
-} as const;
+function servicesCoreE2eConfiguration(): SimulationConfig {
+  const homes = Array.from({ length: 20 }, (_, index) => ({
+    id: `fixture-home-${String(index + 1)}`,
+    type: 'home' as const,
+    origin: { x: 2 + (index % 5) * 8, y: 2 + Math.floor(index / 5) * 8 },
+  }));
+  const workplaces = Array.from({ length: 5 }, (_, index) => ({
+    id: `fixture-workplace-${String(index + 1)}`,
+    type: 'workplace' as const,
+    origin: { x: 2 + index * 12, y: 40 },
+  }));
+  return {
+    seed: 7,
+    chunkSize: 64,
+    initialActiveRegion: { minX: 0, minY: 0, width: 1, height: 1 },
+    initialBuildings: [...homes, ...workplaces],
+    initialCitizens: Array.from({ length: 20 }, (_, index) => {
+      const home = homes[index];
+      const workplace = workplaces[Math.floor(index / 4)];
+      if (home === undefined || workplace === undefined)
+        throw new Error(`Missing fixture building for citizen ${String(index + 1)}.`);
+      return {
+        id: `citizen-${String(index + 1)}`,
+        homeBuildingId: home.id,
+        workplaceBuildingId: workplace.id,
+        activity: 'home' as const,
+      };
+    }),
+    populationCap: 20,
+    activityDurationTicks: 1,
+    startingData: 72,
+    developmentEvaluationIntervalTicks: 100_000,
+    developmentMinimumScore: 1,
+  };
+}
+
+const queryParameters = new URLSearchParams(window.location.search);
+const configuration: SimulationConfig =
+  queryParameters.get('e2eFixture') === 'services' ? servicesCoreE2eConfiguration() : {};
 let simulation = createSimulation(configuration);
 const initialSnapshot = simulation.getSnapshot();
 const engine = new Engine(gameCanvas, true, { preserveDrawingBuffer: false, stencil: true });
 const city = createCityScene(engine, initialSnapshot);
-const stepMilliseconds = 200;
+const requestedStepMilliseconds = Number(queryParameters.get('simStepMs') ?? '');
+// Test-only acceleration changes render-loop cadence, never simulation rules.
+const stepMilliseconds =
+  Number.isFinite(requestedStepMilliseconds) && requestedStepMilliseconds >= 1
+    ? Math.min(200, requestedStepMilliseconds)
+    : 200;
 let accumulator = 0;
 let previousTime = performance.now();
 let speed = 1;
@@ -236,8 +280,6 @@ function rejectionMessage(reason: CommandRejectionReason): string {
       return 'That chunk is inactive. Choose a visible active chunk.';
     case 'occupied':
       return 'That cell already has a district seed.';
-    case 'right-of-way':
-      return 'That cell is protected public right-of-way.';
     case 'locked':
       return 'That district is locked.';
     case 'insufficient-data':
@@ -264,7 +306,7 @@ function clearPlacementSelection(): void {
   placementCandidate = undefined;
   placementLocked = false;
   city.setPlacementPreview(undefined);
-  city.setSeedInfluenceVisibility({});
+  city.setSeedInfluenceVisibility({ overlayActive: buildOpen });
   buildKindButtons.forEach((button) => button.setAttribute('aria-pressed', 'false'));
   cancelButton.hidden = true;
   confirmButton.hidden = true;
@@ -286,13 +328,21 @@ function clearPlacementSelection(): void {
 }
 
 function setBuildOpen(open: boolean): void {
+  if (open && researchOpen) setResearchOpen(false);
+  if (open) setControlsOpen(false);
   buildOpen = open;
   buildMenu.hidden = !open;
   buildToggle.setAttribute('aria-expanded', String(open));
   buildToggle.setAttribute('aria-label', open ? 'Close Build menu' : 'Open Build menu');
   buildToggle.classList.toggle('active', open);
-  document.querySelector<HTMLElement>('.hud')?.classList.toggle('build-mode', open);
+  city.setPlanningMode({ active: open });
   if (!open) clearPlacementSelection();
+}
+
+function setControlsOpen(open: boolean): void {
+  controlsMenu.hidden = !open;
+  controlsToggle.setAttribute('aria-expanded', String(open));
+  controlsToggle.setAttribute('aria-label', open ? 'Close Controls panel' : 'Open Controls panel');
 }
 
 function coreRejectionMessage(reason: string): string {
@@ -318,6 +368,8 @@ function displayResearchFocus(focus: ResearchFocus | null | undefined): string {
 }
 
 function setResearchOpen(open: boolean): void {
+  if (open && buildOpen) setBuildOpen(false);
+  if (open) setControlsOpen(false);
   researchOpen = open;
   researchMenu.hidden = !open;
   researchToggle.setAttribute('aria-expanded', String(open));
@@ -372,7 +424,7 @@ function beginPlacement(kind: PlaceableDistrictSeedKind): void {
   placementCandidate = undefined;
   placementLocked = false;
   city.setPlacementPreview(undefined);
-  city.setSeedInfluenceVisibility({ placing: true });
+  city.setPlanningMode({ active: true });
   placementKind = kind;
   const definition = simulation.getDistrictSeedDefinition(kind);
   const cost = simulation.getCurrentDistrictSeedCost(kind);
@@ -399,7 +451,7 @@ function beginPlacement(kind: PlaceableDistrictSeedKind): void {
 function renderPlacementInfo(info: DistrictSeedPlacementInfo, locked: boolean): void {
   const coordinates = `(${String(info.position.x)}, ${String(info.position.y)})`;
   placementCandidate = info;
-  city.setPlacementPreview(info);
+  city.setPlanningMode({ active: true, candidate: info, selected: locked });
   placementRadiusDisplay.textContent = `${String(info.radius)} cells`;
   placementSideLengthDisplay.textContent = `${String(info.sideLength)} cells`;
   placementCoordinatesDisplay.textContent = coordinates;
@@ -525,6 +577,8 @@ function renderHud(snapshot: SimulationSnapshot): void {
   seedCountDisplay.textContent = `${String(snapshot.seeds.length)} seed${snapshot.seeds.length === 1 ? '' : 's'}`;
   buildingCountDisplay.textContent = `${String(snapshot.buildings.length)} building${snapshot.buildings.length === 1 ? '' : 's'}`;
   projectCountDisplay.textContent = `${String(snapshot.constructionProjects.length)} project${snapshot.constructionProjects.length === 1 ? '' : 's'}`;
+  gatherDataToggle.hidden = !snapshot.manualDataAvailable;
+  gatherDataToggle.disabled = !snapshot.manualDataAvailable;
   livingCostDisplay.textContent = `${String(simulation.getCurrentDistrictSeedCost('living'))} Data`;
   workingCostDisplay.textContent = `${String(simulation.getCurrentDistrictSeedCost('working'))} Data`;
   servicesCostDisplay.textContent = `${String(simulation.getCurrentDistrictSeedCost('services'))} Data`;
@@ -545,6 +599,17 @@ speedButtons.forEach((button) => {
   button.addEventListener('click', () => {
     setSpeed(button.dataset.speed === 'pause' ? 0 : button.dataset.speed === 'normal' ? 1 : 4);
   });
+});
+
+controlsToggle.addEventListener('click', () => {
+  setControlsOpen(controlsMenu.hidden === true);
+});
+
+gatherDataToggle.addEventListener('click', () => {
+  const result = simulation.gatherManualData();
+  if (result.accepted) statusDisplay.textContent = 'Gathered +1 Data.';
+  else statusDisplay.textContent = 'Manual Data is unavailable after Living and Working seeds.';
+  renderHud(simulation.getSnapshot());
 });
 
 buildToggle.addEventListener('click', () => {
@@ -703,6 +768,7 @@ window.addEventListener('beforeunload', () => {
 
 setBuildOpen(false);
 setResearchOpen(false);
+setControlsOpen(false);
 renderHud(initialSnapshot);
 setSpeed(1);
 registerSW({ immediate: true });

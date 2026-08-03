@@ -43,7 +43,7 @@ export function buildingFootprint(origin: GridPosition, type: BuildingType): Gri
   return { x: origin.x, y: origin.y, width: size.width, height: size.height };
 }
 
-/** Occupied cells are derived in stable row-major (y, then x) order. */
+/** Occupied cells are derived in stable y-then-x order. */
 export function footprintCells(rect: GridRect): GridPosition[] {
   validateRect(rect);
   const cells: GridPosition[] = [];
@@ -54,22 +54,38 @@ export function footprintCells(rect: GridRect): GridPosition[] {
 }
 
 /**
- * The protected circulation envelope is the one-cell ring around a building
- * footprint. Its interior is intentionally not returned by envelopeCells.
+ * The protected clearance zone is the one-cell ring around a building
+ * footprint. Its interior is intentionally not returned by the clearance-zone cells.
  */
-export function circulationEnvelope(rect: GridRect): GridRect {
+export function buildingClearanceZone(rect: GridRect): GridRect {
   validateRect(rect);
   return { x: rect.x - 1, y: rect.y - 1, width: rect.width + 2, height: rect.height + 2 };
 }
 
-/** Envelope cells are returned in stable row-major order. */
-export function circulationEnvelopeCells(rect: GridRect): GridPosition[] {
-  const envelope = circulationEnvelope(rect);
+/** Clearance-zone ring cells are returned in stable y-then-x order. */
+export function buildingClearanceZoneCells(rect: GridRect): GridPosition[] {
+  const clearanceZone = buildingClearanceZone(rect);
   const cells: GridPosition[] = [];
-  for (let y = envelope.y; y < envelope.y + envelope.height; y += 1) {
-    for (let x = envelope.x; x < envelope.x + envelope.width; x += 1) {
+  for (let y = clearanceZone.y; y < clearanceZone.y + clearanceZone.height; y += 1) {
+    for (let x = clearanceZone.x; x < clearanceZone.x + clearanceZone.width; x += 1) {
       if (isInsideFootprint({ x, y }, rect)) continue;
       cells.push({ x, y });
+    }
+  }
+  return cells;
+}
+
+/** All orthogonally adjacent exterior cells, excluding diagonal corners. */
+export function completedBuildingAccessCells(rect: GridRect): GridPosition[] {
+  validateRect(rect);
+  const cells: GridPosition[] = [];
+  for (let y = rect.y - 1; y <= rect.y + rect.height; y += 1) {
+    for (let x = rect.x - 1; x <= rect.x + rect.width; x += 1) {
+      if (isInsideFootprint({ x, y }, rect)) continue;
+      const adjacent = directions.some((direction) =>
+        isInsideFootprint({ x: x - direction.x, y: y - direction.y }, rect),
+      );
+      if (adjacent) cells.push({ x, y });
     }
   }
   return cells;
@@ -78,7 +94,6 @@ export function circulationEnvelopeCells(rect: GridRect): GridPosition[] {
 export interface StagingCellOptions {
   readonly isActive: (position: GridPosition) => boolean;
   readonly isWalkable: (position: GridPosition) => boolean;
-  readonly isRightOfWay?: (position: GridPosition) => boolean;
 }
 
 export interface ProjectStagingSelectionOptions extends StagingCellOptions {
@@ -98,7 +113,7 @@ function ringPerimeterIndex(position: GridPosition, rect: GridRect): number {
   if (position.x === left) {
     return rect.width + 1 + rect.height + rect.width + (bottom - position.y - 1);
   }
-  throw new Error('Perimeter distance requires a cell on the circulation envelope.');
+  throw new Error('Perimeter distance requires a cell on the clearance zone.');
 }
 
 function perimeterDistance(left: GridPosition, right: GridPosition, rect: GridRect): number {
@@ -112,41 +127,36 @@ function positionKey(position: GridPosition): string {
 }
 
 /**
- * A staging cell is an active, walkable envelope cell with at least one
- * walkable cell beyond the envelope. ROW cells are valid external circulation
- * neighbors even when the caller does not expose them through isWalkable.
+ * A staging cell is an active, walkable clearance-zone cell with at least one
+ * active, walkable cell beyond the clearance zone.
  */
-export function stagingCapableEnvelopeCells(
+export function stagingCapableClearanceZoneCells(
   rect: GridRect,
   options: StagingCellOptions,
 ): GridPosition[] {
-  const envelope = circulationEnvelope(rect);
-  const candidates = circulationEnvelopeCells(rect);
+  const clearanceZone = buildingClearanceZone(rect);
+  const candidates = buildingClearanceZoneCells(rect);
   return candidates.filter((candidate) => {
     if (!options.isActive(candidate) || !options.isWalkable(candidate)) return false;
     return directions.some((direction) => {
       const neighbor = { x: candidate.x + direction.x, y: candidate.y + direction.y };
       if (isInsideFootprint(neighbor, rect)) return false;
       if (
-        neighbor.x >= envelope.x &&
-        neighbor.x < envelope.x + envelope.width &&
-        neighbor.y >= envelope.y &&
-        neighbor.y < envelope.y + envelope.height
+        neighbor.x >= clearanceZone.x &&
+        neighbor.x < clearanceZone.x + clearanceZone.width &&
+        neighbor.y >= clearanceZone.y &&
+        neighbor.y < clearanceZone.y + clearanceZone.height
       ) {
         return false;
       }
-      return (
-        options.isActive(neighbor) &&
-        (options.isWalkable(neighbor) || options.isRightOfWay?.(neighbor) === true)
-      );
+      return options.isActive(neighbor) && options.isWalkable(neighbor);
     });
   });
 }
 
 /**
- * Selects the exact stable staging set used by an active project. The caller
- * may turn the selected cells into ROW in the same atomic project transition;
- * selection itself never mutates spatial state.
+ * Selects the exact stable staging set used by an active project. Selection
+ * itself never mutates spatial state.
  */
 export function selectProjectStagingCells(
   rect: GridRect,
@@ -163,7 +173,7 @@ export function selectProjectStagingCells(
       `Project staging count must be a positive safe integer; received ${String(count)}.`,
     );
   }
-  const candidates = stagingCapableEnvelopeCells(rect, options)
+  const candidates = stagingCapableClearanceZoneCells(rect, options)
     .filter((candidate) => !reserved.has(positionKey(candidate)))
     .sort((left, right) => {
       const leftIsEntrance = left.x === options.entrance.x && left.y === options.entrance.y;
@@ -179,9 +189,6 @@ export function selectProjectStagingCells(
 }
 
 export const selectStagingCells = selectProjectStagingCells;
-
-/** Alias used by callers that describe the envelope as a ring. */
-export const envelopeCells = circulationEnvelopeCells;
 
 export function isInsideFootprint(position: GridPosition, rect: GridRect): boolean {
   validateRect(rect);
@@ -203,7 +210,7 @@ export function isExteriorEntrance(position: GridPosition, rect: GridRect): bool
 }
 
 /**
- * Candidates are exterior perimeter cells sorted in row-major order. Sorting
+ * Candidates are exterior perimeter cells sorted in stable y-then-x order. Sorting
  * after de-duplication makes the ordering independent of which perimeter
  * side produced a candidate at a corner.
  */

@@ -3,7 +3,7 @@ import {
   chunkCoordinateForPosition,
   chunkKey,
   canonicalTrafficEdge,
-  circulationEnvelopeCells,
+  buildingClearanceZoneCells,
   compareChunks,
   createSimulation,
   DISTRICT_SEED_COSTS,
@@ -29,78 +29,18 @@ import {
 } from '@idle-city/simulation';
 
 export const balanceScenarioNames = [
-  'baseline',
-  'long-commute',
-  'capacity-pressure',
-  'compact',
-  'living-seed',
-  'working-seed',
-  'rejected-command',
-  'sparse-expansion',
-  'extent',
-  'localized-demand',
-  'long-route',
-  'one-commuter',
-  'two-opposite-direction-commuters',
-  'shared-corridor',
-  'narrow-passage',
-  'multi-chunk-commute',
-  'long-running-repeated-commute',
-  'crossing-flows',
-  'narrow-shared-corridor',
-  'entrance-bottleneck',
-  'two-way-corridor',
-  'two-lane-equal-cost-corridor',
-  'dense-commute',
-  'dense-home-work-commute',
-  'crossing-four-route-profiles',
-  'multi-chunk-merge',
-  'living-led',
-  'working-led',
-  'equal-score',
-  'obstacle-constrained',
-  'no-valid-footprint',
-  'long-run-construction',
-  'housing-surplus',
-  'workplace-surplus',
-  'balanced-expansion',
-  'tie',
-  'capped-growth',
-  'long-run-city',
-  'seed-boundary',
-  'multiple-same-type-seeds',
-  'sparse-development',
-  'two-connected-row-buildings',
-  'narrow-connector',
-  'dense-circulation',
-  'development-supersession',
-  'long-incremental-development',
-  'step9-dense-movement',
-  'one-worker-slow-build',
-  'full-staff-build',
-  'workers-competing-one-corridor',
-  'staging-cell-queue',
-  'worker-blocked-replans',
-  'builder-queued-corridor',
-  'labor-starvation-11-12',
-  'no-eligible-workers',
-  'phase-cap-decrease',
-  'construction-dense-commute',
-  'off-screen-construction',
-  'repeated-deterministic-construction',
-  'services-core-progression',
-  'no-service-shortage',
-  'one-service-near-homes',
-  'one-service-near-workplaces',
-  'competing-services',
-  'service-capacity-bottleneck',
-  'services-seed-development',
-  'dense-service-commute',
-  'square-seed-straightaway',
-  'square-seed-row-corridor',
+  'empty-city-opening',
+  'manual-data-opening',
+  'distant-seed-construction',
+  'unhoused-half-speed-construction',
+  'housed-full-speed-construction',
+  'first-home-work-transition',
+  'four-worker-workplace',
+  'blocked-building-side',
+  'multi-access-service',
+  'crossing-open-land',
+  'builder-under-congestion',
   'overlapping-square-seeds',
-  'square-seed-boundary',
-  'step10-5-repeated',
 ] as const;
 
 export type BalanceScenarioName = (typeof balanceScenarioNames)[number];
@@ -128,932 +68,204 @@ interface BalanceScenarioDefinition {
   readonly commands: readonly ScheduledDistrictSeedCommand[];
   readonly activations: readonly ScheduledChunkActivationCommand[];
   readonly corePurchases?: readonly ScheduledCorePurchaseCommand[];
+  readonly manualData?: readonly ScheduledManualDataCommand[];
 }
 
-function linearActivations(
-  count: number,
-  axis: 'x' | 'y' = 'x',
-): readonly ScheduledChunkActivationCommand[] {
-  return Array.from({ length: count }, (_, index) => ({
-    tick: index,
-    command: axis === 'x' ? { x: index + 1, y: 0 } : { x: 0, y: index + 1 },
+export interface ScheduledManualDataCommand {
+  readonly tick: number;
+}
+
+/** Deterministic established-city fixture used by commuter and progression scenarios. */
+export function createEstablishedCityFixture(citizenCount: number): SimulationConfig {
+  if (!Number.isSafeInteger(citizenCount) || citizenCount < 0) {
+    throw new Error('Established-city fixture citizenCount must be a non-negative integer.');
+  }
+  const homes = Array.from({ length: citizenCount }, (_, index) => ({
+    id: `home-${String(index + 1)}`,
+    type: 'home' as const,
+    origin: { x: 4 + (index % 8) * 8, y: 4 + Math.floor(index / 8) * 8 },
   }));
+  const workplaceCount = Math.ceil(citizenCount / 4);
+  const workplaces = Array.from({ length: workplaceCount }, (_, index) => ({
+    id: `workplace-${String(index + 1)}`,
+    type: 'workplace' as const,
+    origin: { x: 4 + (index % 4) * 8, y: 48 + Math.floor(index / 4) * 8 },
+  }));
+  return {
+    chunkSize: 32,
+    initialActiveRegion: { minX: 0, minY: 0, width: 5, height: 5 },
+    pathSearchBudget: 1_000_000,
+    initialBuildings: [...homes, ...workplaces],
+    initialCitizens: Array.from({ length: citizenCount }, (_, index) => ({
+      id: `citizen-${String(index + 1)}`,
+      homeBuildingId: `home-${String(index + 1)}`,
+      workplaceBuildingId: `workplace-${String(Math.floor(index / 4) + 1)}`,
+    })),
+    housingCapacity: 1,
+    workplaceCapacity: 4,
+    populationCap: Math.max(1, citizenCount),
+    developmentHomeCapacity: 1,
+    developmentWorkplaceCapacity: 4,
+  };
 }
 
-function trafficScenarioConfig(overrides: SimulationConfig): SimulationConfig {
+function createCrossingFixture(): SimulationConfig {
+  const homes = [
+    { id: 'home-1', type: 'home' as const, origin: { x: 4, y: 4 } },
+    { id: 'home-2', type: 'home' as const, origin: { x: 68, y: 4 } },
+    { id: 'home-3', type: 'home' as const, origin: { x: 4, y: 100 } },
+    { id: 'home-4', type: 'home' as const, origin: { x: 68, y: 100 } },
+  ];
+  const workplaces = [
+    { id: 'workplace-1', type: 'workplace' as const, origin: { x: 4, y: 52 } },
+    { id: 'workplace-2', type: 'workplace' as const, origin: { x: 68, y: 52 } },
+  ];
   return {
+    chunkSize: 32,
+    initialActiveRegion: { minX: 0, minY: 0, width: 5, height: 5 },
+    pathSearchBudget: 1_000_000,
+    initialBuildings: [...homes, ...workplaces],
+    initialCitizens: [
+      { id: 'citizen-1', homeBuildingId: 'home-1', workplaceBuildingId: 'workplace-2' },
+      { id: 'citizen-2', homeBuildingId: 'home-2', workplaceBuildingId: 'workplace-1' },
+      { id: 'citizen-3', homeBuildingId: 'home-3', workplaceBuildingId: 'workplace-2' },
+      { id: 'citizen-4', homeBuildingId: 'home-4', workplaceBuildingId: 'workplace-1' },
+    ],
     activityDurationTicks: 1,
-    populationGrowthCadenceTicks: 1_000_000,
+    populationCap: 4,
     developmentEvaluationIntervalTicks: 1_000_000,
-    ...overrides,
   };
 }
 
-function servicesScenarioConfig(overrides: SimulationConfig): SimulationConfig {
+function createBlockedSideFixture(): SimulationConfig {
+  const fixture = createEstablishedCityFixture(4);
   return {
-    chunkSize: 8,
-    initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
-    homePosition: { x: 0, y: 0 },
-    workplacePosition: { x: 8, y: 16 },
-    citizenCount: 20,
-    housingCapacity: 20,
-    workplaceCapacity: 20,
-    populationCap: 20,
-    activityDurationTicks: 1,
-    populationGrowthCadenceTicks: 1_000_000,
-    developmentEvaluationIntervalTicks: 50,
-    developmentMinimumScore: 0.58,
-    startingData: 400,
-    ...overrides,
+    ...fixture,
+    initialBuildings: [
+      { id: 'home-1', type: 'home', origin: { x: 4, y: 4 } },
+      { id: 'home-2', type: 'home', origin: { x: 4, y: 20 } },
+      { id: 'home-3', type: 'home', origin: { x: 4, y: 36 } },
+      { id: 'home-4', type: 'home', origin: { x: 4, y: 52 } },
+      { id: 'workplace-1', type: 'workplace', origin: { x: 60, y: 28 } },
+    ],
+    initialCitizens: [1, 2, 3, 4].map((index) => ({
+      id: `citizen-${String(index)}`,
+      homeBuildingId: `home-${String(index)}`,
+      workplaceBuildingId: 'workplace-1',
+    })),
   };
-}
-
-function servicesCorePurchase(tick = 1_000): ScheduledCorePurchaseCommand {
-  return { tick, command: { core: 'services', focus: 'activity' } };
-}
-
-function servicesSeedCommand(
-  tick: number,
-  position: { readonly x: number; readonly y: number },
-): ScheduledDistrictSeedCommand {
-  return { tick, command: { kind: 'services', position } };
 }
 
 const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition> = {
-  baseline: { config: {}, commands: [], activations: [] },
-  'long-commute': {
+  'empty-city-opening': { config: {}, commands: [], activations: [] },
+  'manual-data-opening': {
     config: {
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 5, height: 5 },
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 70, y: 70 },
-    },
-    commands: [],
-    activations: [],
-  },
-  'capacity-pressure': {
-    config: {
-      housingCapacity: 4,
-      workplaceCapacity: 4,
-      developmentEvaluationIntervalTicks: 100,
-    },
-    commands: [],
-    activations: [],
-  },
-  compact: {
-    config: {
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 10, y: 10 },
-    },
-    commands: [],
-    activations: [],
-  },
-  'living-seed': {
-    config: {
-      startingData: DISTRICT_SEED_COSTS.living,
-      developmentEvaluationIntervalTicks: 100,
-    },
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 5, y: 1 } } },
-    ],
-    activations: [],
-  },
-  'working-seed': {
-    config: {
-      startingData: DISTRICT_SEED_COSTS.working,
-      developmentEvaluationIntervalTicks: 100,
-    },
-    commands: [
-      { tick: 0, command: { kind: 'working', position: { x: 8, y: 6 } } },
-      { tick: 1, command: { kind: 'services', position: { x: 3, y: 3 } } },
-    ],
-    activations: [],
-  },
-  'rejected-command': {
-    config: {},
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: -1, y: 0 } } },
-      { tick: 1, command: { kind: 'services', position: { x: 3, y: 3 } } },
-      { tick: 2, command: { kind: 'working', position: { x: 4, y: 4 } } },
-    ],
-    activations: [],
-  },
-  'sparse-expansion': {
-    config: {
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 1, height: 1 },
-      activeChunkLimit: 32,
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 10, y: 10 },
-    },
-    commands: [],
-    activations: linearActivations(6),
-  },
-  extent: {
-    config: {
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 1, height: 1 },
-      activeChunkLimit: 128,
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 10, y: 10 },
-    },
-    commands: [],
-    activations: linearActivations(70),
-  },
-  'localized-demand': {
-    config: { startingData: DISTRICT_SEED_COSTS.living },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
-    activations: [],
-  },
-  'long-route': {
-    config: {
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 8, height: 2 },
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 100, y: 8 },
-      pathSearchBudget: 50_000,
-    },
-    commands: [],
-    activations: [],
-  },
-  'one-commuter': {
-    config: trafficScenarioConfig({
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 18, y: 10 },
-      citizenCount: 1,
-      housingCapacity: 1,
-      workplaceCapacity: 1,
-      populationCap: 1,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'two-opposite-direction-commuters': {
-    config: trafficScenarioConfig({
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 18, y: 10 },
-      citizenCount: 2,
-      housingCapacity: 2,
-      workplaceCapacity: 2,
-      populationCap: 2,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'shared-corridor': {
-    config: trafficScenarioConfig({
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 18, y: 10 },
-      citizenCount: 6,
-      housingCapacity: 6,
-      workplaceCapacity: 6,
-      populationCap: 6,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'narrow-passage': {
-    config: trafficScenarioConfig({
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 1 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 0 },
-      citizenCount: 1,
-      housingCapacity: 1,
-      workplaceCapacity: 1,
-      populationCap: 1,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'multi-chunk-commute': {
-    config: trafficScenarioConfig({
-      chunkSize: 8,
       initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 24, y: 24 },
-      citizenCount: 1,
-      housingCapacity: 1,
-      workplaceCapacity: 1,
-      populationCap: 1,
-      pathSearchBudget: 50_000,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'long-running-repeated-commute': {
-    config: trafficScenarioConfig({
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 18, y: 10 },
-      citizenCount: 4,
-      housingCapacity: 4,
-      workplaceCapacity: 4,
-      populationCap: 4,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'crossing-flows': {
-    config: trafficScenarioConfig({
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 3, height: 3 },
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 34, y: 10 },
-      citizenCount: 8,
-      housingCapacity: 8,
-      workplaceCapacity: 8,
-      populationCap: 8,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'narrow-shared-corridor': {
-    config: trafficScenarioConfig({
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 1 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 0 },
-      citizenCount: 6,
-      housingCapacity: 6,
-      workplaceCapacity: 6,
-      populationCap: 6,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'entrance-bottleneck': {
-    config: trafficScenarioConfig({
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 18, y: 10 },
-      citizenCount: 12,
-      housingCapacity: 12,
-      workplaceCapacity: 12,
-      populationCap: 12,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'two-way-corridor': {
-    config: trafficScenarioConfig({
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 18, y: 10 },
-      citizenCount: 10,
-      housingCapacity: 10,
-      workplaceCapacity: 10,
-      populationCap: 10,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'two-lane-equal-cost-corridor': {
-    config: trafficScenarioConfig({
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 18, y: 10 },
-      citizenCount: 8,
-      housingCapacity: 8,
-      workplaceCapacity: 8,
-      populationCap: 8,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'dense-commute': {
-    config: trafficScenarioConfig({
-      chunkSize: 8,
-      initialChunkRegion: { minX: -1, minY: -1, width: 4, height: 4 },
-      homePosition: { x: -6, y: -6 },
-      workplacePosition: { x: 18, y: 18 },
-      citizenCount: 20,
-      housingCapacity: 20,
-      workplaceCapacity: 20,
-      populationCap: 20,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'dense-home-work-commute': {
-    config: trafficScenarioConfig({
-      chunkSize: 8,
-      initialChunkRegion: { minX: -1, minY: -1, width: 4, height: 4 },
-      homePosition: { x: -6, y: -6 },
-      workplacePosition: { x: 18, y: 18 },
-      citizenCount: 20,
-      housingCapacity: 20,
-      workplaceCapacity: 20,
-      populationCap: 20,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'crossing-four-route-profiles': {
-    config: trafficScenarioConfig({
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 3, height: 3 },
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 34, y: 10 },
-      citizenCount: 8,
-      housingCapacity: 8,
-      workplaceCapacity: 8,
-      populationCap: 8,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'multi-chunk-merge': {
-    config: trafficScenarioConfig({
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 24, y: 24 },
-      citizenCount: 8,
-      housingCapacity: 8,
-      workplaceCapacity: 8,
-      populationCap: 8,
-      pathSearchBudget: 50_000,
-    }),
-    commands: [],
-    activations: [],
-  },
-  'living-led': {
-    config: {
-      startingData: DISTRICT_SEED_COSTS.living,
-      activityDurationTicks: 1,
       developmentEvaluationIntervalTicks: 1,
     },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
+    commands: [
+      { tick: 0, command: { kind: 'living', position: { x: 50, y: 50 } } },
+      { tick: 0, command: { kind: 'working', position: { x: 80, y: 80 } } },
+    ],
     activations: [],
+    manualData: [
+      ...Array.from({ length: DISTRICT_SEED_COSTS.living + DISTRICT_SEED_COSTS.working }, () => ({
+        tick: 0,
+      })),
+      { tick: 1 },
+    ],
   },
-  'working-led': {
+  'distant-seed-construction': {
     config: {
-      startingData: DISTRICT_SEED_COSTS.working,
-      activityDurationTicks: 1,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+      startingData: 22,
       developmentEvaluationIntervalTicks: 1,
     },
-    commands: [{ tick: 0, command: { kind: 'working', position: { x: 8, y: 6 } } }],
-    activations: [],
-  },
-  'equal-score': {
-    config: {
-      startingData: DISTRICT_SEED_COSTS.living + DISTRICT_SEED_COSTS.working,
-      developmentEvaluationIntervalTicks: 100,
-    },
     commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } },
-      { tick: 0, command: { kind: 'working', position: { x: 8, y: 6 } } },
+      { tick: 0, command: { kind: 'living', position: { x: 100, y: 100 } } },
+      { tick: 0, command: { kind: 'working', position: { x: 80, y: 80 } } },
     ],
     activations: [],
   },
-  'obstacle-constrained': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      startingData: DISTRICT_SEED_COSTS.living,
-      developmentEvaluationIntervalTicks: 100,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
+  'unhoused-half-speed-construction': {
+    config: { startingData: 10, developmentEvaluationIntervalTicks: 1 },
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 50, y: 50 } } }],
     activations: [],
   },
-  'no-valid-footprint': {
+  'housed-full-speed-construction': {
     config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 1, height: 1 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 3, y: 3 },
-      startingData: DISTRICT_SEED_COSTS.living,
-      developmentMinimumScore: 1,
-      developmentEvaluationIntervalTicks: 100,
+      ...createEstablishedCityFixture(1),
+      startingData: 10,
+      developmentEvaluationIntervalTicks: 1,
     },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 1, y: 6 } } }],
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 20, y: 20 } } }],
     activations: [],
   },
-  'long-run-construction': {
+  'first-home-work-transition': {
     config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      startingData: DISTRICT_SEED_COSTS.living + DISTRICT_SEED_COSTS.working,
-      developmentEvaluationIntervalTicks: 10,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+      startingData: 22,
+      developmentEvaluationIntervalTicks: 1,
     },
     commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 6, y: 1 } } },
+      { tick: 0, command: { kind: 'living', position: { x: 50, y: 50 } } },
+      { tick: 0, command: { kind: 'working', position: { x: 80, y: 80 } } },
     ],
     activations: [],
   },
-  'housing-surplus': {
+  'four-worker-workplace': {
     config: {
-      citizenCount: 1,
-      housingCapacity: 6,
-      workplaceCapacity: 1,
-      populationCap: 6,
-      populationGrowthCadenceTicks: 5,
-    },
-    commands: [],
-    activations: [],
-  },
-  'workplace-surplus': {
-    config: {
-      citizenCount: 1,
-      housingCapacity: 1,
-      workplaceCapacity: 6,
-      populationCap: 6,
-      populationGrowthCadenceTicks: 5,
-    },
-    commands: [],
-    activations: [],
-  },
-  'balanced-expansion': {
-    config: {
-      citizenCount: 1,
-      housingCapacity: 6,
-      workplaceCapacity: 6,
-      populationCap: 6,
-      populationGrowthCadenceTicks: 5,
-    },
-    commands: [],
-    activations: [],
-  },
-  tie: {
-    config: {
-      citizenCount: 0,
-      housingCapacity: 4,
-      workplaceCapacity: 4,
-      populationCap: 4,
-      populationGrowthCadenceTicks: 1,
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 10, y: 2 },
-    },
-    commands: [],
-    activations: [],
-  },
-  'capped-growth': {
-    config: {
-      citizenCount: 1,
-      housingCapacity: 8,
-      workplaceCapacity: 8,
-      populationCap: 3,
-      populationGrowthCadenceTicks: 5,
-    },
-    commands: [],
-    activations: [],
-  },
-  'long-run-city': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 1,
-      housingCapacity: 4,
-      workplaceCapacity: 20,
-      populationCap: 20,
-      populationGrowthCadenceTicks: 5,
-      startingData: DISTRICT_SEED_COSTS.living + DISTRICT_SEED_COSTS.working,
-      developmentEvaluationIntervalTicks: 10,
-    },
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 6, y: 1 } } },
-    ],
-    activations: [],
-  },
-  'seed-boundary': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      startingData: DISTRICT_SEED_COSTS.living,
+      ...createEstablishedCityFixture(4),
+      activityDurationTicks: 1,
       developmentEvaluationIntervalTicks: 1_000_000,
     },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 7, y: 1 } } }],
+    commands: [],
     activations: [],
   },
-  'multiple-same-type-seeds': {
+  'blocked-building-side': {
     config: {
-      startingData: 30,
+      ...createBlockedSideFixture(),
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1_000_000,
+    },
+    commands: [],
+    activations: [],
+  },
+  'multi-access-service': {
+    config: {
+      ...createEstablishedCityFixture(20),
+      startingData: 22,
+      initialBuildings: [
+        ...(createEstablishedCityFixture(20).initialBuildings ?? []),
+        { id: 'service-1', type: 'service' as const, origin: { x: 20, y: 28 } },
+      ],
+      activityDurationTicks: 1,
       developmentEvaluationIntervalTicks: 1_000_000,
     },
     commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } },
-      { tick: 0, command: { kind: 'living', position: { x: 14, y: 1 } } },
+      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
+      { tick: 0, command: { kind: 'working', position: { x: 24, y: 15 } } },
     ],
     activations: [],
+    corePurchases: [{ tick: 1_000, command: { core: 'services', focus: 'activity' } }],
   },
-  'sparse-development': {
+  'crossing-open-land': {
     config: {
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 8, height: 8 },
-      startingData: DISTRICT_SEED_COSTS.living,
-      developmentEvaluationIntervalTicks: 1,
+      ...createCrossingFixture(),
+      activityDurationTicks: 1,
+      developmentEvaluationIntervalTicks: 1_000_000,
     },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
-    activations: [],
-  },
-  'two-connected-row-buildings': {
-    config: {
-      chunkSize: 16,
-      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
-      startingData: DISTRICT_SEED_COSTS.living + DISTRICT_SEED_COSTS.working,
-      developmentEvaluationIntervalTicks: 1,
-    },
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 25, y: 1 } } },
-    ],
-    activations: [],
-  },
-  'narrow-connector': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 1 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 0 },
-      startingData: DISTRICT_SEED_COSTS.living,
-      developmentEvaluationIntervalTicks: 1,
-      developmentCorridorExpansionBudget: 1,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } }],
-    activations: [],
-  },
-  'dense-circulation': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
-      startingData: 40,
-      citizenCount: 20,
-      housingCapacity: 20,
-      workplaceCapacity: 20,
-      populationCap: 20,
-      developmentEvaluationIntervalTicks: 1,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } }],
-    activations: [],
-  },
-  'development-supersession': {
-    config: {
-      chunkSize: 32,
-      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
-      startingData: 30,
-      developmentEvaluationIntervalTicks: 1,
-    },
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 22, y: 1 } } },
-    ],
-    activations: [],
-  },
-  'long-incremental-development': {
-    config: {
-      chunkSize: 32,
-      initialChunkRegion: { minX: 0, minY: 0, width: 8, height: 8 },
-      startingData: DISTRICT_SEED_COSTS.living,
-      developmentEvaluationIntervalTicks: 1,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } }],
-    activations: [],
-  },
-  'step9-dense-movement': {
-    config: trafficScenarioConfig({
-      chunkSize: 8,
-      initialChunkRegion: { minX: -1, minY: -1, width: 4, height: 4 },
-      homePosition: { x: -6, y: -6 },
-      workplacePosition: { x: 18, y: 18 },
-      citizenCount: 20,
-      housingCapacity: 20,
-      workplaceCapacity: 20,
-      populationCap: 20,
-    }),
     commands: [],
     activations: [],
   },
-  'one-worker-slow-build': {
+  'builder-under-congestion': {
     config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 1,
-      housingCapacity: 1,
-      workplaceCapacity: 1,
-      populationCap: 1,
+      ...createEstablishedCityFixture(4),
+      startingData: 10,
       activityDurationTicks: 1,
       developmentEvaluationIntervalTicks: 1,
-      startingData: DISTRICT_SEED_COSTS.living,
     },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
-    activations: [],
-  },
-  'full-staff-build': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 3,
-      housingCapacity: 3,
-      workplaceCapacity: 3,
-      populationCap: 3,
-      activityDurationTicks: 1,
-      developmentEvaluationIntervalTicks: 1,
-      startingData: DISTRICT_SEED_COSTS.living,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
-    activations: [],
-  },
-  'workers-competing-one-corridor': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 0 },
-      citizenCount: 6,
-      housingCapacity: 6,
-      workplaceCapacity: 6,
-      populationCap: 6,
-      activityDurationTicks: 1,
-      developmentEvaluationIntervalTicks: 1,
-      startingData: DISTRICT_SEED_COSTS.living,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } }],
-    activations: [],
-  },
-  'staging-cell-queue': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 6,
-      housingCapacity: 6,
-      workplaceCapacity: 6,
-      populationCap: 6,
-      activityDurationTicks: 1,
-      developmentEvaluationIntervalTicks: 1,
-      startingData: DISTRICT_SEED_COSTS.living,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
-    activations: [],
-  },
-  'worker-blocked-replans': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 20,
-      housingCapacity: 20,
-      workplaceCapacity: 20,
-      populationCap: 20,
-      activityDurationTicks: 1,
-      developmentEvaluationIntervalTicks: 1,
-      startingData: DISTRICT_SEED_COSTS.living,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
-    activations: [],
-  },
-  'builder-queued-corridor': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 20,
-      housingCapacity: 20,
-      workplaceCapacity: 20,
-      populationCap: 20,
-      activityDurationTicks: 1,
-      developmentEvaluationIntervalTicks: 1,
-      startingData: DISTRICT_SEED_COSTS.living,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
-    activations: [],
-  },
-  'labor-starvation-11-12': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 20,
-      housingCapacity: 20,
-      workplaceCapacity: 20,
-      populationCap: 20,
-      activityDurationTicks: 1,
-      developmentEvaluationIntervalTicks: 1,
-      startingData: DISTRICT_SEED_COSTS.living,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
-    activations: [],
-  },
-  'no-eligible-workers': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 0,
-      housingCapacity: 0,
-      workplaceCapacity: 0,
-      populationCap: 0,
-      developmentEvaluationIntervalTicks: 1,
-      startingData: DISTRICT_SEED_COSTS.living,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
-    activations: [],
-  },
-  'phase-cap-decrease': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 3,
-      housingCapacity: 3,
-      workplaceCapacity: 3,
-      populationCap: 3,
-      activityDurationTicks: 1,
-      developmentEvaluationIntervalTicks: 1,
-      startingData: DISTRICT_SEED_COSTS.living,
-      constructionPhaseDurations: { frame: 100 },
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
-    activations: [],
-  },
-  'construction-dense-commute': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: -1, minY: -1, width: 4, height: 4 },
-      homePosition: { x: -6, y: -6 },
-      workplacePosition: { x: 18, y: 18 },
-      citizenCount: 20,
-      housingCapacity: 20,
-      workplaceCapacity: 20,
-      populationCap: 20,
-      activityDurationTicks: 1,
-      developmentEvaluationIntervalTicks: 1,
-      startingData: DISTRICT_SEED_COSTS.living,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: -1, y: -5 } } }],
-    activations: [],
-  },
-  'off-screen-construction': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 24, y: 24 },
-      citizenCount: 1,
-      housingCapacity: 1,
-      workplaceCapacity: 1,
-      populationCap: 1,
-      activityDurationTicks: 1,
-      developmentEvaluationIntervalTicks: 1,
-      startingData: DISTRICT_SEED_COSTS.living,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } }],
-    activations: [],
-  },
-  'repeated-deterministic-construction': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 3,
-      housingCapacity: 3,
-      workplaceCapacity: 3,
-      populationCap: 3,
-      activityDurationTicks: 1,
-      developmentEvaluationIntervalTicks: 1,
-      startingData: DISTRICT_SEED_COSTS.living,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
-    activations: [],
-  },
-  'services-core-progression': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 1_000 }),
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
-    ],
-    activations: [],
-    corePurchases: [servicesCorePurchase()],
-  },
-  'no-service-shortage': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 1_000 }),
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
-    ],
-    activations: [],
-    corePurchases: [servicesCorePurchase()],
-  },
-  'one-service-near-homes': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 50 }),
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
-      servicesSeedCommand(1_001, { x: 4, y: 4 }),
-    ],
-    activations: [],
-    corePurchases: [servicesCorePurchase()],
-  },
-  'one-service-near-workplaces': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 50 }),
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
-      servicesSeedCommand(1_001, { x: 12, y: 12 }),
-    ],
-    activations: [],
-    corePurchases: [servicesCorePurchase()],
-  },
-  'competing-services': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 50 }),
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
-      servicesSeedCommand(1_001, { x: 4, y: 4 }),
-      servicesSeedCommand(1_002, { x: 12, y: 12 }),
-    ],
-    activations: [],
-    corePurchases: [servicesCorePurchase()],
-  },
-  'service-capacity-bottleneck': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 50 }),
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
-      servicesSeedCommand(1_001, { x: 4, y: 4 }),
-    ],
-    activations: [],
-    corePurchases: [servicesCorePurchase()],
-  },
-  'services-seed-development': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 10 }),
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
-      servicesSeedCommand(1_001, { x: 4, y: 4 }),
-    ],
-    activations: [],
-    corePurchases: [servicesCorePurchase()],
-  },
-  'dense-service-commute': {
-    config: servicesScenarioConfig({ developmentEvaluationIntervalTicks: 10 }),
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 20, y: 1 } } },
-      { tick: 1, command: { kind: 'working', position: { x: 24, y: 15 } } },
-      servicesSeedCommand(1_001, { x: 4, y: 4 }),
-    ],
-    activations: [],
-    corePurchases: [servicesCorePurchase()],
-  },
-  'square-seed-straightaway': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 2 },
-      startingData: 100,
-      developmentEvaluationIntervalTicks: 1_000_000,
-      citizenCount: 0,
-    },
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 6, y: 1 } } },
-      { tick: 0, command: { kind: 'working', position: { x: 16, y: 1 } } },
-    ],
-    activations: [],
-  },
-  'square-seed-row-corridor': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 2 },
-      startingData: 100,
-      developmentEvaluationIntervalTicks: 1_000_000,
-      citizenCount: 0,
-    },
-    commands: [
-      { tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } },
-      { tick: 0, command: { kind: 'working', position: { x: 18, y: 1 } } },
-    ],
+    commands: [{ tick: 0, command: { kind: 'living', position: { x: 20, y: 20 } } }],
     activations: [],
   },
   'overlapping-square-seeds': {
@@ -1070,34 +282,6 @@ const scenarioDefinitions: Record<BalanceScenarioName, BalanceScenarioDefinition
     ],
     activations: [],
   },
-  'square-seed-boundary': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      startingData: DISTRICT_SEED_COSTS.living,
-      developmentEvaluationIntervalTicks: 1_000_000,
-      citizenCount: 0,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 7, y: 1 } } }],
-    activations: [],
-  },
-  'step10-5-repeated': {
-    config: {
-      chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 3,
-      housingCapacity: 3,
-      workplaceCapacity: 3,
-      populationCap: 3,
-      activityDurationTicks: 1,
-      developmentEvaluationIntervalTicks: 1,
-      startingData: DISTRICT_SEED_COSTS.living,
-    },
-    commands: [{ tick: 0, command: { kind: 'living', position: { x: 5, y: 1 } } }],
-    activations: [],
-  },
 };
 
 export function isBalanceScenarioName(value: string): value is BalanceScenarioName {
@@ -1105,13 +289,15 @@ export function isBalanceScenarioName(value: string): value is BalanceScenarioNa
 }
 
 export function getBalanceScenarioConfig(scenario: BalanceScenarioName): SimulationConfig {
-  return { ...scenarioDefinitions[scenario].config };
+  const definition = scenarioDefinitions[scenario];
+  return JSON.parse(JSON.stringify(definition.config)) as SimulationConfig;
 }
 
 export function getBalanceScenarioCommands(
   scenario: BalanceScenarioName,
 ): readonly ScheduledDistrictSeedCommand[] {
-  return scenarioDefinitions[scenario].commands.map(({ tick, command }) => ({
+  const definition = scenarioDefinitions[scenario];
+  return definition.commands.map(({ tick, command }) => ({
     tick,
     command: { ...command, position: { ...command.position } },
   }));
@@ -1120,7 +306,8 @@ export function getBalanceScenarioCommands(
 export function getBalanceScenarioActivations(
   scenario: BalanceScenarioName,
 ): readonly ScheduledChunkActivationCommand[] {
-  return scenarioDefinitions[scenario].activations.map(({ tick, command }) => ({
+  const definition = scenarioDefinitions[scenario];
+  return definition.activations.map(({ tick, command }) => ({
     tick,
     command: { ...command },
   }));
@@ -1129,10 +316,18 @@ export function getBalanceScenarioActivations(
 export function getBalanceScenarioCorePurchases(
   scenario: BalanceScenarioName,
 ): readonly ScheduledCorePurchaseCommand[] {
-  return (scenarioDefinitions[scenario].corePurchases ?? []).map(({ tick, command }) => ({
+  const definition = scenarioDefinitions[scenario];
+  return (definition.corePurchases ?? []).map(({ tick, command }) => ({
     tick,
     command: { ...command },
   }));
+}
+
+export function getBalanceScenarioManualData(
+  scenario: BalanceScenarioName,
+): readonly ScheduledManualDataCommand[] {
+  const definition = scenarioDefinitions[scenario];
+  return (definition.manualData ?? []).map(({ tick }) => ({ tick }));
 }
 
 export interface BalanceOptions {
@@ -1146,6 +341,7 @@ export interface BalanceOptions {
   readonly commands?: readonly ScheduledDistrictSeedCommand[];
   readonly activations?: readonly ScheduledChunkActivationCommand[];
   readonly corePurchases?: readonly ScheduledCorePurchaseCommand[];
+  readonly manualData?: readonly ScheduledManualDataCommand[];
 }
 
 export interface BalanceCommandResult {
@@ -1166,6 +362,24 @@ export interface BalanceCorePurchaseResult {
   readonly command: PurchaseCoreCommand;
   readonly info: CorePurchaseInfo & { readonly reason?: string };
   readonly result: CorePurchaseResult;
+}
+
+export interface BalanceManualDataResult {
+  readonly tick: number;
+  readonly result: ReturnType<ReturnType<typeof createSimulation>['gatherManualData']>;
+}
+
+export interface BalanceAssignment {
+  readonly citizenId: string;
+  readonly homeBuildingId: string | null;
+  readonly workplaceBuildingId: string | null;
+  readonly activity: SimulationSnapshot['citizens'][number]['activity'];
+}
+
+export interface BalanceAccessUsage {
+  readonly buildingId: string;
+  readonly cell: { readonly x: number; readonly y: number };
+  readonly count: number;
 }
 
 export interface BalanceMovementSummary {
@@ -1244,6 +458,9 @@ export interface BalanceSummary {
   readonly commandResults: readonly BalanceCommandResult[];
   readonly activationResults: readonly BalanceActivationResult[];
   readonly corePurchaseResults: readonly BalanceCorePurchaseResult[];
+  readonly manualDataResults: readonly BalanceManualDataResult[];
+  readonly assignments: readonly BalanceAssignment[];
+  readonly accessUsage: readonly BalanceAccessUsage[];
   readonly buildingCount: number;
   readonly homeCount: number;
   readonly workplaceCount: number;
@@ -1298,53 +515,14 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
   if (snapshot.structural.allocatedChunks !== activeKeys.size)
     fail('allocated chunk count mismatch');
   for (const chunk of snapshot.activeChunks) {
-    if (
-      chunk.rightOfWayRevision < 0 ||
-      chunk.staticTopologyRevision < 0 ||
-      (chunk.rightOfWayBufferAllocated && chunk.rightOfWayRevision === 0)
-    ) {
+    if (chunk.staticTopologyRevision < 0) {
       fail(`static topology revisions are invalid for ${chunk.key}`);
     }
   }
 
-  const rowKeys = new Set<string>();
-  let previousRowChunk: { readonly x: number; readonly y: number } | undefined;
-  for (const rowChunk of snapshot.rightOfWay) {
-    if (!activeKeys.has(rowChunk.key)) fail(`ROW chunk is inactive ${rowChunk.key}`);
-    if (rowChunk.key !== chunkKey(rowChunk.chunk)) fail(`ROW chunk key mismatch ${rowChunk.key}`);
-    if (previousRowChunk !== undefined && compareChunks(rowChunk.chunk, previousRowChunk) <= 0) {
-      fail('ROW chunks are not stably ordered');
-    }
-    previousRowChunk = rowChunk.chunk;
-    const activeSummary = snapshot.activeChunks.find(({ key }) => key === rowChunk.key);
-    if (activeSummary?.rightOfWayRevision !== rowChunk.revision) {
-      fail(`ROW revision mismatch for ${rowChunk.key}`);
-    }
-    let previousCell: { readonly x: number; readonly y: number } | undefined;
-    for (const cell of rowChunk.cells) {
-      const key = `${String(cell.x)},${String(cell.y)}`;
-      if (rowKeys.has(key)) fail(`duplicate ROW cell ${key}`);
-      rowKeys.add(key);
-      if (!active(snapshot, cell)) fail(`ROW cell is inactive ${key}`);
-      if (
-        previousCell !== undefined &&
-        (cell.y < previousCell.y || (cell.y === previousCell.y && cell.x <= previousCell.x))
-      ) {
-        fail(`ROW cells are not stably ordered in ${rowChunk.key}`);
-      }
-      previousCell = cell;
-    }
-  }
-  if (snapshot.structural.rightOfWayCells !== rowKeys.size) fail('ROW cell count mismatch');
-  if (snapshot.structural.rightOfWayCellsAdded < rowKeys.size) {
-    fail('ROW additions are below the current ROW count');
-  }
-  if (snapshot.structural.rightOfWayRevisionChanges < 0) fail('ROW revision counter is negative');
-
   const buildingIds = new Set<string>();
   const occupiedCells = new Set<string>();
   const reservedCells = new Set<string>();
-  const circulationCells = new Set<string>(rowKeys);
   const capacityByType = new Map<BuildingType, number>([
     ['home', 0],
     ['workplace', 0],
@@ -1374,14 +552,11 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     for (const cell of footprintCells(building.footprint)) {
       if (!active(snapshot, cell)) fail(`building ${building.id} leaves active chunks`);
       const cellKey = `${String(cell.x)},${String(cell.y)}`;
-      if (rowKeys.has(cellKey)) fail(`building ${building.id} consumes ROW at ${cellKey}`);
       if (occupiedCells.has(cellKey)) fail(`building footprints overlap at ${cellKey}`);
       occupiedCells.add(cellKey);
     }
-    for (const cell of circulationEnvelopeCells(building.footprint)) {
+    for (const cell of buildingClearanceZoneCells(building.footprint)) {
       if (!active(snapshot, cell)) fail(`building ${building.id} envelope leaves active chunks`);
-      circulationCells.add(`${String(cell.x)},${String(cell.y)}`);
-      if (rowKeys.has(`${String(cell.x)},${String(cell.y)}`)) continue;
       for (const other of snapshot.buildings) {
         if (other.id === building.id) continue;
         if (footprintCells(other.footprint).some(({ x, y }) => x === cell.x && y === cell.y)) {
@@ -1455,7 +630,8 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
       const stagingKey = `${String(staging.x)},${String(staging.y)}`;
       if (stagingKeys.has(stagingKey)) fail(`construction project ${project.id} repeats staging`);
       stagingKeys.add(stagingKey);
-      if (!rowKeys.has(stagingKey)) fail(`construction project ${project.id} staging is not ROW`);
+      if (!active(snapshot, staging))
+        fail(`construction project ${project.id} staging is inactive`);
       if (occupiedCells.has(stagingKey) || reservedCells.has(stagingKey)) {
         fail(`construction project ${project.id} staging enters a footprint`);
       }
@@ -1476,22 +652,12 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
       if (reservedCells.has(cellKey)) fail(`construction projects overlap at ${cellKey}`);
       reservedCells.add(cellKey);
     }
-    for (const cell of circulationEnvelopeCells(project.footprint)) {
+    for (const cell of buildingClearanceZoneCells(project.footprint)) {
       if (!active(snapshot, cell))
         fail(`construction project ${project.id} envelope leaves active chunks`);
-      circulationCells.add(`${String(cell.x)},${String(cell.y)}`);
-      if (rowKeys.has(`${String(cell.x)},${String(cell.y)}`)) continue;
       if (occupiedCells.has(`${String(cell.x)},${String(cell.y)}`)) {
         fail(`construction project ${project.id} envelope overlaps a building`);
       }
-    }
-    for (const cell of project.connector ?? []) {
-      const key = `${String(cell.x)},${String(cell.y)}`;
-      if (!rowKeys.has(key)) fail(`construction project ${project.id} connector is not ROW`);
-      if (occupiedCells.has(key) || reservedCells.has(key)) {
-        fail(`construction project ${project.id} connector enters a footprint`);
-      }
-      circulationCells.add(key);
     }
     if (occupiedCells.has(`${String(project.entrance.x)},${String(project.entrance.y)}`)) {
       fail(`construction project ${project.id} entrance is blocked`);
@@ -1589,6 +755,7 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
   const citizenIds = new Set<string>();
   const movingCells = new Set<string>();
   const validActivities = new Set([
+    'idle',
     'home',
     'commuting-to-work',
     'work',
@@ -1611,15 +778,23 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
     ) {
       fail(`citizen ${citizen.id} occupies a building interior`);
     }
-    const home = snapshot.buildings.find(({ id }) => id === citizen.homeBuildingId);
-    const workplace = snapshot.buildings.find(({ id }) => id === citizen.workplaceBuildingId);
-    if (home === undefined) fail(`citizen ${citizen.id} has no home`);
-    else {
+    const home =
+      citizen.homeBuildingId === null
+        ? undefined
+        : snapshot.buildings.find(({ id }) => id === citizen.homeBuildingId);
+    const workplace =
+      citizen.workplaceBuildingId === null
+        ? undefined
+        : snapshot.buildings.find(({ id }) => id === citizen.workplaceBuildingId);
+    if (citizen.homeBuildingId !== null && home === undefined)
+      fail(`citizen ${citizen.id} has no home`);
+    else if (home !== undefined) {
       if (home.type !== 'home') fail(`citizen ${citizen.id} home has invalid type`);
       homeOccupancy.set(home.id, (homeOccupancy.get(home.id) ?? 0) + 1);
     }
-    if (workplace === undefined) fail(`citizen ${citizen.id} has no workplace`);
-    else {
+    if (citizen.workplaceBuildingId !== null && workplace === undefined)
+      fail(`citizen ${citizen.id} has no workplace`);
+    else if (workplace !== undefined) {
       if (workplace.type !== 'workplace') fail(`citizen ${citizen.id} workplace has invalid type`);
       workplaceOccupancy.set(workplace.id, (workplaceOccupancy.get(workplace.id) ?? 0) + 1);
     }
@@ -1722,9 +897,6 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
       ) {
         fail(`citizen ${citizen.id} route enters a building interior`);
       }
-      if (!circulationCells.has(`${String(position.x)},${String(position.y)}`)) {
-        fail(`citizen ${citizen.id} route leaves circulation ROW/envelopes`);
-      }
       const previous = citizen.route[index - 1];
       if (previous !== undefined && !adjacent(previous, position)) {
         fail(`citizen ${citizen.id} route is non-adjacent`);
@@ -1817,15 +989,11 @@ function collectInvariantFailures(snapshot: SimulationSnapshot): readonly string
   if (job.anchorChecksThisTick > 512) fail('development anchor budget exceeded');
   if (job.preliminaryCandidatesRetained > 32) fail('development preliminary cap exceeded');
   if (job.finalistsValidatedThisTick > 4) fail('development finalist budget exceeded');
-  if (job.corridorExpansionsThisTick > 2_048) fail('development corridor budget exceeded');
   if (snapshot.structural.developmentPeakAnchorChecksPerTick > 512) {
     fail('development peak anchor budget exceeded');
   }
   if (snapshot.structural.developmentPeakFinalistValidationsPerTick > 4) {
     fail('development peak finalist budget exceeded');
-  }
-  if (snapshot.structural.developmentPeakCorridorExpansionsPerTick > 2_048) {
-    fail('development peak corridor budget exceeded');
   }
   return failures;
 }
@@ -1834,7 +1002,7 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
   if (!Number.isSafeInteger(options.ticks) || options.ticks < 0) {
     throw new Error('ticks must be a non-negative safe integer.');
   }
-  const scenario = options.scenario ?? 'baseline';
+  const scenario = options.scenario ?? 'empty-city-opening';
   const scenarioConfig = getBalanceScenarioConfig(scenario);
   const scheduledCommands = [
     ...getBalanceScenarioCommands(scenario),
@@ -1848,10 +1016,15 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     ...getBalanceScenarioCorePurchases(scenario),
     ...(options.corePurchases ?? []),
   ].map((scheduled, index) => ({ ...scheduled, order: index }));
+  const scheduledManualData = [
+    ...getBalanceScenarioManualData(scenario),
+    ...(options.manualData ?? []),
+  ].map((scheduled, index) => ({ ...scheduled, order: index }));
   for (const scheduled of [
     ...scheduledCommands,
     ...scheduledActivations,
     ...scheduledCorePurchases,
+    ...scheduledManualData,
   ]) {
     if (!Number.isSafeInteger(scheduled.tick) || scheduled.tick < 0) {
       throw new Error(
@@ -1862,6 +1035,7 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
   scheduledCommands.sort((left, right) => left.tick - right.tick || left.order - right.order);
   scheduledActivations.sort((left, right) => left.tick - right.tick || left.order - right.order);
   scheduledCorePurchases.sort((left, right) => left.tick - right.tick || left.order - right.order);
+  scheduledManualData.sort((left, right) => left.tick - right.tick || left.order - right.order);
   const simulation = createSimulation({
     ...scenarioConfig,
     seed: options.seed,
@@ -1878,14 +1052,18 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
   const commandResults: BalanceCommandResult[] = [];
   const activationResults: BalanceActivationResult[] = [];
   const corePurchaseResults: BalanceCorePurchaseResult[] = [];
+  const manualDataResults: BalanceManualDataResult[] = [];
   let observedWaitTicks = 0;
   let observedWaitSamples = 0;
   let observedMaxWaitTicks = 0;
   let nextScheduledCommand = 0;
   let nextScheduledActivation = 0;
   let nextScheduledCorePurchase = 0;
+  let nextScheduledManualData = 0;
   const applyScheduled = (): void => {
     const currentTick = simulation.getSnapshot().tick;
+    // Equal-tick commands are applied in the fixed order activation, core purchase,
+    // manual Data, then district seed. Each list preserves its declared order.
     while (nextScheduledActivation < scheduledActivations.length) {
       const scheduled = scheduledActivations[nextScheduledActivation];
       if (scheduled === undefined || scheduled.tick > currentTick) break;
@@ -1908,6 +1086,12 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
         result: simulation.purchaseCore(command),
       });
       nextScheduledCorePurchase += 1;
+    }
+    while (nextScheduledManualData < scheduledManualData.length) {
+      const scheduled = scheduledManualData[nextScheduledManualData];
+      if (scheduled === undefined || scheduled.tick > currentTick) break;
+      manualDataResults.push({ tick: currentTick, result: simulation.gatherManualData() });
+      nextScheduledManualData += 1;
     }
     while (nextScheduledCommand < scheduledCommands.length) {
       const scheduled = scheduledCommands[nextScheduledCommand];
@@ -1951,6 +1135,42 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     0,
   );
   const totalTraversals = snapshot.traffic.reduce((total, edge) => total + edge.total, 0);
+  const accessUsage: BalanceAccessUsage[] = [];
+  for (const building of snapshot.buildings) {
+    const counts = new Map<string, number>();
+    for (const cell of building.accessCells ?? [])
+      counts.set(`${String(cell.x)},${String(cell.y)}`, 0);
+    for (const edge of snapshot.traffic) {
+      for (const endpoint of [edge.a, edge.b]) {
+        const key = `${String(endpoint.x)},${String(endpoint.y)}`;
+        if (counts.has(key)) counts.set(key, (counts.get(key) ?? 0) + edge.total);
+      }
+    }
+    for (const cell of building.accessCells ?? []) {
+      const key = `${String(cell.x)},${String(cell.y)}`;
+      const count = counts.get(key) ?? 0;
+      if (count > 0) accessUsage.push({ buildingId: building.id, cell: { ...cell }, count });
+    }
+  }
+  accessUsage.sort(
+    (left, right) =>
+      left.buildingId.localeCompare(right.buildingId) ||
+      left.cell.y - right.cell.y ||
+      left.cell.x - right.cell.x,
+  );
+  const assignments = snapshot.citizens
+    .map(({ id, homeBuildingId, workplaceBuildingId, activity }) => ({
+      id,
+      homeBuildingId,
+      workplaceBuildingId,
+      activity,
+    }))
+    .map(({ id, homeBuildingId, workplaceBuildingId, activity }) => ({
+      citizenId: id,
+      homeBuildingId,
+      workplaceBuildingId,
+      activity,
+    }));
   const movement: BalanceMovementSummary = {
     proposals: snapshot.structural.movementProposals,
     committedMoves: snapshot.structural.movementCommittedMoves,
@@ -2023,6 +1243,9 @@ export function runBalance(options: BalanceOptions): BalanceSummary {
     commandResults,
     activationResults,
     corePurchaseResults,
+    manualDataResults,
+    assignments,
+    accessUsage,
     buildingCount: snapshot.buildings.length,
     homeCount: snapshot.buildings.filter((building) => building.type === 'home').length,
     workplaceCount: snapshot.buildings.filter((building) => building.type === 'workplace').length,

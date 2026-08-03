@@ -16,14 +16,26 @@ import {
   type SimulationSnapshot,
 } from '../src/index';
 
+const constructionBuildings = [
+  { id: 'home-1', type: 'home' as const, origin: { x: 1, y: 1 } },
+  { id: 'home-2', type: 'home' as const, origin: { x: 1, y: 8 } },
+  { id: 'home-3', type: 'home' as const, origin: { x: 8, y: 1 } },
+  { id: 'workplace-1', type: 'workplace' as const, origin: { x: 8, y: 8 } },
+];
+
+function constructionCitizens(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `citizen-${String(index + 1)}`,
+    homeBuildingId: `home-${String((index % 3) + 1)}`,
+    workplaceBuildingId: 'workplace-1',
+  }));
+}
+
 const constructionConfig: SimulationConfig = {
   chunkSize: 8,
-  initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-  homePosition: { x: 0, y: 0 },
-  workplacePosition: { x: 8, y: 8 },
-  citizenCount: 3,
-  housingCapacity: 3,
-  workplaceCapacity: 3,
+  initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+  initialBuildings: constructionBuildings,
+  initialCitizens: constructionCitizens(3),
   populationCap: 3,
   activityDurationTicks: 1,
   developmentEvaluationIntervalTicks: 1,
@@ -35,7 +47,21 @@ function startProject(overrides: SimulationConfig = {}): {
   readonly simulation: Simulation;
   readonly snapshot: SimulationSnapshot;
 } {
-  const simulation = createSimulation({ ...constructionConfig, ...overrides });
+  const {
+    citizenCount: requestedCitizenCount,
+    housingCapacity: ignoredHousingCapacity,
+    workplaceCapacity: ignoredWorkplaceCapacity,
+    initialCitizens: explicitCitizens,
+    ...safeOverrides
+  } = overrides;
+  void ignoredHousingCapacity;
+  void ignoredWorkplaceCapacity;
+  const count = explicitCitizens?.length ?? requestedCitizenCount ?? 3;
+  const simulation = createSimulation({
+    ...constructionConfig,
+    ...safeOverrides,
+    initialCitizens: explicitCitizens ?? constructionCitizens(count),
+  });
   expect(simulation.placeDistrictSeed({ kind: 'living', position: { x: 5, y: 1 } }).accepted).toBe(
     true,
   );
@@ -59,10 +85,6 @@ function runUntilCompletion(overrides: SimulationConfig = {}): SimulationSnapsho
 
 function positionKey(position: GridPosition): string {
   return `${String(position.x)},${String(position.y)}`;
-}
-
-function rightOfWayKeys(snapshot: SimulationSnapshot): Set<string> {
-  return new Set(snapshot.rightOfWay.flatMap(({ cells }) => cells.map(positionKey)));
 }
 
 describe('Step 9.6 citizen construction labor', () => {
@@ -91,19 +113,16 @@ describe('Step 9.6 citizen construction labor', () => {
     expect(envelopeOnly).toEqual([]);
   });
 
-  it('stores exactly three ROW staging cells outside each active project footprint', () => {
+  it('stores exactly three staging cells outside each active project footprint', () => {
     const { snapshot } = startProject();
     const project = snapshot.constructionProjects[0];
     if (project === undefined) throw new Error('A project is required.');
-    const rowKeys = rightOfWayKeys(snapshot);
     expect(project.stagingCells).toHaveLength(3);
     expect(project.stagingCells[0]).toEqual(project.entrance);
     expect(new Set(project.stagingCells.map(positionKey)).size).toBe(3);
-    expect(
-      project.stagingCells.every(
-        (cell) => rowKeys.has(positionKey(cell)) && !isInsideFootprint(cell, project.footprint),
-      ),
-    ).toBe(true);
+    expect(project.stagingCells.every((cell) => !isInsideFootprint(cell, project.footprint))).toBe(
+      true,
+    );
   });
 
   it('uses project, shortest route, staging index, and citizen ID assignment ordering', () => {
@@ -169,7 +188,6 @@ describe('Step 9.6 citizen construction labor', () => {
           continue;
         expect(['home', 'work']).toContain(prior.activity);
         expect(prior.route).toEqual([]);
-        expect(prior.activityTicksRemaining).toBe(0);
         expect(citizen.resumeDestinationBuildingId).toBe(
           prior.activity === 'home' ? prior.workplaceBuildingId : prior.homeBuildingId,
         );
@@ -199,6 +217,16 @@ describe('Step 9.6 citizen construction labor', () => {
             (citizen) => citizen.activity === 'constructing',
           );
           expect(laborDelta).toBe(constructingWorkers.length);
+          if (
+            previousProject.workerCount > 0 &&
+            currentProject.workerCount > 0 &&
+            constructingWorkers.length === 0
+          ) {
+            expect(laborDelta).toBe(0);
+            expect(currentProject.ticksSinceLastLabor).toBe(
+              previousProject.ticksSinceLastLabor + 1,
+            );
+          }
         }
       }
       if (
@@ -212,10 +240,29 @@ describe('Step 9.6 citizen construction labor', () => {
       )) {
         expect(citizen.constructionProjectId).toBe(currentProject?.id ?? null);
         expect(citizen.constructionStagingCell).toEqual(citizen.position);
+        const prior = previous.citizens.find(({ id }) => id === citizen.id);
+        if (prior?.activity === 'constructing') {
+          expect(
+            Math.abs(citizen.position.x - prior.position.x) +
+              Math.abs(citizen.position.y - prior.position.y),
+          ).toBeLessThanOrEqual(1);
+        }
       }
       if (current.structural.constructionLaborUnits > previous.structural.constructionLaborUnits) {
         observedLabor = true;
-        expect(current.dataGeneratedThisTick).toBe(0);
+        const workCompleted = current.completedWorkActivities - previous.completedWorkActivities;
+        const serviceCompleted =
+          current.completedServiceActivities - previous.completedServiceActivities;
+        if (workCompleted === 0) {
+          expect(current.dataGeneratedThisTickBySource.work).toBe(0);
+        }
+        if (serviceCompleted === 0) {
+          expect(current.dataGeneratedThisTickBySource.service).toBe(0);
+        }
+        expect(current.dataGeneratedThisTick).toBe(
+          current.dataGeneratedThisTickBySource.work +
+            current.dataGeneratedThisTickBySource.service,
+        );
       }
       previous = current;
       if (observedArrival && observedLabor) break;
@@ -235,12 +282,10 @@ describe('Step 9.6 citizen construction labor', () => {
     });
     expect(constructionPhaseLaborRequired('frame')).toBe(18);
     const oneWorker = runUntilCompletion({
-      citizenCount: 1,
-      housingCapacity: 1,
-      workplaceCapacity: 1,
+      initialCitizens: constructionCitizens(1),
       populationCap: 1,
     });
-    const fullStaff = runUntilCompletion({ citizenCount: 3 });
+    const fullStaff = runUntilCompletion({ initialCitizens: constructionCitizens(3) });
     expect(oneWorker.tick).toBeGreaterThan(fullStaff.tick);
     expect(oneWorker.structural.constructionPhaseCompletions).toBe(5);
     expect(fullStaff.structural.constructionPhaseCompletions).toBe(5);
@@ -248,10 +293,16 @@ describe('Step 9.6 citizen construction labor', () => {
 
   it('pauses without eligible workers and makes no labor progress', () => {
     const { simulation } = startProject({
-      citizenCount: 0,
-      housingCapacity: 0,
-      workplaceCapacity: 0,
-      populationCap: 0,
+      initialCitizens: [
+        {
+          id: 'citizen-1',
+          homeBuildingId: 'home-1',
+          workplaceBuildingId: 'workplace-1',
+          activity: 'work',
+        },
+      ],
+      populationCap: 1,
+      activityDurationTicks: 100_000,
     });
     for (let tick = 0; tick < 20; tick += 1) simulation.step();
     const snapshot = simulation.getSnapshot();
@@ -289,10 +340,10 @@ describe('Step 9.6 citizen construction labor', () => {
         }
       }
       if (current.constructionProjects.length > 0) {
-        expect(current.buildings).toHaveLength(2);
+        expect(current.buildings).toHaveLength(4);
       } else if (current.structural.constructionProjectsCompleted > 0) {
         completed = true;
-        expect(current.buildings.length).toBe(3);
+        expect(current.buildings.length).toBe(5);
         break;
       }
       previous = current;

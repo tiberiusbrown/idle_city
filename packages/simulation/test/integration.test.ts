@@ -10,7 +10,14 @@ describe('chunked city integration', () => {
         homePosition: { x: -6, y: -6 },
         workplacePosition: { x: 18, y: 18 },
         seed: 456,
-        citizenCount: 20,
+        initialBuildings: [
+          { id: 'home-1', type: 'home', origin: { x: -6, y: -6 } },
+          { id: 'workplace-1', type: 'workplace', origin: { x: 18, y: 18 } },
+        ],
+        initialCitizens: [
+          { id: 'citizen-1', homeBuildingId: 'home-1', workplaceBuildingId: 'workplace-1' },
+        ],
+        populationCap: 1,
       });
       for (let tick = 0; tick < 2_000; tick += 1) {
         simulation.step();
@@ -28,8 +35,10 @@ describe('chunked city integration', () => {
                 chunk.chunk.y === Math.floor(citizen.position.y / snapshot.chunkSize),
             ),
           ).toBe(true);
-          expect(buildingIds.has(citizen.homeBuildingId)).toBe(true);
-          expect(buildingIds.has(citizen.workplaceBuildingId)).toBe(true);
+          if (citizen.homeBuildingId !== null)
+            expect(buildingIds.has(citizen.homeBuildingId)).toBe(true);
+          if (citizen.workplaceBuildingId !== null)
+            expect(buildingIds.has(citizen.workplaceBuildingId)).toBe(true);
           expect(
             interiors.some((position) =>
               isInsideFootprint(citizen.position, {

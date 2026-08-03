@@ -25,14 +25,42 @@ function building(
   };
 }
 
+function fixture(
+  homes: number,
+  workplaces: number,
+  citizens: number,
+  populationCap = Math.max(citizens, 8),
+): Parameters<typeof createSimulation>[0] {
+  const initialBuildings = [
+    ...Array.from({ length: homes }, (_, index) => ({
+      id: `home-${String(index + 1)}`,
+      type: 'home' as const,
+      origin: { x: 1 + (index % 4) * 7, y: 1 + Math.floor(index / 4) * 7 },
+    })),
+    ...Array.from({ length: workplaces }, (_, index) => ({
+      id: `workplace-${String(index + 1)}`,
+      type: 'workplace' as const,
+      origin: { x: 1 + (index % 2) * 14, y: 20 + Math.floor(index / 2) * 7 },
+    })),
+  ];
+  const initialCitizens = Array.from({ length: citizens }, (_, index) => ({
+    id: `citizen-${String(index + 1)}`,
+    homeBuildingId: `home-${String((index % homes) + 1)}`,
+    workplaceBuildingId: `workplace-${String((index % workplaces) + 1)}`,
+  }));
+  return {
+    initialActiveRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+    initialBuildings,
+    initialCitizens,
+    populationCap,
+    populationGrowthCadenceTicks: 2,
+  };
+}
+
 describe('deterministic population growth and assignment', () => {
   it('does not grow with housing-only capacity', () => {
     const simulation = createSimulation({
-      citizenCount: 1,
-      housingCapacity: 4,
-      workplaceCapacity: 1,
-      populationCap: 4,
-      populationGrowthCadenceTicks: 2,
+      ...fixture(1, 1, 1, 4),
     });
 
     step(simulation, 20);
@@ -47,25 +75,27 @@ describe('deterministic population growth and assignment', () => {
 
   it('does not grow with workplace-only capacity', () => {
     const simulation = createSimulation({
-      citizenCount: 1,
-      housingCapacity: 1,
-      workplaceCapacity: 4,
-      populationCap: 4,
-      populationGrowthCadenceTicks: 2,
+      ...fixture(4, 1, 4, 5),
     });
 
     step(simulation, 20);
 
-    expect(simulation.getSnapshot().citizens).toHaveLength(1);
+    const snapshot = simulation.getSnapshot();
+    expect(snapshot.citizens).toHaveLength(4);
+    expect(
+      snapshot.citizens.every(
+        ({ homeBuildingId, workplaceBuildingId }) =>
+          homeBuildingId !== null && workplaceBuildingId !== null,
+      ),
+    ).toBe(true);
+    expect(
+      snapshot.occupancy.find(({ buildingId }) => buildingId === 'workplace-1')?.occupied,
+    ).toBe(4);
   });
 
   it('grows one citizen per cadence when both capacities are available', () => {
     const simulation = createSimulation({
-      citizenCount: 1,
-      housingCapacity: 3,
-      workplaceCapacity: 3,
-      populationCap: 3,
-      populationGrowthCadenceTicks: 2,
+      ...fixture(3, 1, 1, 3),
     });
 
     simulation.step();
@@ -106,10 +136,7 @@ describe('deterministic population growth and assignment', () => {
 
   it('spawns at the selected home entrance with the preserved home/work schedule', () => {
     const simulation = createSimulation({
-      citizenCount: 0,
-      housingCapacity: 2,
-      workplaceCapacity: 2,
-      populationCap: 2,
+      ...fixture(2, 1, 0, 2),
       populationGrowthCadenceTicks: 1,
       activityDurationTicks: 1,
     });
@@ -134,10 +161,7 @@ describe('deterministic population growth and assignment', () => {
 
   it('never exceeds capacity or population cap and exposes consistent occupancy', () => {
     const simulation = createSimulation({
-      citizenCount: 0,
-      housingCapacity: 5,
-      workplaceCapacity: 5,
-      populationCap: 2,
+      ...fixture(2, 1, 0, 2),
       populationGrowthCadenceTicks: 1,
     });
 
@@ -157,10 +181,7 @@ describe('deterministic population growth and assignment', () => {
   it('keeps schedules, IDs, demand, and hashes deterministic over a long run', () => {
     const configuration = {
       seed: 90210,
-      citizenCount: 0,
-      housingCapacity: 6,
-      workplaceCapacity: 6,
-      populationCap: 6,
+      ...fixture(6, 2, 0, 6),
       populationGrowthCadenceTicks: 3,
       activityDurationTicks: 1,
     } as const;
@@ -196,10 +217,7 @@ describe('deterministic population growth and assignment', () => {
 
   it('updates bounded demand when population grows', () => {
     const simulation = createSimulation({
-      citizenCount: 0,
-      housingCapacity: 2,
-      workplaceCapacity: 2,
-      populationCap: 2,
+      ...fixture(2, 1, 0, 2),
       populationGrowthCadenceTicks: 1,
     });
     const before = simulation.getSnapshot();

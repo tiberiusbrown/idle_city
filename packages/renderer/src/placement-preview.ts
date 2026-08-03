@@ -1,6 +1,7 @@
 import type { DistrictSeedPlacementInfo } from '@idle-city/simulation';
 import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
 import { CreateLineSystem, CreateLines } from '@babylonjs/core/Meshes/Builders/linesBuilder';
+import { VertexBuffer } from '@babylonjs/core/Buffers/buffer';
 import type { Scene } from '@babylonjs/core/scene';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { GridPosition } from '@idle-city/shared';
@@ -14,11 +15,29 @@ export interface PlacementPreview {
   readonly sideLength?: number;
   readonly coveredCells?: readonly GridPosition[];
   readonly activeCoveredCells?: readonly GridPosition[];
+  readonly selected?: boolean;
 }
 
 export interface PlacementPreviewLayer {
   setPreview(preview: PlacementPreview | DistrictSeedPlacementInfo | undefined): void;
   dispose(): void;
+}
+
+const MAX_ACTIVE_INFLUENCE_LINES = 4096;
+const zeroLine = (): [Vector3, Vector3] => [Vector3.Zero(), Vector3.Zero()];
+
+function boundedActiveLines(lines: Vector3[][]): Vector3[][] {
+  const bounded = lines.slice(0, MAX_ACTIVE_INFLUENCE_LINES);
+  while (bounded.length < MAX_ACTIVE_INFLUENCE_LINES) bounded.push(zeroLine());
+  return bounded;
+}
+
+function linePositions(lines: readonly Vector3[][]): number[] {
+  return lines.flatMap((line) => {
+    const start = line[0] ?? Vector3.Zero();
+    const end = line[1] ?? Vector3.Zero();
+    return [start.x, start.y, start.z, end.x, end.y, end.z];
+  });
 }
 
 function squareOutlinePoints(
@@ -98,6 +117,8 @@ export function createPlacementPreviewLayer(
       }
       mesh.position = logicalToWorld(preview.position, cellWorldScale);
       mesh.position.y = 0.08;
+      const emphasis = 'selected' in preview && preview.selected ? 1.25 : 1;
+      mesh.scaling.copyFromFloats(cellWorldScale * emphasis, 0.06, cellWorldScale * emphasis);
       mesh.material = preview.valid ? materials.placementValid : materials.placementInvalid;
       mesh.isVisible = true;
       const sideLength =
@@ -121,19 +142,21 @@ export function createPlacementPreviewLayer(
       }
       influence.material = preview.valid ? materials.influenceLiving : materials.placementInvalid;
       influence.isVisible = true;
-      activeInfluence?.dispose();
       const activeLines = activeBoundaryLines(
         preview.position,
         preview.activeCoveredCells ?? preview.coveredCells ?? [],
         cellWorldScale,
       );
-      activeInfluence = CreateLineSystem(
-        'placement-preview-active-influence',
-        {
-          lines: activeLines.length === 0 ? [[Vector3.Zero(), Vector3.Zero()]] : activeLines,
-        },
-        scene,
-      );
+      const lines = boundedActiveLines(activeLines);
+      if (activeInfluence === undefined) {
+        activeInfluence = CreateLineSystem(
+          'placement-preview-active-influence',
+          { lines, updatable: true },
+          scene,
+        );
+      } else {
+        activeInfluence.updateVerticesData(VertexBuffer.PositionKind, linePositions(lines));
+      }
       activeInfluence.material = preview.valid
         ? materials.influenceWorking
         : materials.placementInvalid;

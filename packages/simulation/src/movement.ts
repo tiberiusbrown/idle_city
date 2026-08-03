@@ -1,5 +1,5 @@
 import type { ChunkCoordinate, GridPosition } from '@idle-city/shared';
-import { findGridPathDetailed, routeTieProfile, type PathSearchStatus } from './pathfinding';
+import { findGridPathDetailed, type PathSearchStatus } from './pathfinding';
 
 export type MovementBlockReason = 'invalid' | 'target-conflict' | 'dependency' | 'ordinary-swap';
 
@@ -73,7 +73,6 @@ export interface MovementReplanInput {
   readonly temporaryBlocked: ReadonlySet<string>;
   readonly isWalkable: (position: GridPosition) => boolean;
   readonly maxNodes: number;
-  readonly routeTieProfile?: number;
   readonly recovery?: boolean;
   /** Number of waiting moving neighbors around a candidate recovery cell. */
   readonly orthogonalQueueNeighbors?: (position: GridPosition) => number;
@@ -108,8 +107,6 @@ export function recoveryQueuePenalty(orthogonalQueueNeighbors: number): number {
     RECOVERY_QUEUE_PENALTY_STEP * orthogonalQueueNeighbors,
   );
 }
-
-export { routeTieProfile };
 
 export function isMovementReplanDue(waitTicks: number): boolean {
   return (
@@ -217,9 +214,8 @@ export function replanMovementRoute(input: MovementReplanInput): MovementReplanR
   temporaryBlocked.delete(coordinateKey(input.goal));
   const searchOptions =
     input.recovery === false
-      ? { routeTieProfile: input.routeTieProfile ?? 0 }
+      ? {}
       : {
-          routeTieProfile: input.routeTieProfile ?? 0,
           movementCost: RECOVERY_EDGE_COST,
           heuristicCost: RECOVERY_EDGE_COST,
           ...(input.orthogonalQueueNeighbors === undefined

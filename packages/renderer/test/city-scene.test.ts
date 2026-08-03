@@ -16,10 +16,29 @@ function replaceSnapshot(
   return { ...snapshot, ...changes };
 }
 
+const renderBuildings = [
+  { id: 'home-1', type: 'home' as const, origin: { x: 1, y: 1 } },
+  { id: 'home-2', type: 'home' as const, origin: { x: 1, y: 8 } },
+  { id: 'home-3', type: 'home' as const, origin: { x: 8, y: 1 } },
+  { id: 'workplace-1', type: 'workplace' as const, origin: { x: 10, y: 8 } },
+];
+
+function renderSimulation(citizenCount: number) {
+  return createSimulation({
+    initialActiveRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+    initialBuildings: renderBuildings,
+    initialCitizens: Array.from({ length: citizenCount }, (_, index) => ({
+      id: `citizen-${String(index + 1)}`,
+      homeBuildingId: `home-${String((index % 3) + 1)}`,
+      workplaceBuildingId: 'workplace-1',
+    })),
+  });
+}
+
 describe('visible chunk city scene', () => {
   it('renders only selected chunks with bounded mesh counts and disposes without WebGL', () => {
     const engine = new NullEngine();
-    const snapshot = createSimulation({ citizenCount: 3 }).getSnapshot();
+    const snapshot = renderSimulation(3).getSnapshot();
     const city = createCityScene(engine, snapshot, {
       visibleChunks: [
         { x: 0, y: 0 },
@@ -43,7 +62,7 @@ describe('visible chunk city scene', () => {
 
   it('rebuilds ground only when a visible chunk revision changes', () => {
     const engine = new NullEngine();
-    const snapshot = createSimulation({ citizenCount: 1 }).getSnapshot();
+    const snapshot = renderSimulation(1).getSnapshot();
     const city = createCityScene(engine, snapshot, { visibleChunks: [{ x: 0, y: 0 }] });
     const initialCounters = city.getStructuralCounters();
     city.update(snapshot, 0.5);
@@ -66,9 +85,13 @@ describe('visible chunk city scene', () => {
     const simulation = createSimulation({
       chunkSize: 8,
       initialChunkRegion: { minX: -1, minY: -1, width: 3, height: 3 },
-      homePosition: { x: -6, y: -6 },
-      workplacePosition: { x: 10, y: 10 },
-      citizenCount: 1,
+      initialBuildings: [
+        { id: 'home-1', type: 'home', origin: { x: -6, y: -6 } },
+        { id: 'workplace-1', type: 'workplace', origin: { x: 10, y: 10 } },
+      ],
+      initialCitizens: [
+        { id: 'citizen-1', homeBuildingId: 'home-1', workplaceBuildingId: 'workplace-1' },
+      ],
       activityDurationTicks: 1,
     });
     for (let tick = 0; tick < 3; tick += 1) simulation.step();
@@ -85,7 +108,7 @@ describe('visible chunk city scene', () => {
 
   it('reconciles citizens, buildings, and seeds by authoritative ID', () => {
     const engine = new NullEngine();
-    const initial = createSimulation({ citizenCount: 1 }).getSnapshot();
+    const initial = renderSimulation(1).getSnapshot();
     const city = createCityScene(engine, initial, { visibleChunks: [{ x: 0, y: 0 }] });
     const home = initial.buildings.find((building) => building.type === 'home');
     if (home === undefined) throw new Error('The fixture requires a home.');
@@ -121,7 +144,7 @@ describe('visible chunk city scene', () => {
 
   it('renders only citizens touching visible chunks, reuses visuals, and restores interpolation', () => {
     const engine = new NullEngine();
-    const simulation = createSimulation({ citizenCount: 1 });
+    const simulation = renderSimulation(1);
     const initial = simulation.getSnapshot();
     const city = createCityScene(engine, initial, { visibleChunks: [{ x: 0, y: 0 }] });
     const citizen = initial.citizens[0];
@@ -182,7 +205,7 @@ describe('visible chunk city scene', () => {
 
   it('does not create off-screen citizen visuals', () => {
     const engine = new NullEngine();
-    const snapshot = createSimulation({ citizenCount: 2 }).getSnapshot();
+    const snapshot = renderSimulation(2).getSnapshot();
     const city = createCityScene(engine, snapshot, { visibleChunks: [{ x: 1, y: 0 }] });
     expect(city.scene.getTransformNodeByName('render-citizen-1')).toBeNull();
     expect(city.scene.getTransformNodeByName('render-citizen-2')).toBeNull();
@@ -209,6 +232,84 @@ describe('visible chunk city scene', () => {
     expect(preview.position.x).toBeCloseTo((7 + 0.5) * 0.25);
     city.setPlacementPreview(undefined);
     expect(preview.isVisible).toBe(false);
+    city.dispose();
+    engine.dispose();
+  });
+
+  it('toggles planning materials and seed zones without allocating new resources', () => {
+    const engine = new NullEngine();
+    const initial = renderSimulation(1).getSnapshot();
+    const seed = { id: 'planning-seed', kind: 'living' as const, position: { x: 4, y: 4 } };
+    const snapshot = replaceSnapshot(initial, { seeds: [seed] });
+    const city = createCityScene(engine, snapshot, { visibleChunks: [{ x: 0, y: 0 }] });
+    const body = city.scene.getMeshByName('home-1-body');
+    const influence = city.scene.getMeshByName('planning-seed-influence');
+    if (body === null || influence === null) throw new Error('Planning visuals are required.');
+    const normalMaterial = body.material;
+    city.setPlanningMode({
+      active: true,
+      candidate: { position: { x: 6, y: 6 }, valid: false, sideLength: 17 },
+    });
+    expect(body.material?.name).toBe('planning-building-material');
+    expect(body.material).not.toBe(normalMaterial);
+    expect(influence.isVisible).toBe(true);
+    expect(city.scene.getMeshByName('placement-preview')?.material?.name).toBe(
+      'placement-invalid-material',
+    );
+    const preview = city.scene.getMeshByName('placement-preview');
+    const activeInfluence = city.scene.getMeshByName('placement-preview-active-influence');
+    if (preview === null || activeInfluence === null)
+      throw new Error('Preview resources are required.');
+    const initialActivePositions = activeInfluence.getVerticesData('position')?.slice();
+    const planningMeshCount = city.scene.meshes.length;
+    city.setPlanningMode({
+      active: true,
+      candidate: { position: { x: 7, y: 6 }, valid: true, sideLength: 17 },
+      selected: false,
+    });
+    expect(city.scene.getMeshByName('placement-preview-active-influence')).toBe(activeInfluence);
+    expect(activeInfluence.getVerticesData('position')).not.toEqual(initialActivePositions);
+    expect(city.scene.meshes.length).toBe(planningMeshCount);
+    const hoverScale = preview.scaling.x;
+    city.setPlanningMode({
+      active: true,
+      candidate: {
+        position: { x: 7, y: 6 },
+        valid: true,
+        sideLength: 17,
+        activeCoveredCells: [{ x: 7, y: 6 }],
+      },
+      selected: false,
+    });
+    city.setPlanningMode({
+      active: true,
+      candidate: {
+        position: { x: 8, y: 6 },
+        valid: true,
+        sideLength: 17,
+        activeCoveredCells: [
+          { x: 8, y: 6 },
+          { x: 8, y: 7 },
+          { x: 9, y: 6 },
+        ],
+      },
+      selected: false,
+    });
+    expect(city.scene.getMeshByName('placement-preview-active-influence')).toBe(activeInfluence);
+    expect(city.scene.meshes.length).toBe(planningMeshCount);
+    city.setPlanningMode({
+      active: true,
+      candidate: { position: { x: 8, y: 6 }, valid: true, sideLength: 17 },
+      selected: true,
+    });
+    expect(city.scene.getMeshByName('placement-preview-active-influence')).toBe(activeInfluence);
+    expect(city.scene.meshes.length).toBe(planningMeshCount);
+    expect(preview.scaling.x).toBeGreaterThan(hoverScale);
+    expect(city.scene.meshes.length).toBe(planningMeshCount);
+    city.setPlanningMode({ active: false });
+    expect(body.material).toBe(normalMaterial);
+    expect(influence.isVisible).toBe(false);
+    expect(city.scene.getMeshByName('placement-preview')?.isVisible).toBe(false);
     city.dispose();
     engine.dispose();
   });
@@ -318,12 +419,6 @@ describe('visible chunk city scene', () => {
       spatialFactor: 0.5,
       expectedAccessImprovement: 0.5,
       envelope: { x: 9, y: 5, width: 6, height: 6 },
-      connector: [
-        { x: 8, y: 5 },
-        { x: 8, y: 6 },
-        { x: 9, y: 5 },
-        { x: 9, y: 6 },
-      ],
       stagingCells: [
         { x: 10, y: 5 },
         { x: 9, y: 6 },
@@ -363,12 +458,13 @@ describe('visible chunk city scene', () => {
     const engine = new NullEngine();
     const simulation = createSimulation({
       chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 3,
-      housingCapacity: 3,
-      workplaceCapacity: 3,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+      initialBuildings: renderBuildings,
+      initialCitizens: [
+        { id: 'citizen-1', homeBuildingId: 'home-1', workplaceBuildingId: 'workplace-1' },
+        { id: 'citizen-2', homeBuildingId: 'home-2', workplaceBuildingId: 'workplace-1' },
+        { id: 'citizen-3', homeBuildingId: 'home-3', workplaceBuildingId: 'workplace-1' },
+      ],
       populationCap: 3,
       activityDurationTicks: 1,
       developmentEvaluationIntervalTicks: 1,
@@ -450,7 +546,7 @@ describe('visible chunk city scene', () => {
 
   it('keeps shared entities stable on repeated updates and sizes buildings by footprint', () => {
     const engine = new NullEngine();
-    const initial = createSimulation({ citizenCount: 1 }).getSnapshot();
+    const initial = renderSimulation(1).getSnapshot();
     const city = createCityScene(engine, initial, {
       visibleChunks: [{ x: 0, y: 0 }],
       cellWorldScale: 0.5,
@@ -486,7 +582,7 @@ describe('visible chunk city scene', () => {
 
   it('uses scaled interpolation without writing to a snapshot and fully disposes the scene', () => {
     const engine = new NullEngine();
-    const initial = createSimulation({ citizenCount: 1 }).getSnapshot();
+    const initial = renderSimulation(1).getSnapshot();
     const moved = replaceSnapshot(initial, {
       citizens: initial.citizens.map((citizen) => ({
         ...citizen,

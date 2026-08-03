@@ -45,18 +45,18 @@ import {
 } from './district-seeds';
 import {
   buildingFootprint,
-  circulationEnvelope,
-  circulationEnvelopeCells,
+  completedBuildingAccessCells,
+  buildingClearanceZone,
+  buildingClearanceZoneCells,
   footprintCells,
   isExteriorEntrance,
   isInsideFootprint,
   selectProjectStagingCells,
-  stagingCapableEnvelopeCells,
+  stagingCapableClearanceZoneCells,
 } from './footprints';
-import { findGridPathDetailed } from './pathfinding';
+import { findGridPathBetweenSets, findGridPathDetailed } from './pathfinding';
 import { findNearestCompatiblePair } from './population';
 import { SeededRandom } from './random';
-import { enumerateAdjacentCorridorPairs, findTwoCellConnector } from './right-of-way';
 import {
   SERVICE_BUILDING_CAPACITY,
   SERVICE_NEED_MAX,
@@ -76,7 +76,6 @@ import {
   isMovementReplanDue,
   resolveMovementReservations,
   replanMovementRoute,
-  routeTieProfile,
   type MovementCandidate,
   type MovementSwapPair,
 } from './movement';
@@ -113,6 +112,7 @@ import type {
   DistrictSeedKind,
   DistrictSeedPlacementInfo,
   DistrictSeedPlacementPreview,
+  InitialCitizenConfig,
   PlaceDistrictSeedCommand,
   Simulation,
   SimulationConfig,
@@ -127,8 +127,8 @@ interface CitizenState {
   readonly id: string;
   position: GridPosition;
   previousPosition: GridPosition;
-  readonly homeBuildingId: string;
-  readonly workplaceBuildingId: string;
+  homeBuildingId: string | null;
+  workplaceBuildingId: string | null;
   activity: CitizenActivity;
   activityTicksRemaining: number;
   departurePending: boolean;
@@ -142,6 +142,7 @@ interface CitizenState {
   serviceWaitTicks: number;
   constructionProjectId: string | null;
   constructionStagingCell: GridPosition | null;
+  constructionCadenceTicks: number;
   resumeDestinationBuildingId: string | null;
   resumeActivity: 'commuting-to-work' | 'commuting-home' | null;
   criticalBuilderProjectId: string | null;
@@ -180,8 +181,7 @@ interface ConstructionProjectState {
   readonly seedInfluence: number;
   readonly spatialFactor: number;
   readonly expectedAccessImprovement: number;
-  readonly envelope: Building['footprint'];
-  readonly connector: GridPosition[];
+  readonly clearanceZone: Building['footprint'];
   readonly stagingCells: GridPosition[];
 }
 
@@ -205,10 +205,8 @@ interface DevelopmentJobState {
   finalistIndex: number;
   totalAnchorChecks: number;
   totalFinalistsValidated: number;
-  totalCorridorExpansions: number;
   anchorChecksThisTick: number;
   finalistsValidatedThisTick: number;
-  corridorExpansionsThisTick: number;
 }
 
 interface DeadlockPairState {
@@ -240,7 +238,7 @@ const defaults = {
   activeChunkLimit: 256,
   demandQueryMaxCells: 4_096,
   seed: 1,
-  citizenCount: 10,
+  citizenCount: 1,
   activityDurationTicks: 3,
   populationCap: 100,
   populationGrowthCadenceTicks: 20,
@@ -248,13 +246,12 @@ const defaults = {
   developmentEvaluationIntervalTicks: 20,
   developmentMinimumScore: 0.2,
   developmentCandidateSnapshotLimit: 64,
-  developmentHomeCapacity: 4,
-  developmentWorkplaceCapacity: 6,
+  developmentHomeCapacity: 1,
+  developmentWorkplaceCapacity: 4,
   trafficHistoryWindowTicks: DEFAULT_TRAFFIC_HISTORY_WINDOW_TICKS,
   developmentAnchorCheckBudget: 512,
   developmentPreliminaryCandidateLimit: 32,
   developmentFinalistValidationBudget: 4,
-  developmentCorridorExpansionBudget: 2_048,
 } as const;
 
 const zeroTotals = (): DemandTotals => ({ living: 0, working: 0, services: 0 });
@@ -345,15 +342,6 @@ function normalizedDistance(distance: number, maximum: number): number {
   return clampUnit(1 - distance / Math.max(1, maximum));
 }
 
-function rectsOverlap(left: Building['footprint'], right: Building['footprint']): boolean {
-  return !(
-    left.x + left.width <= right.x ||
-    right.x + right.width <= left.x ||
-    left.y + left.height <= right.y ||
-    right.y + right.height <= left.y
-  );
-}
-
 function resolveRegion(config: SimulationConfig): ChunkRegion {
   const region =
     config.initialActiveRegion ?? config.initialChunkRegion ?? defaults.initialChunkRegion;
@@ -362,23 +350,6 @@ function resolveRegion(config: SimulationConfig): ChunkRegion {
     minY: region.minY,
     width: region.width,
     height: region.height,
-  };
-}
-
-function legacyScenarioPosition(
-  config: SimulationConfig,
-  homePosition: GridPosition,
-  fallback: GridPosition,
-): GridPosition {
-  if (config.workplacePosition !== undefined) return copyPosition(config.workplacePosition);
-  if (config.width === undefined && config.height === undefined) {
-    return copyPosition(fallback);
-  }
-  const scenarioWidth = positiveInteger('width', config.width ?? 32, 5);
-  const scenarioHeight = positiveInteger('height', config.height ?? 32, 5);
-  return {
-    x: Math.max(homePosition.x + 8, scenarioWidth - 6),
-    y: Math.max(homePosition.y + 8, scenarioHeight - 6),
   };
 }
 
@@ -414,61 +385,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const region = resolveRegion(config);
   const initialMinX = region.minX * chunkSize;
   const initialMinY = region.minY * chunkSize;
-  const defaultHomeOrigin = {
-    x: initialMinX + 1,
-    y: initialMinY + 1,
-  };
-  const homeOrigin = copyPosition(config.homePosition ?? defaultHomeOrigin);
-  const defaultWorkplaceOrigin = {
-    x: initialMinX + Math.max(2, chunkSize - 7),
-    y: initialMinY + Math.max(2, chunkSize - 7),
-  };
-  let workplaceOrigin = legacyScenarioPosition(config, homeOrigin, defaultWorkplaceOrigin);
-  const homeStarterFootprint = buildingFootprint(homeOrigin, 'home');
-  const homeStarterEnvelope = circulationEnvelope(homeStarterFootprint);
-  const requestedWorkplaceFootprint = buildingFootprint(workplaceOrigin, 'workplace');
-  const requestedWorkplaceEnvelope = circulationEnvelope(requestedWorkplaceFootprint);
-  if (
-    rectsOverlap(requestedWorkplaceFootprint, homeStarterEnvelope) ||
-    rectsOverlap(requestedWorkplaceEnvelope, homeStarterFootprint) ||
-    rectsOverlap(requestedWorkplaceEnvelope, homeStarterEnvelope)
-  ) {
-    const minX = initialMinX - chunkSize;
-    const minY = initialMinY - chunkSize;
-    const maxX = initialMinX + region.width * chunkSize + chunkSize;
-    const maxY = initialMinY + region.height * chunkSize + chunkSize;
-    const candidates: GridPosition[] = [];
-    for (let y = minY; y <= maxY; y += 1) {
-      for (let x = minX; x <= maxX; x += 1) candidates.push({ x, y });
-    }
-    candidates.sort(
-      (left, right) =>
-        orthogonalTravelDistance(left, workplaceOrigin) -
-          orthogonalTravelDistance(right, workplaceOrigin) || comparePositions(left, right),
-    );
-    const replacement = candidates.find((candidate) => {
-      const footprint = buildingFootprint(candidate, 'workplace');
-      const envelope = circulationEnvelope(footprint);
-      return (
-        !rectsOverlap(footprint, homeStarterEnvelope) &&
-        !rectsOverlap(envelope, homeStarterFootprint) &&
-        !rectsOverlap(envelope, homeStarterEnvelope)
-      );
-    });
-    if (replacement !== undefined) workplaceOrigin = replacement;
-  }
   const initialChunkMap = new Map(
     enumerateChunkRegion(region).map((chunk) => [chunkKey(chunk), chunk]),
   );
-  // Starter circulation is bootstrapped as part of initial world creation. It
-  // is not an expansion policy: later chunk activation remains explicit.
-  for (const origin of [homeOrigin, workplaceOrigin]) {
-    const footprint = buildingFootprint(origin, origin === homeOrigin ? 'home' : 'workplace');
-    for (const cell of [...footprintCells(footprint), ...circulationEnvelopeCells(footprint)]) {
-      const chunk = chunkCoordinateForPosition(cell, chunkSize);
-      initialChunkMap.set(chunkKey(chunk), chunk);
-    }
-  }
   const initialChunks = [...initialChunkMap.values()].sort(compareChunks);
   if (initialChunks.length > activeChunkLimit) {
     throw new Error('Initial active chunk region exceeds activeChunkLimit.');
@@ -485,14 +404,6 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     'activityDurationTicks',
     config.activityDurationTicks ?? defaults.activityDurationTicks,
   );
-  const housingCapacity = nonNegativeInteger(
-    'housingCapacity',
-    config.housingCapacity ?? requestedCitizenCount,
-  );
-  const workplaceCapacity = nonNegativeInteger(
-    'workplaceCapacity',
-    config.workplaceCapacity ?? requestedCitizenCount,
-  );
   const populationCap = nonNegativeInteger(
     'populationCap',
     config.populationCap ??
@@ -505,6 +416,12 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       config.populationGrowthIntervalTicks ??
       defaults.populationGrowthCadenceTicks,
   );
+  if (config.housingCapacity !== undefined && config.housingCapacity !== 1) {
+    throw new Error('housingCapacity is fixed at 1.');
+  }
+  if (config.workplaceCapacity !== undefined && config.workplaceCapacity !== 4) {
+    throw new Error('workplaceCapacity is fixed at 4.');
+  }
   const startingData = roundData(
     nonNegativeNumber('startingData', config.startingData ?? defaults.startingData),
   );
@@ -525,136 +442,221 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     'developmentCandidateSnapshotLimit',
     config.developmentCandidateSnapshotLimit ?? defaults.developmentCandidateSnapshotLimit,
   );
-  const developmentHomeCapacity = positiveInteger(
-    'developmentHomeCapacity',
-    config.developmentHomeCapacity ?? defaults.developmentHomeCapacity,
-  );
-  const developmentWorkplaceCapacity = positiveInteger(
-    'developmentWorkplaceCapacity',
-    config.developmentWorkplaceCapacity ?? defaults.developmentWorkplaceCapacity,
-  );
-  const developmentCorridorExpansionBudget = Math.min(
-    defaults.developmentCorridorExpansionBudget,
-    positiveInteger(
-      'developmentCorridorExpansionBudget',
-      config.developmentCorridorExpansionBudget ?? defaults.developmentCorridorExpansionBudget,
-    ),
-  );
+  if (config.developmentHomeCapacity !== undefined && config.developmentHomeCapacity !== 1) {
+    throw new Error('developmentHomeCapacity is fixed at 1.');
+  }
+  if (
+    config.developmentWorkplaceCapacity !== undefined &&
+    config.developmentWorkplaceCapacity !== 4
+  ) {
+    throw new Error('developmentWorkplaceCapacity is fixed at 4.');
+  }
+  const developmentHomeCapacity = 1;
+  const developmentWorkplaceCapacity = 4;
   const constructionPhaseDurations = validateConstructionPhaseDurations(
     config.constructionPhaseDurations,
   );
   const random = new SeededRandom(seed);
   const traffic = createTrafficTelemetry({ historyWindowTicks: trafficHistoryWindowTicks });
 
-  const starterFootprintCells = new Set<string>();
-  const starterEnvelopeCells = new Set<string>();
-  const starterEnvelopeStaging = new Map<string, GridPosition[]>();
-
-  const ensureFootprintActiveAndFree = (footprint: Building['footprint']): void => {
-    for (const cell of footprintCells(footprint)) {
-      if (!spatial.isPositionActive(cell)) {
-        throw new Error(
-          `Building footprint cell ${String(cell.x)},${String(cell.y)} is in an inactive chunk.`,
-        );
-      }
-      if (!spatial.isBuildable(cell) || starterEnvelopeCells.has(coordinateKey(cell))) {
-        throw new Error(`Building footprint cell ${String(cell.x)},${String(cell.y)} is occupied.`);
+  const buildings: Building[] = [];
+  const buildingsById = new Map<string, Building>();
+  const initialPopulation =
+    config.initialCitizens !== undefined || config.initialBuildings !== undefined
+      ? (config.initialCitizens?.length ?? 0)
+      : Math.min(requestedCitizenCount, populationCap);
+  if (initialPopulation > populationCap) {
+    throw new Error('Initial citizen fixture exceeds populationCap.');
+  }
+  const activeCells = [...initialChunks].flatMap((chunk) => {
+    const originX = chunk.x * chunkSize;
+    const originY = chunk.y * chunkSize;
+    return Array.from({ length: chunkSize * chunkSize }, (_, index) => ({
+      x: originX + (index % chunkSize),
+      y: originY + Math.floor(index / chunkSize),
+    }));
+  });
+  const centerX = (region.minX + (region.width - 1) / 2) * chunkSize + (chunkSize - 1) / 2;
+  const centerY = (region.minY + (region.height - 1) / 2) * chunkSize + (chunkSize - 1) / 2;
+  activeCells.sort(
+    (left, right) =>
+      Math.abs(left.x - centerX) +
+        Math.abs(left.y - centerY) -
+        (Math.abs(right.x - centerX) + Math.abs(right.y - centerY)) ||
+      comparePositions(left, right),
+  );
+  const initialPosition = activeCells[0] ?? { x: initialMinX, y: initialMinY };
+  const clearanceCells = new Set<string>();
+  const initialBuildingConfigs = config.initialBuildings ?? [];
+  const initialBuildingIds = new Set<string>();
+  const initialFootprintCells = new Set<string>();
+  const initialClearanceCells = new Set<string>();
+  const initialBuildingById = new Map<string, Building>();
+  const capacityForType = (type: BuildingType): number =>
+    type === 'home' ? 1 : type === 'workplace' ? 4 : SERVICE_BUILDING_CAPACITY;
+  const isFixturePositionValid = (position: GridPosition): boolean =>
+    spatial.isPositionActive(position) && !initialFootprintCells.has(coordinateKey(position));
+  for (const fixture of initialBuildingConfigs) {
+    if (initialBuildingIds.has(fixture.id) || fixture.id.length === 0) {
+      throw new Error(`Initial building IDs must be non-empty and unique: ${fixture.id}.`);
+    }
+    initialBuildingIds.add(fixture.id);
+    const footprint = buildingFootprint(fixture.origin, fixture.type);
+    const cells = footprintCells(footprint);
+    const clearance = buildingClearanceZoneCells(footprint);
+    const accessCells = completedBuildingAccessCells(footprint);
+    if (
+      cells.some((cell) => !spatial.isPositionActive(cell)) ||
+      cells.some((cell) => initialFootprintCells.has(coordinateKey(cell))) ||
+      cells.some((cell) => initialClearanceCells.has(coordinateKey(cell))) ||
+      clearance.some((cell) => initialFootprintCells.has(coordinateKey(cell))) ||
+      clearance.some((cell) => initialClearanceCells.has(coordinateKey(cell))) ||
+      clearance.some((cell) => !spatial.isBuildable(cell)) ||
+      accessCells.some((cell) => !spatial.isBuildable(cell))
+    ) {
+      throw new Error(`Initial building ${fixture.id} overlaps or violates active clearance.`);
+    }
+    const entrance = fixture.entrance ?? completedBuildingAccessCells(footprint)[0];
+    if (
+      entrance === undefined ||
+      !isExteriorEntrance(entrance, footprint) ||
+      !spatial.isPositionActive(entrance) ||
+      !isFixturePositionValid(entrance)
+    ) {
+      throw new Error(`Initial building ${fixture.id} requires an active exterior entrance.`);
+    }
+    const building: Building = {
+      id: fixture.id,
+      type: fixture.type,
+      footprint,
+      entrance: copyPosition(entrance),
+      accessCells: accessCells.map(copyPosition),
+      capacity: capacityForType(fixture.type),
+    };
+    buildings.push(building);
+    buildingsById.set(building.id, building);
+    initialBuildingById.set(building.id, building);
+    for (const cell of cells) initialFootprintCells.add(coordinateKey(cell));
+    for (const cell of clearance) initialClearanceCells.add(coordinateKey(cell));
+    for (const cell of clearance) clearanceCells.add(coordinateKey(cell));
+  }
+  spatial.blockMany(
+    [...initialFootprintCells].map((key) => {
+      const separator = key.indexOf(',');
+      return {
+        x: Number(key.slice(0, separator)),
+        y: Number(key.slice(separator + 1)),
+      };
+    }),
+  );
+  // Build one deterministic connected-component map for fixture portal validation.
+  // This avoids running a full path search once per initial citizen.
+  const componentByPosition = new Map<string, number>();
+  let nextComponentId = 0;
+  const componentFor = (start: GridPosition): number => {
+    const startKey = coordinateKey(start);
+    const existing = componentByPosition.get(startKey);
+    if (existing !== undefined) return existing;
+    if (!spatial.isPositionActive(start) || !spatial.isWalkable(start)) return -1;
+    const component = nextComponentId;
+    nextComponentId += 1;
+    const queue: GridPosition[] = [copyPosition(start)];
+    componentByPosition.set(startKey, component);
+    for (const current of queue) {
+      for (const direction of [
+        { x: 1, y: 0 },
+        { x: 0, y: 1 },
+        { x: -1, y: 0 },
+        { x: 0, y: -1 },
+      ]) {
+        const next = { x: current.x + direction.x, y: current.y + direction.y };
+        const key = coordinateKey(next);
+        if (
+          componentByPosition.has(key) ||
+          !spatial.isPositionActive(next) ||
+          !spatial.isWalkable(next)
+        )
+          continue;
+        componentByPosition.set(key, component);
+        queue.push(next);
       }
     }
+    return component;
   };
-
-  const ensureEnvelopeActiveAndFree = (footprint: Building['footprint']): GridPosition[] => {
-    const envelope = circulationEnvelope(footprint);
-    const cells = circulationEnvelopeCells(footprint);
-    for (const cell of cells) {
-      if (!spatial.isPositionActive(cell)) {
-        throw new Error(
-          `Building envelope cell ${String(cell.x)},${String(cell.y)} is in an inactive chunk.`,
-        );
-      }
-      if (
-        starterFootprintCells.has(coordinateKey(cell)) ||
-        starterEnvelopeCells.has(coordinateKey(cell))
-      ) {
-        throw new Error(
-          `Building envelope ${String(envelope.x)},${String(envelope.y)} overlaps starter circulation.`,
-        );
-      }
+  const initialCitizenConfigs: readonly InitialCitizenConfig[] =
+    config.initialCitizens ??
+    (config.initialBuildings !== undefined
+      ? []
+      : Array.from({ length: initialPopulation }, (_, index) => ({
+          id: `citizen-${String(index + 1)}`,
+        })));
+  const initialCitizenIds = new Set<string>();
+  const initialHomeOccupancy = new Map<string, number>();
+  const initialWorkOccupancy = new Map<string, number>();
+  for (const fixture of initialCitizenConfigs) {
+    if (initialCitizenIds.has(fixture.id) || fixture.id.length === 0) {
+      throw new Error(`Initial citizen IDs must be non-empty and unique: ${fixture.id}.`);
     }
-    const staging = stagingCapableEnvelopeCells(footprint, {
-      isActive: (position) => spatial.isPositionActive(position),
-      isWalkable: (position) => spatial.isWalkable(position),
-      isRightOfWay: (position) => spatial.isRightOfWay(position),
-    });
-    if (staging.length < 3) {
+    initialCitizenIds.add(fixture.id);
+    const homeId = fixture.homeBuildingId ?? null;
+    const workId = fixture.workplaceBuildingId ?? null;
+    const home = homeId === null ? null : initialBuildingById.get(homeId);
+    const workplace = workId === null ? null : initialBuildingById.get(workId);
+    if ((homeId !== null && home === undefined) || (workId !== null && workplace === undefined)) {
+      throw new Error(`Initial citizen ${fixture.id} references an unknown building.`);
+    }
+    if ((home === null) !== (workplace === null)) {
       throw new Error(
-        `Building envelope ${String(footprint.x)},${String(footprint.y)} has fewer than three staging cells.`,
+        `Initial citizen ${fixture.id} must have both home and workplace or neither.`,
       );
     }
-    return staging;
-  };
-
-  const createBuilding = (
-    id: string,
-    type: Building['type'],
-    origin: GridPosition,
-    capacity: number,
-  ): Building => {
-    const footprint = buildingFootprint(origin, type);
-    ensureFootprintActiveAndFree(footprint);
-    const staging = ensureEnvelopeActiveAndFree(footprint);
-    const entrance = staging.find((cell) => isExteriorEntrance(cell, footprint));
-    if (entrance === undefined) throw new Error(`Building ${id} has no staging entrance.`);
-    spatial.blockMany(footprintCells(footprint));
-    for (const cell of footprintCells(footprint)) starterFootprintCells.add(coordinateKey(cell));
-    for (const cell of circulationEnvelopeCells(footprint))
-      starterEnvelopeCells.add(coordinateKey(cell));
-    starterEnvelopeStaging.set(id, staging.map(copyPosition));
-    return {
-      id,
-      type,
-      footprint,
-      entrance,
-      capacity,
-    };
-  };
-
-  const homeBuilding = createBuilding('home-1', 'home', homeOrigin, housingCapacity);
-  const workplaceBuilding = createBuilding(
-    'workplace-1',
-    'workplace',
-    workplaceOrigin,
-    workplaceCapacity,
-  );
-  const starterConnector = findTwoCellConnector({
-    startPairs: enumerateAdjacentCorridorPairs(starterEnvelopeStaging.get(homeBuilding.id) ?? []),
-    goalPairs: enumerateAdjacentCorridorPairs(
-      starterEnvelopeStaging.get(workplaceBuilding.id) ?? [],
-    ),
-    isActive: (position) => spatial.isPositionActive(position),
-    isCellAvailable: (position) => spatial.isWalkable(position) || spatial.isRightOfWay(position),
-    maxExpansions: Math.max(developmentCorridorExpansionBudget, pathSearchBudget),
-  });
-  if (starterConnector.status !== 'found') {
-    throw new Error(`Starter circulation connector failed: ${starterConnector.status}.`);
+    if (home !== null && home?.type !== 'home')
+      throw new Error(`Initial citizen ${fixture.id} home must be a home.`);
+    if (workplace !== null && workplace?.type !== 'workplace')
+      throw new Error(`Initial citizen ${fixture.id} workplace must be a workplace.`);
+    if (home !== null)
+      initialHomeOccupancy.set(home.id, (initialHomeOccupancy.get(home.id) ?? 0) + 1);
+    if (workplace !== null)
+      initialWorkOccupancy.set(workplace.id, (initialWorkOccupancy.get(workplace.id) ?? 0) + 1);
+    const position = fixture.position ?? home?.entrance ?? initialPosition;
+    if (!spatial.isPositionActive(position) || initialFootprintCells.has(coordinateKey(position))) {
+      throw new Error(`Initial citizen ${fixture.id} must start on active walkable land.`);
+    }
+    if (home !== null && workplace !== null) {
+      const homeComponents = new Set(
+        (home.accessCells ?? [home.entrance])
+          .map(componentFor)
+          .filter((component) => component >= 0),
+      );
+      const reachable = (workplace.accessCells ?? [workplace.entrance]).some((cell) =>
+        homeComponents.has(componentFor(cell)),
+      );
+      if (!reachable) {
+        throw new Error(`Initial citizen ${fixture.id} home/work route is unreachable.`);
+      }
+    }
   }
-  spatial.markRightOfWayMany(starterConnector.cells);
-  const buildings: Building[] = [homeBuilding, workplaceBuilding];
-  const buildingsById = new Map(buildings.map((building) => [building.id, building]));
-  const initialPopulation = Math.min(
-    requestedCitizenCount,
-    populationCap,
-    homeBuilding.capacity,
-    workplaceBuilding.capacity,
-  );
-  const createCitizenState = (id: string, home: Building, workplace: Building): CitizenState => ({
+  for (const [buildingId, occupied] of initialHomeOccupancy) {
+    if (occupied > (initialBuildingById.get(buildingId)?.capacity ?? 0))
+      throw new Error(`Initial home capacity exceeded for ${buildingId}.`);
+  }
+  for (const [buildingId, occupied] of initialWorkOccupancy) {
+    if (occupied > (initialBuildingById.get(buildingId)?.capacity ?? 0))
+      throw new Error(`Initial workplace capacity exceeded for ${buildingId}.`);
+  }
+  const createCitizenState = (
+    id: string,
+    home: Building | null,
+    workplace: Building | null,
+  ): CitizenState => ({
     id,
-    position: copyPosition(home.entrance),
-    previousPosition: copyPosition(home.entrance),
-    homeBuildingId: home.id,
-    workplaceBuildingId: workplace.id,
-    activity: 'home',
-    activityTicksRemaining: 1 + random.nextInteger(activityDurationTicks),
+    position: copyPosition(home?.entrance ?? initialPosition),
+    previousPosition: copyPosition(home?.entrance ?? initialPosition),
+    homeBuildingId: home?.id ?? null,
+    workplaceBuildingId: workplace?.id ?? null,
+    activity: home?.id && workplace?.id ? 'home' : 'idle',
+    activityTicksRemaining:
+      home?.id && workplace?.id ? 1 + random.nextInteger(activityDurationTicks) : 0,
     departurePending: false,
     route: [],
     routeIndex: 0,
@@ -666,16 +668,36 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     serviceWaitTicks: 0,
     constructionProjectId: null,
     constructionStagingCell: null,
+    constructionCadenceTicks: 0,
     resumeDestinationBuildingId: null,
     resumeActivity: null,
     criticalBuilderProjectId: null,
     criticalBuilderReason: null,
   });
-  const citizens: CitizenState[] = Array.from({ length: initialPopulation }, (_, index) =>
-    createCitizenState(`citizen-${String(index + 1)}`, homeBuilding, workplaceBuilding),
-  );
+  const citizens: CitizenState[] = initialCitizenConfigs.map((fixture) => {
+    const home =
+      fixture.homeBuildingId === undefined || fixture.homeBuildingId === null
+        ? null
+        : (initialBuildingById.get(fixture.homeBuildingId) ?? null);
+    const workplace =
+      fixture.workplaceBuildingId === undefined || fixture.workplaceBuildingId === null
+        ? null
+        : (initialBuildingById.get(fixture.workplaceBuildingId) ?? null);
+    const citizen = createCitizenState(fixture.id, home, workplace);
+    if (fixture.position !== undefined) {
+      citizen.position = copyPosition(fixture.position);
+      citizen.previousPosition = copyPosition(fixture.position);
+    }
+    if (fixture.activity !== undefined) citizen.activity = fixture.activity;
+    return citizen;
+  });
   const citizensById = new Map(citizens.map((citizen) => [citizen.id, citizen]));
-  let nextCitizenSequence = initialPopulation + 1;
+  let nextCitizenSequence = 1;
+  for (const citizen of citizens) {
+    const suffix = Number(citizen.id.replace(/^citizen-/, ''));
+    if (Number.isSafeInteger(suffix) && suffix >= nextCitizenSequence)
+      nextCitizenSequence = suffix + 1;
+  }
 
   let tick = 0;
   let completedTrips = 0;
@@ -695,21 +717,26 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const constructionProjects: ConstructionProjectState[] = [];
   let servicesCorePurchased = false;
   let selectedResearchFocus: ResearchFocus | null = null;
-  const circulationCells = new Set<string>();
   for (const building of buildings) {
-    for (const cell of circulationEnvelopeCells(building.footprint)) {
-      circulationCells.add(coordinateKey(cell));
+    for (const cell of buildingClearanceZoneCells(building.footprint)) {
+      clearanceCells.add(coordinateKey(cell));
     }
   }
-  const isCirculationWalkable = (position: GridPosition): boolean =>
-    spatial.isWalkable(position) &&
-    (spatial.isRightOfWay(position) || circulationCells.has(coordinateKey(position)));
+  const isActiveLandWalkable = (position: GridPosition): boolean => spatial.isWalkable(position);
   let nextConstructionProjectId = 1;
   const nextBuildingSequence: Record<BuildingType, number> = {
-    home: 2,
-    workplace: 2,
+    home: 1,
+    workplace: 1,
     service: 1,
   };
+  for (const building of buildings) {
+    const prefix = `${building.type}-`;
+    if (!building.id.startsWith(prefix)) continue;
+    const suffix = Number(building.id.slice(prefix.length));
+    if (Number.isSafeInteger(suffix) && suffix >= nextBuildingSequence[building.type]) {
+      nextBuildingSequence[building.type] = suffix + 1;
+    }
+  }
   let lastDevelopmentCandidates: DevelopmentCandidate[] = [];
   let developmentEvaluations = 0;
   let developmentCandidatesScored = 0;
@@ -728,10 +755,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     anchorChecksThisTick: 0,
     preliminaryCandidatesRetained: 0,
     finalistsValidatedThisTick: 0,
-    corridorExpansionsThisTick: 0,
     totalAnchorChecks: 0,
     totalFinalistsValidated: 0,
-    totalCorridorExpansions: 0,
   };
   let developmentJobsStarted = 0;
   let developmentJobsSuperseded = 0;
@@ -739,17 +764,11 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   let developmentAnchorChecks = 0;
   let developmentPreliminaryCandidatesRetained = 0;
   let developmentFinalistValidations = 0;
-  let developmentCorridorStateExpansions = 0;
-  let developmentNoConnectorRejections = 0;
+  let developmentUnreachableRejections = 0;
   let developmentAffectedRouteReplans = 0;
   const developmentRoutePreservationChecks = 0;
   let developmentPeakAnchorChecksPerTick = 0;
   let developmentPeakFinalistValidationsPerTick = 0;
-  let developmentPeakCorridorExpansionsPerTick = 0;
-  let rightOfWayCellsAdded = spatial.getRightOfWayCellCount();
-  let rightOfWayRevisionChanges = spatial
-    .getActiveChunks()
-    .reduce((total, chunk) => total + spatial.getRightOfWayRevision(chunk), 0);
   let nextSeedId = 1;
   let demandChunksDirtied = 0;
   let demandChunksEvaluated = 0;
@@ -782,8 +801,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const deadlockPairStates = new Map<string, DeadlockPairState>();
   const demandChunks = new Map<string, DemandChunkState>();
   const demandCitizens = (): readonly {
-    readonly homeBuildingId: string;
-    readonly workplaceBuildingId: string;
+    readonly homeBuildingId: string | null;
+    readonly workplaceBuildingId: string | null;
     readonly serviceNeed: number;
     readonly serviceBuildingId: string | null;
   }[] =>
@@ -921,7 +940,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     if (!spatial.isBuildable(requestedPosition)) {
       return {
         accepted: false,
-        reason: spatial.isRightOfWay(requestedPosition) ? 'right-of-way' : 'occupied',
+        reason: 'occupied',
       };
     }
     if (seeds.some((districtSeed) => positionsEqual(districtSeed.position, requestedPosition))) {
@@ -1015,12 +1034,19 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       population === 0
         ? 1
         : clampUnit(Math.min(housingTotal / population, workplaceTotal / population));
-    const plannedTripDistances = citizens.map((citizen) =>
-      orthogonalTravelDistance(
-        buildingById(citizen.homeBuildingId).entrance,
-        buildingById(citizen.workplaceBuildingId).entrance,
-      ),
-    );
+    const plannedTripDistances = citizens
+      .filter((citizen) => citizen.homeBuildingId !== null && citizen.workplaceBuildingId !== null)
+      .map((citizen) => {
+        const homeId = citizen.homeBuildingId;
+        const workplaceId = citizen.workplaceBuildingId;
+        if (homeId === null || workplaceId === null) {
+          throw new Error(`Citizen ${citizen.id} lacks a planned trip assignment.`);
+        }
+        return orthogonalTravelDistance(
+          buildingById(homeId).entrance,
+          buildingById(workplaceId).entrance,
+        );
+      });
     const plannedAverageTripDuration =
       plannedTripDistances.length === 0
         ? 0
@@ -1217,7 +1243,11 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
 
   const completeTrip = (citizen: CitizenState, destinationId: string): void => {
     const destination = buildingById(destinationId);
-    if (!positionsEqual(citizen.position, destination.entrance)) {
+    if (
+      !(destination.accessCells ?? [destination.entrance]).some((cell) =>
+        positionsEqual(citizen.position, cell),
+      )
+    ) {
       throw new Error(`Citizen ${citizen.id} did not reach the expected entrance.`);
     }
     if (citizen.tripStartedTick === null) {
@@ -1242,7 +1272,11 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     if (destination.type !== 'service') {
       throw new Error(`Citizen ${citizen.id} has a non-service trip destination.`);
     }
-    if (!positionsEqual(citizen.position, destination.entrance)) {
+    if (
+      !(destination.accessCells ?? [destination.entrance]).some((cell) =>
+        positionsEqual(citizen.position, cell),
+      )
+    ) {
       throw new Error(`Citizen ${citizen.id} did not reach service ${destination.id}.`);
     }
     if (citizen.tripStartedTick === null) {
@@ -1305,26 +1339,47 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     citizen: CitizenState,
     activity: CitizenActivity,
     destinationId: string,
+    movingOccupancy: Map<string, string> = new Map(),
   ): boolean => {
     const destination = buildingById(destinationId);
     clearCriticalForCitizen(citizen);
-    const result = findGridPathDetailed(
+    const accessGoals = (destination.accessCells ?? [destination.entrance])
+      .slice()
+      .sort(comparePositions);
+    const sourceBuildingId =
+      activity === 'commuting-to-work'
+        ? citizen.homeBuildingId
+        : activity === 'commuting-home'
+          ? citizen.workplaceBuildingId
+          : activity === 'commuting-to-service'
+            ? citizen.homeBuildingId
+            : null;
+    const sourceBuilding =
+      sourceBuildingId === null ? undefined : buildingsById.get(sourceBuildingId);
+    const sources = (sourceBuilding?.accessCells ?? [citizen.position])
+      .filter((cell) => !movingOccupancy.has(coordinateKey(cell)))
+      .filter((cell) => spatial.isPositionActive(cell) && isActiveLandWalkable(cell))
+      .sort(comparePositions);
+    const result = findGridPathBetweenSets(
       {
         chunkSize,
         activeChunks: spatial.getActiveChunks(),
-        isWalkable: (position) => isCirculationWalkable(position),
+        isWalkable: (position) => isActiveLandWalkable(position),
         maxNodes: pathSearchBudget,
       },
-      citizen.position,
-      destination.entrance,
-      { routeTieProfile: routeTieProfile(citizen.id) },
+      sources,
+      accessGoals,
+      `${citizen.id}|${sourceBuildingId ?? 'physical'}|${destination.id}`,
     );
     pathNodesExpanded += result.nodesExpanded;
     pathChunksTouched += result.chunksTouched;
     if (result.status !== 'found') {
-      throw new Error(
-        `Citizen ${citizen.id} could not route to ${destination.id}: ${result.status}.`,
-      );
+      return false;
+    }
+    if (result.source !== null) {
+      citizen.position = copyPosition(result.source);
+      citizen.previousPosition = copyPosition(result.source);
+      movingOccupancy.set(coordinateKey(result.source), citizen.id);
     }
     citizen.activity = activity;
     citizen.departurePending = false;
@@ -1373,11 +1428,13 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const occupancyByBuilding = (): Map<string, number> => {
     const occupancy = new Map<string, number>();
     for (const citizen of citizens) {
-      occupancy.set(citizen.homeBuildingId, (occupancy.get(citizen.homeBuildingId) ?? 0) + 1);
-      occupancy.set(
-        citizen.workplaceBuildingId,
-        (occupancy.get(citizen.workplaceBuildingId) ?? 0) + 1,
-      );
+      if (citizen.homeBuildingId !== null)
+        occupancy.set(citizen.homeBuildingId, (occupancy.get(citizen.homeBuildingId) ?? 0) + 1);
+      if (citizen.workplaceBuildingId !== null)
+        occupancy.set(
+          citizen.workplaceBuildingId,
+          (occupancy.get(citizen.workplaceBuildingId) ?? 0) + 1,
+        );
       if (citizen.serviceDestinationBuildingId !== null) {
         occupancy.set(
           citizen.serviceDestinationBuildingId,
@@ -1436,7 +1493,6 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         stagingKeys.add(stagingKey);
         if (
           isInsideFootprint(stagingCell, project.footprint) ||
-          !spatial.isRightOfWay(stagingCell) ||
           !spatial.isPositionActive(stagingCell)
         ) {
           throw new Error(`Construction project ${project.id} has invalid staging.`);
@@ -1475,6 +1531,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       }
     }
     const activities: readonly CitizenActivity[] = [
+      'idle',
       'home',
       'commuting-to-work',
       'work',
@@ -1488,11 +1545,14 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     for (const citizen of citizens) {
       if (citizenIds.has(citizen.id)) throw new Error(`Duplicate citizen id ${citizen.id}.`);
       citizenIds.add(citizen.id);
-      const home = buildingById(citizen.homeBuildingId);
-      const workplace = buildingById(citizen.workplaceBuildingId);
-      if (home.type !== 'home') throw new Error(`Citizen ${citizen.id} has an invalid home.`);
-      if (workplace.type !== 'workplace') {
-        throw new Error(`Citizen ${citizen.id} has an invalid workplace.`);
+      if (citizen.homeBuildingId !== null) {
+        const home = buildingById(citizen.homeBuildingId);
+        if (home.type !== 'home') throw new Error(`Citizen ${citizen.id} has an invalid home.`);
+      }
+      if (citizen.workplaceBuildingId !== null) {
+        const workplace = buildingById(citizen.workplaceBuildingId);
+        if (workplace.type !== 'workplace')
+          throw new Error(`Citizen ${citizen.id} has an invalid workplace.`);
       }
       if (!activities.includes(citizen.activity)) {
         throw new Error(`Citizen ${citizen.id} has an invalid activity.`);
@@ -1536,7 +1596,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         }
         if (
           citizen.activity === 'service' &&
-          !positionsEqual(citizen.position, serviceBuilding.entrance)
+          !(serviceBuilding.accessCells ?? [serviceBuilding.entrance]).some((cell) =>
+            positionsEqual(citizen.position, cell),
+          )
         ) {
           throw new Error(`Citizen ${citizen.id} is using a service away from its entrance.`);
         }
@@ -1570,9 +1632,6 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         const constructionStagingCell = citizen.constructionStagingCell;
         if (constructionStagingCell === null) {
           throw new Error(`Citizen ${citizen.id} has a project without a staging cell.`);
-        }
-        if (citizen.resumeDestinationBuildingId === null || citizen.resumeActivity === null) {
-          throw new Error(`Citizen ${citizen.id} has no saved construction resume destination.`);
         }
         if (
           !constructionProject?.stagingCells.some((cell) =>
@@ -1620,7 +1679,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
           throw new Error(`Citizen ${citizen.id} is not at its route index.`);
         }
       }
-      if (!spatial.isPositionActive(citizen.position) || !isCirculationWalkable(citizen.position)) {
+      if (!spatial.isPositionActive(citizen.position) || !isActiveLandWalkable(citizen.position)) {
         throw new Error(`Citizen ${citizen.id} is outside active walkable space.`);
       }
       if (blockedCells.has(coordinateKey(citizen.position))) {
@@ -1628,7 +1687,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       }
       if (
         !spatial.isPositionActive(citizen.previousPosition) ||
-        !isCirculationWalkable(citizen.previousPosition) ||
+        !isActiveLandWalkable(citizen.previousPosition) ||
         blockedCells.has(coordinateKey(citizen.previousPosition))
       ) {
         throw new Error(`Citizen ${citizen.id} has an invalid previous position.`);
@@ -1645,7 +1704,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       for (let index = 0; index < citizen.route.length; index += 1) {
         const position = citizen.route[index];
         if (position === undefined) throw new Error(`Citizen ${citizen.id} route is sparse.`);
-        if (!spatial.isPositionActive(position) || !isCirculationWalkable(position)) {
+        if (!spatial.isPositionActive(position) || !isActiveLandWalkable(position)) {
           throw new Error(`Citizen ${citizen.id} route leaves walkable space.`);
         }
         if (blockedCells.has(coordinateKey(position))) {
@@ -1739,18 +1798,17 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     blocked: ReadonlySet<string>,
   ): boolean => {
     if (blocked.has(coordinateKey(start)) || blocked.has(coordinateKey(goal))) return false;
-    if (!isCirculationWalkable(start) || !isCirculationWalkable(goal)) return false;
+    if (!isActiveLandWalkable(start) || !isActiveLandWalkable(goal)) return false;
     const result = findGridPathDetailed(
       {
         chunkSize,
         activeChunks: spatial.getActiveChunks(),
         isWalkable: (position) =>
-          isCirculationWalkable(position) && !blocked.has(coordinateKey(position)),
+          isActiveLandWalkable(position) && !blocked.has(coordinateKey(position)),
         maxNodes: pathSearchBudget,
       },
       start,
       goal,
-      { routeTieProfile: 0 },
     );
     pathNodesExpanded += result.nodesExpanded;
     pathChunksTouched += result.chunksTouched;
@@ -1760,21 +1818,14 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   const pairHasRoute = (home: Building, workplace: Building): boolean =>
     pathExistsWithBlockedCells(home.entrance, workplace.entrance, new Set<string>());
 
-  type CandidateValidation =
-    | {
-        readonly status: 'valid';
-        readonly connector: readonly GridPosition[];
-        readonly expansions: number;
-      }
-    | { readonly status: 'no-connector'; readonly expansions: number }
-    | { readonly status: 'budget-exhausted'; readonly expansions: number };
+  type CandidateValidation = { readonly status: 'valid' } | { readonly status: 'unreachable' };
 
   const existingProjectFootprints = (): readonly Building['footprint'][] => [
     ...buildings.map((building) => building.footprint),
     ...constructionProjects.map((project) => project.footprint),
   ];
 
-  const existingBuildingCirculationCells = (): ReadonlySet<string> => new Set(circulationCells);
+  const existingClearanceCells = (): ReadonlySet<string> => new Set(clearanceCells);
 
   const movingExclusiveCells = (): ReadonlySet<string> => {
     const cells = new Set<string>();
@@ -1843,8 +1894,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
   ): DevelopmentCandidate | undefined => {
     if (buildingType === 'service' && !servicesCorePurchased) return undefined;
     const footprint = buildingFootprint(anchor, buildingType);
-    const envelope = circulationEnvelope(footprint);
-    const reservedCirculation = existingBuildingCirculationCells();
+    const clearanceZone = buildingClearanceZone(footprint);
+    const reservedClearance = existingClearanceCells();
     const protectedFootprints = existingProjectFootprints();
     const protectedPositions = movingExclusiveCells();
     const footprintCellsForCandidate = footprintCells(footprint);
@@ -1853,7 +1904,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       footprintCellsForCandidate.some(
         (cell) =>
           !spatial.isBuildable(cell) ||
-          reservedCirculation.has(coordinateKey(cell)) ||
+          reservedClearance.has(coordinateKey(cell)) ||
           protectedPositions.has(coordinateKey(cell)) ||
           protectedFootprints.some((protectedFootprint) =>
             isInsideFootprint(cell, protectedFootprint),
@@ -1863,25 +1914,25 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       developmentFootprintsRejected += 1;
       return undefined;
     }
-    const envelopeCellsForCandidate = circulationEnvelopeCells(footprint);
+    const clearanceCellsForCandidate = buildingClearanceZoneCells(footprint);
     if (
-      envelopeCellsForCandidate.some(
+      clearanceCellsForCandidate.some(
         (cell) =>
           !spatial.isPositionActive(cell) ||
+          !spatial.isBuildable(cell) ||
           protectedFootprints.some((protectedFootprint) =>
             isInsideFootprint(cell, protectedFootprint),
           ) ||
-          reservedCirculation.has(coordinateKey(cell)) ||
+          reservedClearance.has(coordinateKey(cell)) ||
           protectedPositions.has(coordinateKey(cell)),
       )
     ) {
       developmentFootprintsRejected += 1;
       return undefined;
     }
-    const stagingCandidates = stagingCapableEnvelopeCells(footprint, {
+    const stagingCandidates = stagingCapableClearanceZoneCells(footprint, {
       isActive: (position) => spatial.isPositionActive(position),
       isWalkable: (position) => spatial.isWalkable(position),
-      isRightOfWay: (position) => spatial.isRightOfWay(position),
     });
     if (stagingCandidates.length < 3) {
       developmentEntrancesRejected += 1;
@@ -1893,7 +1944,6 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       entrance,
       isActive: (position) => spatial.isPositionActive(position),
       isWalkable: (position) => spatial.isWalkable(position),
-      isRightOfWay: (position) => spatial.isRightOfWay(position),
       count: 3,
     });
     if (staging.length !== 3) {
@@ -1905,16 +1955,19 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     const complementaryUse = complementaryUseFactor(anchor, buildingType);
     const sameUseSaturation = localSameUseSaturation(anchor, buildingType, occupancy);
     const constructionCost = (footprint.width * footprint.height) / 25;
-    let nearestRowDistance = Number.POSITIVE_INFINITY;
+    let nearestBuildingDistance = Number.POSITIVE_INFINITY;
     for (const cell of footprintCellsForCandidate) {
       for (const building of buildings) {
-        nearestRowDistance = Math.min(nearestRowDistance, squareDistance(cell, building.entrance));
+        nearestBuildingDistance = Math.min(
+          nearestBuildingDistance,
+          squareDistance(cell, building.entrance),
+        );
       }
     }
     const entranceAccessibility =
-      nearestRowDistance === Number.POSITIVE_INFINITY
+      nearestBuildingDistance === Number.POSITIVE_INFINITY
         ? 0
-        : normalizedDistance(nearestRowDistance, Math.max(1, demandInfluenceRadius * 2));
+        : normalizedDistance(nearestBuildingDistance, Math.max(1, demandInfluenceRadius * 2));
     const accessImprovement = expectedAccessImprovement(entrance, buildingType);
     const score = scoreDevelopmentCandidate({
       buildingType,
@@ -1944,49 +1997,47 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       sameUseSaturation: roundData(sameUseSaturation),
       constructionCost: roundData(constructionCost),
       spatialFactor: score.spatialFactor,
-      envelope: { ...envelope },
+      clearanceZone: { ...clearanceZone },
       stagingCells: staging.map(copyPosition),
     };
   };
 
-  const validateCandidateConnector = (
-    candidate: DevelopmentCandidate,
-    maxExpansions: number,
-  ): CandidateValidation => {
-    if (maxExpansions < 1) return { status: 'budget-exhausted', expansions: 0 };
-    const candidateFootprint = new Set(footprintCells(candidate.footprint).map(coordinateKey));
-    const movingCells = movingExclusiveCells();
-    const sourceStaging: GridPosition[] = [];
-    for (const building of buildings) {
-      sourceStaging.push(
-        ...stagingCapableEnvelopeCells(building.footprint, {
-          isActive: (position) => spatial.isPositionActive(position),
-          isWalkable: (position) => spatial.isWalkable(position),
-          isRightOfWay: (position) => spatial.isRightOfWay(position),
-        }),
+  const validateCandidateReachability = (candidate: DevelopmentCandidate): CandidateValidation => {
+    const goals = candidate.stagingCells ?? [];
+    const eligibleCitizens = citizens
+      .filter((citizen) => {
+        if (citizen.activity === 'idle') return true;
+        if (citizen.activity === 'home' && citizen.homeBuildingId !== null) return true;
+        if (citizen.activity === 'work' && citizen.workplaceBuildingId !== null) return true;
+        return false;
+      })
+      .sort(compareCitizenIds);
+    for (const citizen of eligibleCitizens) {
+      const sourceBuildingId =
+        citizen.activity === 'home'
+          ? citizen.homeBuildingId
+          : citizen.activity === 'work'
+            ? citizen.workplaceBuildingId
+            : null;
+      const sourceBuilding =
+        sourceBuildingId === null ? undefined : buildingsById.get(sourceBuildingId);
+      const sources = sourceBuilding?.accessCells ?? [citizen.position];
+      const result = findGridPathBetweenSets(
+        {
+          chunkSize,
+          activeChunks: spatial.getActiveChunks(),
+          isWalkable: (position) => isActiveLandWalkable(position),
+          maxNodes: pathSearchBudget,
+        },
+        sources,
+        goals,
+        `${candidate.buildingType}|${String(candidate.anchor.x)},${String(candidate.anchor.y)}|${citizen.id}`,
       );
+      pathNodesExpanded += result.nodesExpanded;
+      pathChunksTouched += result.chunksTouched;
+      if (result.status === 'found') return { status: 'valid' };
     }
-    const targetStaging = candidate.stagingCells?.map(copyPosition) ?? [];
-    const result = findTwoCellConnector({
-      startPairs: enumerateAdjacentCorridorPairs(sourceStaging),
-      goalPairs: enumerateAdjacentCorridorPairs(targetStaging),
-      isActive: (position) => spatial.isPositionActive(position),
-      isCellAvailable: (position) =>
-        !candidateFootprint.has(coordinateKey(position)) &&
-        !movingCells.has(coordinateKey(position)) &&
-        spatial.isWalkable(position),
-      maxExpansions,
-    });
-    developmentCorridorStateExpansions += result.expansions;
-    if (result.status === 'budget-exhausted') {
-      return { status: 'budget-exhausted', expansions: result.expansions };
-    }
-    if (result.status !== 'found') return { status: 'no-connector', expansions: result.expansions };
-    return {
-      status: 'valid',
-      connector: result.cells.map(copyPosition),
-      expansions: result.expansions,
-    };
+    return { status: 'unreachable' };
   };
 
   const replanAffectedRoutes = (footprint: Building['footprint']): void => {
@@ -2036,10 +2087,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     }
     const reserved = reservedConstructionStagingCells();
     const capableCells = new Set(
-      stagingCapableEnvelopeCells(candidate.footprint, {
+      stagingCapableClearanceZoneCells(candidate.footprint, {
         isActive: (position) => spatial.isPositionActive(position),
         isWalkable: (position) => spatial.isWalkable(position),
-        isRightOfWay: (position) => spatial.isRightOfWay(position),
       }).map(coordinateKey),
     );
     const keys = new Set<string>();
@@ -2058,28 +2108,44 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     return candidate.stagingCells.map(copyPosition);
   };
 
-  const startConstruction = (
-    candidate: DevelopmentCandidate,
-    connector: readonly GridPosition[],
-  ): boolean => {
+  const compactConsumedRoutePrefixes = (): void => {
+    for (const citizen of sortedCitizens()) {
+      if (citizen.routeIndex === 0) continue;
+      const current = citizen.route[citizen.routeIndex];
+      if (current === undefined || !positionsEqual(current, citizen.position)) {
+        throw new Error(`Citizen ${citizen.id} is not at its route index before construction.`);
+      }
+      citizen.route = citizen.route.slice(citizen.routeIndex).map(copyPosition);
+      citizen.routeIndex = 0;
+    }
+  };
+
+  const startConstruction = (candidate: DevelopmentCandidate): boolean => {
     const stagingCells = selectConstructionStaging(candidate);
     if (stagingCells === undefined) {
       developmentEntrancesRejected += 1;
       return false;
     }
     const footprint = footprintCells(candidate.footprint);
-    const rowCells = [...connector, ...stagingCells];
-    for (const cell of rowCells) {
+    const footprintKeys = new Set(footprint.map(coordinateKey));
+    for (const cell of stagingCells) {
       if (!spatial.isPositionActive(cell) || !spatial.isWalkable(cell)) return false;
       if (isInsideFootprint(cell, candidate.footprint)) return false;
     }
+    if (
+      sortedCitizens().some(
+        (citizen) =>
+          footprintKeys.has(coordinateKey(citizen.position)) ||
+          footprintKeys.has(coordinateKey(citizen.previousPosition)),
+      )
+    ) {
+      developmentFootprintsRejected += 1;
+      return false;
+    }
+    compactConsumedRoutePrefixes();
     spatial.blockMany(footprint);
-    const newRightOfWayCells = rowCells.filter((cell) => !spatial.isRightOfWay(cell));
-    spatial.markRightOfWayMany(rowCells);
-    rightOfWayCellsAdded += newRightOfWayCells.length;
-    rightOfWayRevisionChanges += newRightOfWayCells.length;
-    for (const cell of circulationEnvelopeCells(candidate.footprint)) {
-      circulationCells.add(coordinateKey(cell));
+    for (const cell of buildingClearanceZoneCells(candidate.footprint)) {
+      clearanceCells.add(coordinateKey(cell));
     }
     clearAllDeadlockPairs();
     const project: ConstructionProjectState = {
@@ -2105,8 +2171,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       seedInfluence: candidate.seedInfluence,
       spatialFactor: candidate.spatialFactor,
       expectedAccessImprovement: candidate.expectedAccessImprovement,
-      envelope: circulationEnvelope(candidate.footprint),
-      connector: connector.map(copyPosition),
+      clearanceZone: buildingClearanceZone(candidate.footprint),
       stagingCells: stagingCells.map(copyPosition),
     };
     constructionProjects.push(project);
@@ -2117,7 +2182,10 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     return true;
   };
 
-  const completeConstructionProject = (project: ConstructionProjectState): void => {
+  const completeConstructionProject = (
+    project: ConstructionProjectState,
+    workersAtCompletion: readonly CitizenState[],
+  ): void => {
     for (const cell of footprintCells(project.footprint)) {
       if (!spatial.isPositionActive(cell)) {
         throw new Error(`Construction project ${project.id} leaves active space.`);
@@ -2129,17 +2197,92 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       type: project.buildingType,
       footprint: { ...project.footprint },
       entrance: copyPosition(project.entrance),
+      accessCells: completedBuildingAccessCells(project.footprint).map(copyPosition),
       capacity: project.capacity,
     };
     if (buildingsById.has(building.id))
       throw new Error(`Duplicate constructed building ${building.id}.`);
     buildings.push(building);
     buildingsById.set(building.id, building);
-    for (const cell of circulationEnvelopeCells(building.footprint)) {
-      circulationCells.add(coordinateKey(cell));
+    for (const cell of buildingClearanceZoneCells(building.footprint)) {
+      clearanceCells.add(coordinateKey(cell));
     }
     nextBuildingSequence[project.buildingType] = sequence + 1;
     constructionProjectsCompleted += 1;
+    const workersById = [...workersAtCompletion].sort(compareCitizenIds);
+    const releaseOccupancy = snapshotMovingOccupancy();
+    const releaseWorkers = (): void => {
+      for (const worker of workersById) releaseConstructionWorker(worker, releaseOccupancy);
+    };
+    releaseWorkers();
+
+    if (project.buildingType === 'home') {
+      // Assignment is an authoritative reference transition only. Preserve the
+      // worker's physical position; never move a citizen to the new home.
+      const unassigned = sortedCitizens().find((citizen) => citizen.homeBuildingId === null);
+      if (unassigned !== undefined) {
+        unassigned.homeBuildingId = building.id;
+        unassigned.activity = 'idle';
+        unassigned.activityTicksRemaining = 0;
+        unassigned.departurePending = false;
+        unassigned.route = [];
+        unassigned.routeIndex = 0;
+        unassigned.constructionCadenceTicks = 0;
+      }
+    } else if (project.buildingType === 'workplace') {
+      const candidate = workersById.find(
+        (citizen) =>
+          citizen.homeBuildingId !== null &&
+          citizen.workplaceBuildingId === null &&
+          project.stagingCells.some((cell) => positionsEqual(cell, citizen.position)),
+      );
+      if (candidate !== undefined) {
+        // Set both references as one transition. The worker remains at its
+        // physical staging cell; it never snaps back to its home. Ordinary
+        // work is entered immediately only on a valid workplace access cell.
+        const homeBuildingId = candidate.homeBuildingId;
+        candidate.homeBuildingId = homeBuildingId;
+        candidate.workplaceBuildingId = building.id;
+        candidate.departurePending = false;
+        candidate.tripStartedTick = null;
+        candidate.waitTicks = 0;
+        candidate.constructionCadenceTicks = 0;
+        const accessCells = (building.accessCells ?? [building.entrance]).map(copyPosition);
+        const isAtAccess = accessCells.some((cell) => positionsEqual(candidate.position, cell));
+        if (isAtAccess) {
+          candidate.activity = 'work';
+          candidate.activityTicksRemaining = activityDurationTicks;
+          candidate.route = [];
+          candidate.routeIndex = 0;
+        } else {
+          const route = findGridPathBetweenSets(
+            {
+              chunkSize,
+              activeChunks: spatial.getActiveChunks(),
+              isWalkable: (position) => isActiveLandWalkable(position),
+              maxNodes: pathSearchBudget,
+            },
+            [candidate.position],
+            accessCells,
+            `${candidate.id}|physical-workplace|${building.id}`,
+          );
+          pathNodesExpanded += route.nodesExpanded;
+          pathChunksTouched += route.chunksTouched;
+          if (route.status === 'found' && route.path.length > 1) {
+            candidate.activity = 'commuting-to-work';
+            candidate.activityTicksRemaining = 0;
+            candidate.route = route.path.map(copyPosition);
+            candidate.routeIndex = 0;
+            candidate.tripStartedTick = tick;
+          } else {
+            candidate.activity = 'idle';
+            candidate.activityTicksRemaining = 0;
+            candidate.route = [];
+            candidate.routeIndex = 0;
+          }
+        }
+      }
+    }
     developmentStateVersion += 1;
     markAllDemandChunksDirty();
   };
@@ -2228,14 +2371,31 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     constructionCriticalPromotions += 1;
   };
 
-  const releaseConstructionWorker = (citizen: CitizenState): void => {
+  const releaseConstructionWorker = (
+    citizen: CitizenState,
+    movingOccupancy: Map<string, string> = new Map(),
+  ): void => {
     const destinationId = citizen.resumeDestinationBuildingId;
     const resumeActivity = citizen.resumeActivity;
     if (destinationId === null || resumeActivity === null) {
-      throw new Error(`Construction worker ${citizen.id} has no saved resume destination.`);
+      citizen.constructionProjectId = null;
+      citizen.constructionStagingCell = null;
+      citizen.constructionCadenceTicks = 0;
+      citizen.resumeDestinationBuildingId = null;
+      citizen.resumeActivity = null;
+      citizen.activity = 'idle';
+      citizen.departurePending = false;
+      citizen.route = [];
+      citizen.routeIndex = 0;
+      citizen.waitTicks = 0;
+      citizen.tripStartedTick = null;
+      clearCriticalForCitizen(citizen);
+      constructionWorkerReleases += 1;
+      return;
     }
     citizen.constructionProjectId = null;
     citizen.constructionStagingCell = null;
+    citizen.constructionCadenceTicks = 0;
     citizen.resumeDestinationBuildingId = null;
     citizen.resumeActivity = null;
     citizen.route = [];
@@ -2244,7 +2404,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     citizen.tripStartedTick = null;
     clearCriticalForCitizen(citizen);
     constructionWorkerReleases += 1;
-    startTrip(citizen, resumeActivity, destinationId);
+    startTrip(citizen, resumeActivity, destinationId, movingOccupancy);
   };
 
   const retainConstructionWorkers = (
@@ -2276,7 +2436,14 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (project.paused) constructionPausedProjectTicks += 1;
 
       const remainingLabor = project.phaseLaborRequired - project.phaseLaborCompleted;
-      const labor = Math.min(remainingLabor, constructingWorkers.length);
+      let labor = 0;
+      for (const worker of constructingWorkers) {
+        worker.constructionCadenceTicks += 1;
+        const eligible =
+          worker.homeBuildingId !== null || worker.constructionCadenceTicks % 2 === 0;
+        if (eligible) labor += 1;
+      }
+      labor = Math.min(remainingLabor, labor);
       if (labor > 0) {
         project.phaseLaborCompleted += labor;
         constructionLaborUnits += labor;
@@ -2301,8 +2468,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       project.ticksSinceLastLabor = 0;
       const nextPhase = nextConstructionPhase(project.phase);
       if (nextPhase === undefined) {
-        for (const worker of constructionWorkers(project.id)) releaseConstructionWorker(worker);
-        completeConstructionProject(project);
+        completeConstructionProject(project, constructionWorkers(project.id));
         completedProjectIds.push(project.id);
         continue;
       }
@@ -2319,6 +2485,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       project.phaseTicksRemaining = constructionPhaseDurations[nextPhase];
       project.phaseTicksElapsed = 0;
       retainConstructionWorkers(project, project.phaseWorkerCap);
+      for (const worker of constructionWorkers(project.id)) worker.constructionCadenceTicks = 0;
       project.paused = constructionWorkers(project.id).every(
         (worker) => worker.activity !== 'constructing',
       );
@@ -2491,11 +2658,22 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       anchorChecksThisTick: job.anchorChecksThisTick,
       preliminaryCandidatesRetained: job.preliminary.length,
       finalistsValidatedThisTick: job.finalistsValidatedThisTick,
-      corridorExpansionsThisTick: job.corridorExpansionsThisTick,
       totalAnchorChecks: job.totalAnchorChecks,
       totalFinalistsValidated: job.totalFinalistsValidated,
-      totalCorridorExpansions: job.totalCorridorExpansions,
     };
+  };
+
+  const gatherManualData = ():
+    | { readonly accepted: true; readonly amount: 1 }
+    | { readonly accepted: false; readonly reason: 'unavailable' } => {
+    if (
+      seeds.some((seed) => seed.kind === 'living') &&
+      seeds.some((seed) => seed.kind === 'working')
+    ) {
+      return { accepted: false, reason: 'unavailable' };
+    }
+    data = roundData(data + 1);
+    return { accepted: true, amount: 1 };
   };
 
   const finishDevelopmentJob = (stage: DevelopmentJobStage): void => {
@@ -2510,10 +2688,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         anchorChecksThisTick: developmentJob.anchorChecksThisTick,
         preliminaryCandidatesRetained: developmentJob.preliminary.length,
         finalistsValidatedThisTick: developmentJob.finalistsValidatedThisTick,
-        corridorExpansionsThisTick: developmentJob.corridorExpansionsThisTick,
         totalAnchorChecks: developmentJob.totalAnchorChecks,
         totalFinalistsValidated: developmentJob.totalFinalistsValidated,
-        totalCorridorExpansions: developmentJob.totalCorridorExpansions,
       };
     }
     developmentJob = undefined;
@@ -2543,10 +2719,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       finalistIndex: 0,
       totalAnchorChecks: 0,
       totalFinalistsValidated: 0,
-      totalCorridorExpansions: 0,
       anchorChecksThisTick: 0,
       finalistsValidatedThisTick: 0,
-      corridorExpansionsThisTick: 0,
     };
     developmentJobsStarted += 1;
   };
@@ -2566,7 +2740,6 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     if (job === undefined || constructionProjects.length > 0) return;
     job.anchorChecksThisTick = 0;
     job.finalistsValidatedThisTick = 0;
-    job.corridorExpansionsThisTick = 0;
     const occupancy = occupancyByBuilding();
     while (
       job.stage === 'enumerating' &&
@@ -2585,7 +2758,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
             footprint: { ...candidate.footprint },
             entrance: copyPosition(candidate.entrance),
             primaryReason: { ...candidate.primaryReason },
-            ...(candidate.envelope === undefined ? {} : { envelope: { ...candidate.envelope } }),
+            ...(candidate.clearanceZone === undefined
+              ? {}
+              : { clearanceZone: { ...candidate.clearanceZone } }),
             ...(candidate.stagingCells === undefined
               ? {}
               : { stagingCells: candidate.stagingCells.map(copyPosition) }),
@@ -2622,35 +2797,24 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     }
     while (
       job.stage === 'validating' &&
-      job.finalistsValidatedThisTick < defaults.developmentFinalistValidationBudget &&
-      job.corridorExpansionsThisTick < developmentCorridorExpansionBudget
+      job.finalistsValidatedThisTick < defaults.developmentFinalistValidationBudget
     ) {
       const candidate = job.preliminary[job.finalistIndex];
       if (candidate === undefined) {
         finishDevelopmentJob('complete');
         break;
       }
-      const remainingExpansions =
-        developmentCorridorExpansionBudget - job.corridorExpansionsThisTick;
-      const validation = validateCandidateConnector(candidate, remainingExpansions);
-      job.corridorExpansionsThisTick += validation.expansions;
-      job.totalCorridorExpansions += validation.expansions;
-      if (validation.status === 'budget-exhausted') {
-        developmentFinalistValidations += 1;
-        job.finalistsValidatedThisTick += 1;
-        job.totalFinalistsValidated += 1;
-        break;
-      }
+      const validation = validateCandidateReachability(candidate);
       job.finalistIndex += 1;
       job.finalistsValidatedThisTick += 1;
       job.totalFinalistsValidated += 1;
       developmentFinalistValidations += 1;
-      if (validation.status === 'no-connector') {
-        developmentNoConnectorRejections += 1;
+      if (validation.status === 'unreachable') {
+        developmentUnreachableRejections += 1;
         continue;
       }
       const before = constructionProjectsStarted;
-      startConstruction(candidate, validation.connector);
+      startConstruction(candidate);
       if (constructionProjectsStarted !== before) {
         const index = lastDevelopmentCandidates.findIndex(
           (entry) =>
@@ -2663,7 +2827,6 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
           if (visible !== undefined) {
             lastDevelopmentCandidates[index] = {
               ...visible,
-              connector: validation.connector.map(copyPosition),
             };
           }
         }
@@ -2678,10 +2841,6 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     developmentPeakFinalistValidationsPerTick = Math.max(
       developmentPeakFinalistValidationsPerTick,
       job.finalistsValidatedThisTick,
-    );
-    developmentPeakCorridorExpansionsPerTick = Math.max(
-      developmentPeakCorridorExpansionsPerTick,
-      job.corridorExpansionsThisTick,
     );
     if (developmentJob !== undefined) {
       lastDevelopmentProgress = snapshotDevelopmentJob();
@@ -2741,12 +2900,11 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         // Endpoints stay uniquely assigned; transit may cross another
         // staging endpoint so a later worker is not made unreachable. The
         // movement resolver still blocks current occupants at each tick.
-        isWalkable: (position) => isCirculationWalkable(position),
+        isWalkable: (position) => isActiveLandWalkable(position),
         maxNodes: pathSearchBudget,
       },
       citizen.position,
       stagingCell,
-      { routeTieProfile: routeTieProfile(citizen.id) },
     );
     pathNodesExpanded += result.nodesExpanded;
     pathChunksTouched += result.chunksTouched;
@@ -2760,9 +2918,11 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         citizen.constructionProjectId === null &&
         citizen.constructionStagingCell === null &&
         citizen.resumeDestinationBuildingId === null &&
-        (citizen.activity === 'home' || citizen.activity === 'work') &&
-        citizen.departurePending &&
-        citizen.activityTicksRemaining === 0,
+        (citizen.activity === 'home' ||
+          citizen.activity === 'work' ||
+          citizen.activity === 'idle') &&
+        (citizen.activity === 'idle' ||
+          (citizen.departurePending && citizen.activityTicksRemaining === 0)),
     );
     if (eligibleCitizens.length === 0) return;
 
@@ -2816,9 +2976,15 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       if (movingOccupancy.has(originKey)) continue;
       citizen.constructionProjectId = project.id;
       citizen.constructionStagingCell = copyPosition(stagingCell);
+      citizen.constructionCadenceTicks = 0;
       citizen.resumeDestinationBuildingId =
         citizen.activity === 'home' ? citizen.workplaceBuildingId : citizen.homeBuildingId;
-      citizen.resumeActivity = citizen.activity === 'home' ? 'commuting-to-work' : 'commuting-home';
+      citizen.resumeActivity =
+        citizen.activity === 'home'
+          ? 'commuting-to-work'
+          : citizen.activity === 'work'
+            ? 'commuting-home'
+            : null;
       citizen.activity = 'commuting-to-construction';
       citizen.departurePending = false;
       citizen.route = offer.route.map(copyPosition);
@@ -2848,16 +3014,18 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     for (const building of serviceBuildings) {
       const occupied = occupancy.get(building.id) ?? 0;
       if (occupied >= building.capacity) continue;
-      const route = findGridPathDetailed(
+      const sourceBuilding =
+        citizen.homeBuildingId === null ? undefined : buildingsById.get(citizen.homeBuildingId);
+      const route = findGridPathBetweenSets(
         {
           chunkSize,
           activeChunks: spatial.getActiveChunks(),
-          isWalkable: (position) => isCirculationWalkable(position),
+          isWalkable: (position) => isActiveLandWalkable(position),
           maxNodes: pathSearchBudget,
         },
-        citizen.position,
-        building.entrance,
-        { routeTieProfile: routeTieProfile(citizen.id) },
+        sourceBuilding?.accessCells ?? [citizen.position],
+        building.accessCells ?? [building.entrance],
+        `${citizen.id}|${citizen.homeBuildingId ?? 'physical'}|${building.id}`,
       );
       pathNodesExpanded += route.nodesExpanded;
       pathChunksTouched += route.chunksTouched;
@@ -2916,8 +3084,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         if (service !== undefined) {
           citizen.serviceDestinationBuildingId = service.building.id;
           citizen.serviceDestinationReason = service.primaryReason;
-          if (startTrip(citizen, 'commuting-to-service', service.building.id)) {
-            movingOccupancy.set(originKey, citizen.id);
+          if (!startTrip(citizen, 'commuting-to-service', service.building.id, movingOccupancy)) {
+            citizen.serviceDestinationBuildingId = null;
+            citizen.serviceDestinationReason = null;
           }
           continue;
         }
@@ -2929,9 +3098,12 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         citizen.activity === 'home' ? 'commuting-to-work' : 'commuting-home';
       const destinationId =
         activity === 'commuting-to-work' ? citizen.workplaceBuildingId : citizen.homeBuildingId;
-      if (startTrip(citizen, activity, destinationId)) {
-        movingOccupancy.set(originKey, citizen.id);
+      if (destinationId === null) {
+        citizen.activity = 'idle';
+        citizen.departurePending = false;
+        continue;
       }
+      startTrip(citizen, activity, destinationId, movingOccupancy);
     }
   };
 
@@ -2978,9 +3150,8 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       currentRoute: citizen.route,
       currentRouteIndex: citizen.routeIndex,
       temporaryBlocked,
-      isWalkable: (position) => isCirculationWalkable(position),
+      isWalkable: (position) => isActiveLandWalkable(position),
       maxNodes: pathSearchBudget,
-      routeTieProfile: routeTieProfile(citizen.id),
       recovery,
       orthogonalQueueNeighbors: (position) => {
         let neighbors = 0;
@@ -3075,7 +3246,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
     const proposals = buildMovementProposals({
       candidates,
       isActive: (position) => spatial.isPositionActive(position),
-      isWalkable: (position) => isCirculationWalkable(position),
+      isWalkable: (position) => isActiveLandWalkable(position),
     });
     movementProposals += proposals.length;
     const directSwapPairs = findDirectMovementSwapPairs(proposals);
@@ -3196,9 +3367,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         occupancyRevision: spatial.getChunkRevision(chunk),
         demandRevision: state.revision,
         occupancyBufferAllocated: spatial.hasOccupancyBuffer(chunk),
-        rightOfWayRevision: spatial.getRightOfWayRevision(chunk),
         staticTopologyRevision: spatial.getStaticTopologyRevision(chunk),
-        rightOfWayBufferAllocated: spatial.hasRightOfWayBuffer(chunk),
       });
     }
     const summaries = activeChunks.map((activeChunk) => {
@@ -3224,18 +3393,6 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       activeChunks,
     };
   };
-
-  const rightOfWaySnapshot = (): SimulationSnapshot['rightOfWay'] =>
-    spatial
-      .getActiveChunks()
-      .sort(compareChunks)
-      .map((chunk) => ({
-        chunk: copyChunk(chunk),
-        key: chunkKey(chunk),
-        revision: spatial.getRightOfWayRevision(chunk),
-        cells: spatial.getRightOfWayCells(chunk).map(copyPosition),
-      }))
-      .filter((chunk) => chunk.cells.length > 0);
 
   const snapshot = (): SimulationSnapshot => {
     assertPopulationInvariants();
@@ -3278,10 +3435,6 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       movementReplansUnchanged,
       movementDeadlockRecoveries,
       movementCriticalPriorityWins,
-      allocatedRightOfWayBuffers: spatial.getAllocatedRightOfWayBufferCount(),
-      rightOfWayCells: spatial.getRightOfWayCellCount(),
-      rightOfWayCellsAdded,
-      rightOfWayRevisionChanges,
       staticTopologyRevision: spatial.getStaticTopologyRevisionTotal(),
       developmentJobsStarted,
       developmentJobsSuperseded,
@@ -3289,13 +3442,11 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       developmentAnchorChecks,
       developmentPreliminaryCandidatesRetained,
       developmentFinalistValidations,
-      developmentCorridorStateExpansions,
-      developmentNoConnectorRejections,
+      developmentUnreachableRejections,
       developmentAffectedRouteReplans,
       developmentRoutePreservationChecks,
       developmentPeakAnchorChecksPerTick,
       developmentPeakFinalistValidationsPerTick,
-      developmentPeakCorridorExpansionsPerTick,
       constructionAssignmentsOffered,
       constructionAssignmentsAccepted,
       constructionCommutes,
@@ -3333,6 +3484,10 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       failedServiceDestinationAttempts,
       serviceWaitTicks,
       data,
+      manualDataAvailable: !(
+        seeds.some((seed) => seed.kind === 'living') &&
+        seeds.some((seed) => seed.kind === 'working')
+      ),
       dataGeneratedThisTick,
       dataGeneratedThisTickBySource: { ...dataGeneratedThisTickBySource },
       dataBySource: { ...dataBySource },
@@ -3371,11 +3526,6 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
       districtSeedDefinitions: simulationDistrictSeedDefinitions().map((definition) => ({
         ...definition,
       })),
-      rightOfWay: rightOfWaySnapshot().map((chunk) => ({
-        ...chunk,
-        chunk: copyChunk(chunk.chunk),
-        cells: chunk.cells.map(copyPosition),
-      })),
       developmentJob: snapshotDevelopmentJob(),
       seeds: seeds.map((districtSeed) => ({
         ...districtSeed,
@@ -3385,6 +3535,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         ...building,
         footprint: { ...building.footprint },
         entrance: copyPosition(building.entrance),
+        ...(building.accessCells === undefined
+          ? {}
+          : { accessCells: building.accessCells.map(copyPosition) }),
       })),
       occupancy: occupancySnapshot().map((building) => ({ ...building })),
       citizens: sortedCitizens().map((citizen): CitizenSnapshot => ({
@@ -3407,6 +3560,7 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
           citizen.constructionStagingCell === null
             ? null
             : copyPosition(citizen.constructionStagingCell),
+        constructionCadenceTicks: citizen.constructionCadenceTicks,
         resumeDestinationBuildingId: citizen.resumeDestinationBuildingId,
         criticalBuilderProjectId: citizen.criticalBuilderProjectId,
         criticalBuilderReason: citizen.criticalBuilderReason,
@@ -3417,10 +3571,9 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         footprint: { ...candidate.footprint },
         entrance: copyPosition(candidate.entrance),
         primaryReason: { ...candidate.primaryReason },
-        ...(candidate.envelope === undefined ? {} : { envelope: { ...candidate.envelope } }),
-        ...(candidate.connector === undefined
+        ...(candidate.clearanceZone === undefined
           ? {}
-          : { connector: candidate.connector.map(copyPosition) }),
+          : { clearanceZone: { ...candidate.clearanceZone } }),
         ...(candidate.stagingCells === undefined
           ? {}
           : { stagingCells: candidate.stagingCells.map(copyPosition) }),
@@ -3448,14 +3601,14 @@ export function createSimulation(config: SimulationConfig = {}): Simulation {
         seedInfluence: project.seedInfluence,
         spatialFactor: project.spatialFactor,
         expectedAccessImprovement: project.expectedAccessImprovement,
-        envelope: { ...project.envelope },
-        connector: project.connector.map(copyPosition),
+        clearanceZone: { ...project.clearanceZone },
         stagingCells: project.stagingCells.map(copyPosition),
       })),
     };
   };
 
   const api: Simulation = {
+    gatherManualData,
     step(): void {
       const metricsBefore = calculateMetrics().metrics;
       const activitiesBefore = completedActivities;

@@ -7,6 +7,7 @@ import type { CityMaterials } from './materials';
 
 export interface BuildingLayer {
   reconcile(buildings: readonly Building[]): void;
+  setPlanningMode(active: boolean): void;
   dispose(): void;
 }
 
@@ -45,6 +46,8 @@ export function createBuildingLayer(
 ): BuildingLayer {
   const visuals = new Map<string, BuildingVisual>();
   let disposed = false;
+  let planningMode = false;
+  let currentBuildings: readonly Building[] = [];
 
   const createVisual = (building: Building): BuildingVisual => {
     const root = new TransformNode(`building-${building.id}`, scene);
@@ -64,12 +67,16 @@ export function createBuildingLayer(
     const size = footprintToWorldSize(building.footprint, cellWorldScale);
     const height = buildingVisualHeight(building.type);
     setBoxDimensions(visual.body, size.width, height, size.depth);
-    visual.body.material = materialForBuilding(building.type, materials);
+    visual.body.material = planningMode
+      ? materials.planningBuilding
+      : materialForBuilding(building.type, materials);
+    visual.beacon.material = planningMode ? materials.planningBuilding : materials.window;
     visual.beacon.position.y = height + 0.15;
   };
 
   const reconcile = (buildings: readonly Building[]): void => {
     if (disposed) throw new Error('Cannot update a disposed building layer.');
+    currentBuildings = buildings;
     const desiredIds = new Set<string>();
     for (const building of buildings) {
       if (desiredIds.has(building.id)) throw new Error(`Duplicate building ID ${building.id}.`);
@@ -97,6 +104,15 @@ export function createBuildingLayer(
       for (const visual of visuals.values()) visual.root.dispose();
       visuals.clear();
       disposed = true;
+    },
+    setPlanningMode(active: boolean): void {
+      if (disposed) throw new Error('Cannot change building planning mode on a disposed layer.');
+      if (planningMode === active) return;
+      planningMode = active;
+      for (const [id, visual] of visuals) {
+        const building = currentBuildings.find((candidate) => candidate.id === id);
+        if (building !== undefined) updateVisual(visual, building);
+      }
     },
   };
 }

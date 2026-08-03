@@ -2,6 +2,7 @@ import type { ChunkCoordinate, GridPosition, GridRect } from '@idle-city/shared'
 
 export type BuildingType = 'home' | 'workplace' | 'service';
 export type CitizenActivity =
+  | 'idle'
   | 'home'
   | 'commuting-to-work'
   | 'work'
@@ -34,6 +35,8 @@ export interface Building {
   readonly type: BuildingType;
   readonly footprint: GridRect;
   readonly entrance: GridPosition;
+  /** Valid exterior orthogonal perimeter cells, in stable y-then-x order. */
+  readonly accessCells?: readonly GridPosition[];
   readonly capacity: number;
 }
 
@@ -70,10 +73,8 @@ export interface DevelopmentCandidate {
   readonly constructionCost: number;
   /** Weighted spatial/access summary: 0.6 entrance access + 0.4 planned access improvement. */
   readonly spatialFactor: number;
-  /** Derived one-cell protected circulation ring. */
-  readonly envelope?: GridRect;
-  /** Detached cells of the proposed two-cell-wide connector. */
-  readonly connector?: readonly GridPosition[];
+  /** Derived one-cell protected clearance-zone ring. */
+  readonly clearanceZone?: GridRect;
   readonly stagingCells?: readonly GridPosition[];
 }
 
@@ -103,8 +104,7 @@ export interface ConstructionProject {
   readonly seedInfluence: number;
   readonly spatialFactor: number;
   readonly expectedAccessImprovement: number;
-  readonly envelope?: GridRect;
-  readonly connector?: readonly GridPosition[];
+  readonly clearanceZone?: GridRect;
   readonly stagingCells: readonly GridPosition[];
 }
 
@@ -112,8 +112,8 @@ export interface CitizenSnapshot {
   readonly id: string;
   readonly position: GridPosition;
   readonly previousPosition: GridPosition;
-  readonly homeBuildingId: string;
-  readonly workplaceBuildingId: string;
+  readonly homeBuildingId: string | null;
+  readonly workplaceBuildingId: string | null;
   readonly activity: CitizenActivity;
   readonly activityTicksRemaining: number;
   /** Need pressure is an integer in [0, 4] once the Services system is active. */
@@ -132,6 +132,7 @@ export interface CitizenSnapshot {
   readonly constructionProjectId: string | null;
   /** The reserved project staging cell, or null for ordinary citizens. */
   readonly constructionStagingCell: GridPosition | null;
+  readonly constructionCadenceTicks: number;
   /** The ordinary home/work destination saved before construction recruitment. */
   readonly resumeDestinationBuildingId: string | null;
   /** The project for which this commuter is currently the critical lead builder. */
@@ -177,13 +178,7 @@ export interface PlaceDistrictSeedCommand {
 }
 
 export type CommandRejectionReason =
-  | 'invalid-kind'
-  | 'out-of-bounds'
-  | 'inactive-chunk'
-  | 'occupied'
-  | 'right-of-way'
-  | 'locked'
-  | 'insufficient-data';
+  'invalid-kind' | 'out-of-bounds' | 'inactive-chunk' | 'occupied' | 'locked' | 'insufficient-data';
 
 export type CorePurchaseRejectionReason =
   'invalid-focus' | 'already-purchased' | 'missing-prerequisites' | 'insufficient-data';
@@ -264,6 +259,15 @@ export interface RejectedCommandResult {
 
 export type CommandResult = AcceptedCommandResult | RejectedCommandResult;
 
+export interface GatherManualDataCommand {
+  readonly type?: 'gather-manual-data';
+}
+
+export type ManualDataRejectionReason = 'unavailable';
+export type ManualDataResult =
+  | { readonly accepted: true; readonly amount: 1 }
+  | { readonly accepted: false; readonly reason: ManualDataRejectionReason };
+
 /**
  * Normalized city indicators. A value of 1 is healthy and 0 is the worst
  * state represented by the current simulation slice.
@@ -325,16 +329,7 @@ export interface ActiveChunkSnapshot {
   readonly occupancyRevision: number;
   readonly demandRevision: number;
   readonly occupancyBufferAllocated: boolean;
-  readonly rightOfWayRevision: number;
   readonly staticTopologyRevision: number;
-  readonly rightOfWayBufferAllocated: boolean;
-}
-
-export interface RightOfWayChunkSnapshot {
-  readonly chunk: ChunkCoordinate;
-  readonly key: string;
-  readonly revision: number;
-  readonly cells: readonly GridPosition[];
 }
 
 export type DevelopmentJobStage = 'idle' | 'enumerating' | 'validating' | 'complete' | 'superseded';
@@ -348,10 +343,8 @@ export interface DevelopmentJobProgress {
   readonly anchorChecksThisTick: number;
   readonly preliminaryCandidatesRetained: number;
   readonly finalistsValidatedThisTick: number;
-  readonly corridorExpansionsThisTick: number;
   readonly totalAnchorChecks: number;
   readonly totalFinalistsValidated: number;
-  readonly totalCorridorExpansions: number;
 }
 
 export interface TrafficEdgeSnapshot {
@@ -396,10 +389,6 @@ export interface SimulationStructuralCounters {
   readonly movementReplansUnchanged: number;
   readonly movementDeadlockRecoveries: number;
   readonly movementCriticalPriorityWins: number;
-  readonly allocatedRightOfWayBuffers: number;
-  readonly rightOfWayCells: number;
-  readonly rightOfWayCellsAdded: number;
-  readonly rightOfWayRevisionChanges: number;
   readonly staticTopologyRevision: number;
   readonly developmentJobsStarted: number;
   readonly developmentJobsSuperseded: number;
@@ -407,13 +396,11 @@ export interface SimulationStructuralCounters {
   readonly developmentAnchorChecks: number;
   readonly developmentPreliminaryCandidatesRetained: number;
   readonly developmentFinalistValidations: number;
-  readonly developmentCorridorStateExpansions: number;
-  readonly developmentNoConnectorRejections: number;
+  readonly developmentUnreachableRejections: number;
   readonly developmentAffectedRouteReplans: number;
   readonly developmentRoutePreservationChecks: number;
   readonly developmentPeakAnchorChecksPerTick: number;
   readonly developmentPeakFinalistValidationsPerTick: number;
-  readonly developmentPeakCorridorExpansionsPerTick: number;
   readonly constructionAssignmentsOffered: number;
   readonly constructionAssignmentsAccepted: number;
   readonly constructionCommutes: number;
@@ -498,8 +485,25 @@ export interface SimulationConfig {
   readonly trafficHistoryWindowTicks?: number;
   /** Alias for trafficHistoryWindowTicks used by focused telemetry scenarios. */
   readonly trafficWindowTicks?: number;
-  /** Maximum paired corridor states expanded by one logical development tick. */
-  readonly developmentCorridorExpansionBudget?: number;
+  /** Explicit deterministic established-city fixture buildings. Omitted for the empty opening. */
+  readonly initialBuildings?: readonly InitialBuildingConfig[];
+  /** Explicit deterministic established-city fixture citizens. Omitted for the opening citizen. */
+  readonly initialCitizens?: readonly InitialCitizenConfig[];
+}
+
+export interface InitialBuildingConfig {
+  readonly id: string;
+  readonly type: BuildingType;
+  readonly origin: GridPosition;
+  readonly entrance?: GridPosition;
+}
+
+export interface InitialCitizenConfig {
+  readonly id: string;
+  readonly homeBuildingId?: string | null;
+  readonly workplaceBuildingId?: string | null;
+  readonly position?: GridPosition;
+  readonly activity?: CitizenActivity;
 }
 
 export interface SimulationSnapshot {
@@ -521,6 +525,7 @@ export interface SimulationSnapshot {
   readonly failedServiceDestinationAttempts: number;
   readonly serviceWaitTicks: number;
   readonly data: number;
+  readonly manualDataAvailable: boolean;
   readonly dataGeneratedThisTick: number;
   readonly dataGeneratedThisTickBySource: DataSourceAmounts;
   readonly dataBySource: DataSourceAmounts;
@@ -533,7 +538,6 @@ export interface SimulationSnapshot {
   readonly traffic: readonly TrafficEdgeSnapshot[];
   readonly structural: SimulationStructuralCounters;
   readonly districtSeedDefinitions: readonly DistrictSeedDefinition[];
-  readonly rightOfWay: readonly RightOfWayChunkSnapshot[];
   readonly developmentJob: DevelopmentJobProgress;
   readonly seeds: readonly DistrictSeed[];
   readonly buildings: readonly Building[];
@@ -555,6 +559,7 @@ export interface Simulation {
   getDistrictSeedPlacementInfo(command: PlaceDistrictSeedCommand): DistrictSeedPlacementInfo;
   previewDistrictSeed(command: PlaceDistrictSeedCommand): DistrictSeedPlacementPreview;
   placeDistrictSeed(command: PlaceDistrictSeedCommand): CommandResult;
+  gatherManualData(command?: GatherManualDataCommand): ManualDataResult;
   getCurrentDistrictSeedCost(kind: DistrictSeedKind): number;
   activateChunk(command: ActivateChunkCommand): ChunkActivationResult;
   getDemandChunk(chunk: ChunkCoordinate): DemandChunkSnapshot | undefined;

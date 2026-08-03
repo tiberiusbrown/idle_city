@@ -14,28 +14,6 @@ const baseDirections: readonly GridPosition[] = [
  * insertion order among equal-cost A* alternatives; edge costs stay uniform
  * for ordinary trip planning, so a profile can never lengthen a shortest path.
  */
-export const ROUTE_DIRECTION_ORDERS: readonly (readonly GridPosition[])[] = [
-  baseDirections,
-  [
-    { x: 0, y: 1 },
-    { x: -1, y: 0 },
-    { x: 0, y: -1 },
-    { x: 1, y: 0 },
-  ],
-  [
-    { x: -1, y: 0 },
-    { x: 0, y: -1 },
-    { x: 1, y: 0 },
-    { x: 0, y: 1 },
-  ],
-  [
-    { x: 0, y: -1 },
-    { x: 1, y: 0 },
-    { x: 0, y: 1 },
-    { x: -1, y: 0 },
-  ],
-];
-export const ROUTE_TIE_PROFILE_COUNT = ROUTE_DIRECTION_ORDERS.length;
 const defaultSearchBudget = 100_000;
 
 function key(position: GridPosition): string {
@@ -64,8 +42,6 @@ export interface PathGrid {
 
 export interface PathSearchOptions {
   readonly maxNodes?: number;
-  /** Stable citizen route profile; non-citizen validation uses profile 0. */
-  readonly routeTieProfile?: number;
   /** Base cost for one orthogonal edge. */
   readonly movementCost?: number;
   /** Cost multiplier used by the admissible Manhattan heuristic. */
@@ -81,6 +57,190 @@ export interface PathSearchResult {
   readonly path: readonly GridPosition[];
   readonly nodesExpanded: number;
   readonly chunksTouched: number;
+}
+
+export interface MultiPortalPathResult extends PathSearchResult {
+  readonly source: GridPosition | null;
+  readonly goal: GridPosition | null;
+}
+
+/** One bounded uniform-cost search over multiple source and destination portals. */
+export function findGridPathBetweenSets(
+  grid: PathGrid,
+  sourcesInput: readonly GridPosition[],
+  goalsInput: readonly GridPosition[],
+  tieKey: string,
+  options: PathSearchOptions = {},
+): MultiPortalPathResult {
+  const sources = [...new Map(sourcesInput.map((p) => [key(p), { x: p.x, y: p.y }])).values()].sort(
+    comparePositions,
+  );
+  const goals = [...new Map(goalsInput.map((p) => [key(p), { x: p.x, y: p.y }])).values()].sort(
+    comparePositions,
+  );
+  if (!sources.length || !goals.length)
+    return {
+      status: 'no-path',
+      path: [],
+      source: null,
+      goal: null,
+      nodesExpanded: 0,
+      chunksTouched: 0,
+    };
+  const chunks = activeChunkSet(grid);
+  const validSourceKeys = new Set(
+    sources
+      .filter((p) => isActivePosition(grid, p, chunks) && grid.isWalkable?.(p) !== false)
+      .map(key),
+  );
+  const validGoalKeys = new Set(
+    goals
+      .filter((p) => isActivePosition(grid, p, chunks) && grid.isWalkable?.(p) !== false)
+      .map(key),
+  );
+  sources.splice(0, sources.length, ...sources.filter((p) => validSourceKeys.has(key(p))));
+  goals.splice(0, goals.length, ...goals.filter((p) => validGoalKeys.has(key(p))));
+  if (!sources.length || !goals.length)
+    return {
+      status: 'no-path',
+      path: [],
+      source: null,
+      goal: null,
+      nodesExpanded: 0,
+      chunksTouched: 0,
+    };
+  const goalKeys = new Set(goals.map(key));
+  const queue: GridPosition[] = [];
+  const distance = new Map<string, number>();
+  const memberships = new Map<string, Set<string>>();
+  for (const source of sources) {
+    const sourceKey = key(source);
+    queue.push(source);
+    distance.set(sourceKey, 0);
+    memberships.set(sourceKey, new Set([sourceKey]));
+  }
+  let head = 0;
+  let expanded = 0;
+  const touchedChunks = new Set<string>();
+  let best = Number.POSITIVE_INFINITY;
+  const candidates: { source: GridPosition; goal: GridPosition }[] = [];
+  const budget = validateBudget(options.maxNodes ?? grid.maxNodes);
+  while (head < queue.length && expanded < budget) {
+    const current = queue[head++];
+    if (current === undefined) throw new Error('Path queue unexpectedly ended.');
+    const currentKey = key(current);
+    const d = distance.get(currentKey);
+    if (d === undefined) throw new Error(`Missing path distance for ${currentKey}.`);
+    if (grid.chunkSize !== undefined)
+      touchedChunks.add(chunkKey(chunkCoordinateForPosition(current, grid.chunkSize)));
+    if (d > best) break;
+    expanded += 1;
+    if (goalKeys.has(currentKey)) {
+      best = d;
+      for (const sourceKey of memberships.get(currentKey) ?? []) {
+        const p = sourceKey.split(',');
+        candidates.push({ source: { x: Number(p[0]), y: Number(p[1]) }, goal: current });
+      }
+    }
+    for (const direction of baseDirections) {
+      const next = { x: current.x + direction.x, y: current.y + direction.y };
+      const nextKey = key(next);
+      if (!isActivePosition(grid, next, chunks) || grid.isWalkable?.(next) === false) continue;
+      const incoming = memberships.get(currentKey) ?? new Set<string>();
+      const existing = memberships.get(nextKey);
+      if (existing === undefined) {
+        distance.set(nextKey, d + 1);
+        memberships.set(nextKey, new Set(incoming));
+        queue.push(next);
+      } else if (distance.get(nextKey) === d + 1)
+        for (const sourceKey of incoming) existing.add(sourceKey);
+    }
+  }
+  const queued = queue[head];
+  const queuedDistance =
+    queued === undefined ? Number.POSITIVE_INFINITY : distance.get(key(queued));
+  const hasIncompleteBestLayer =
+    expanded >= budget &&
+    head < queue.length &&
+    (queuedDistance ?? Number.POSITIVE_INFINITY) <= best;
+  if (hasIncompleteBestLayer)
+    return {
+      status: 'budget-exhausted',
+      path: [],
+      source: null,
+      goal: null,
+      nodesExpanded: expanded,
+      chunksTouched: touchedChunks.size,
+    };
+  if (!candidates.length)
+    return {
+      status: head >= queue.length ? 'no-path' : 'budget-exhausted',
+      path: [],
+      source: null,
+      goal: null,
+      nodesExpanded: expanded,
+      chunksTouched: touchedChunks.size,
+    };
+  candidates.sort((a, b) => {
+    const ah = stableHash(
+      `${tieKey}|${String(a.source.x)},${String(a.source.y)}|${String(a.goal.x)},${String(a.goal.y)}`,
+    );
+    const bh = stableHash(
+      `${tieKey}|${String(b.source.x)},${String(b.source.y)}|${String(b.goal.x)},${String(b.goal.y)}`,
+    );
+    return ah < bh
+      ? -1
+      : ah > bh
+        ? 1
+        : a.source.y - b.source.y ||
+          a.source.x - b.source.x ||
+          a.goal.y - b.goal.y ||
+          a.goal.x - b.goal.x;
+  });
+  const selected = candidates[0];
+  if (selected === undefined) throw new Error('Path candidate selection unexpectedly ended.');
+  const path: GridPosition[] = [selected.goal];
+  let cursor = selected.goal;
+  while (key(cursor) !== key(selected.source)) {
+    const d = distance.get(key(cursor));
+    if (d === undefined) throw new Error(`Missing path distance for ${key(cursor)}.`);
+    const previous = baseDirections
+      .map((v) => ({ x: cursor.x - v.x, y: cursor.y - v.y }))
+      .filter(
+        (p) =>
+          distance.get(key(p)) === d - 1 &&
+          (memberships.get(key(p))?.has(key(selected.source)) ?? false),
+      )
+      .sort(comparePositions)[0];
+    if (previous === undefined) break;
+    path.push(previous);
+    cursor = previous;
+  }
+  path.reverse();
+  if (
+    path.length === 0 ||
+    key(path[0] ?? selected.source) !== key(selected.source) ||
+    key(path.at(-1) ?? selected.goal) !== key(selected.goal) ||
+    path.length - 1 !== best
+  ) {
+    throw new Error('Multi-portal path reconstruction invariant failed.');
+  }
+  for (let i = 1; i < path.length; i += 1) {
+    const previous = path[i - 1];
+    const current = path[i];
+    if (previous === undefined || current === undefined)
+      throw new Error('Multi-portal path index unexpectedly ended.');
+    if (Math.abs(current.x - previous.x) + Math.abs(current.y - previous.y) !== 1)
+      throw new Error('Multi-portal path contains a non-adjacent step.');
+  }
+  return {
+    status: 'found',
+    path,
+    source: selected.source,
+    goal: selected.goal,
+    nodesExpanded: expanded,
+    chunksTouched: touchedChunks.size,
+  };
 }
 
 interface OpenEntry {
@@ -175,28 +335,6 @@ function validateCost(name: string, value: number | undefined, fallback: number)
   return cost;
 }
 
-function directionOrder(profile: number | undefined): readonly GridPosition[] {
-  const normalized = profile ?? 0;
-  if (
-    !Number.isSafeInteger(normalized) ||
-    normalized < 0 ||
-    normalized >= ROUTE_TIE_PROFILE_COUNT
-  ) {
-    throw new Error(
-      `Route tie profile must be an integer in [0, ${String(ROUTE_TIE_PROFILE_COUNT - 1)}].`,
-    );
-  }
-  const order = ROUTE_DIRECTION_ORDERS[normalized];
-  if (order === undefined)
-    throw new Error(`Missing route direction profile ${String(normalized)}.`);
-  return order;
-}
-
-/** Computes the stable four-way route profile required by citizen routing. */
-export function routeTieProfile(citizenId: string): number {
-  return Number.parseInt(stableHash(citizenId), 16) % ROUTE_TIE_PROFILE_COUNT;
-}
-
 function activeChunkSet(grid: PathGrid): ReadonlySet<string> | undefined {
   if (grid.activeChunks === undefined) return undefined;
   const result = new Set<string>();
@@ -269,7 +407,7 @@ export function findGridPathDetailed(
   const budget = validateBudget(options.maxNodes ?? grid.maxNodes);
   const baseCost = validateCost('Path movement cost', options.movementCost, defaultMovementCost);
   const heuristicCost = validateCost('Path heuristic cost', options.heuristicCost, baseCost);
-  const directions = directionOrder(options.routeTieProfile);
+  const directions = baseDirections;
   const edgeCost = options.edgeCost ?? (() => 0);
   const open = new MinHeap();
   const startKey = key(start);

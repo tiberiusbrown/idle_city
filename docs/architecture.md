@@ -8,11 +8,17 @@ The world is a signed logical coordinate space. A `chunkSize` is centralized (32
 
 ## Chunk storage and footprints
 
-Active chunks are held in stable coordinate order. Walkability uses a lazy `Uint8Array` occupancy buffer per chunk: an active chunk without a buffer is entirely walkable, and a buffer is allocated only when a footprint blocks a cell. Public right-of-way uses a separate lazy chunk-local `Uint8Array`; ROW is walkable but not buildable. Occupancy, ROW, and combined static-topology revisions are explicit and detached in active-chunk snapshots. This gives near-constant-time lookups without an object per logical cell.
+The default opening is empty with one idle unassigned citizen. Active land is
+universally walkable/buildable; clearance and staging cells are placement-only
+geometry rather than permanent network state. `gatherManualData` adds
+one Data without advancing a tick or consuming RNG and locks after both Living
+and Working seeds exist.
+
+Active chunks are held in stable coordinate order. Walkability uses a lazy `Uint8Array` occupancy buffer per chunk: active empty land is walkable and buildable, while completed or active project footprints are blocked. Clearance and staging are placement-only state; no separate movement network is authoritative.
 
 Buildings own one authoritative world-coordinate rectangle. Homes are exactly `3 × 3`; workplaces are `5 × 5`. Occupied cells are derived in row-major order. Footprints may cross chunk boundaries and their capacity is independent of area. Exterior entrance candidates are deduplicated and sorted in row-major order; the first active, walkable, locally reachable candidate is selected. Citizens spawn and route at entrances, never in building interiors.
 
-Services buildings are `4 x 4` with capacity 8. Every building also derives a one-cell circulation envelope around its footprint. The envelope must be fully active, protected from other completed or project footprints, and provide at least three staging-capable cells.
+Services buildings are `4 x 4` with capacity 8. Every building derives all valid orthogonally adjacent access cells in stable `(y, x)` order; a one-cell clearance zone is checked only during placement.
 
 ## Fixed steps and interpolation
 
@@ -34,7 +40,7 @@ Blocked proposals increment `waitTicks`; accepted moves reset it. A deterministi
 
 ## Deterministic paths and expansion
 
-Pathfinding uses deterministic A* with integer movement cost, a fixed profile-specific neighbor order, coordinate/sequence tie-breaking, and an explicit node-expansion budget. Each citizen derives `routeTieProfile = stableHash(citizenId) mod 4`; the profile affects only equal-cost ties, so every profile preserves the shortest path length. Home, work, service, and construction trips use the same profile; non-citizen validation paths use profile 0. The grid seam accepts active-chunk storage and a walkability callback; `findGridPathDetailed` exposes found/no-path/budget-exhausted status plus expanded-node and touched-chunk counts. Current citizen positions are not permanent obstacles. The path API keeps a chunk-level seam available for future hierarchical routing without introducing a portal framework now.
+Pathfinding uses deterministic A* with integer movement cost, one canonical neighbor order, coordinate/sequence tie-breaking, and an explicit node-expansion budget. Trip planning searches all valid source and destination access cells and chooses a shortest route with stable ID-based tie-breaking. The grid seam accepts active-chunk storage and a walkability callback; `findGridPathDetailed` exposes found/no-path/budget-exhausted status plus expanded-node and touched-chunk counts. Current citizen positions are not permanent obstacles.
 
 Chunk activation is a narrow authoritative transition. It validates safe integer coordinates, rejects duplicates, requires orthogonal adjacency to an active chunk, and enforces the configured active-chunk limit. Rejected activation is mutation-free. Accepted activation creates one chunk and dirties the new chunk plus active orthogonal neighbors. Expansion is explicit and deterministic; no player-facing control or automatic policy is included in this step.
 
@@ -55,9 +61,9 @@ Demand uses Chebyshev footprint distance as its spatial reference and preserves 
 
 ## Deterministic developer construction and citizen labor
 
-Developers start an RNG-free incremental job on the configured logical cadence (20 ticks by default). The job is superseded when the explicit development-state version changes; a superseded job cannot start a project. Candidates are enumerated in this order: `home`, then `workplace`, then `service`; relevant active chunks sorted by `(chunkY, chunkX)`; and row-major anchors within each chunk. Relevant chunks are those within the fixed radius of a matching seed, or all active chunks under Space or Services pressure. Each logical tick checks at most 512 cheap anchors and retains at most 32 preliminary candidates. Finalists are validated in ranked order, at most four per tick and at most 2,048 paired corridor-state expansions per tick. Sorting is bounded to the 32-entry preliminary set.
+Developers start an RNG-free incremental job on the configured logical cadence (20 ticks by default). The job is superseded when the explicit development-state version changes; a superseded job cannot start a project. Candidates are enumerated in stable building-type, chunk, and row-major anchor order. Each logical tick checks at most 512 cheap anchors and retains at most 32 preliminary candidates; finalists are validated in ranked order, at most four per tick.
 
-Candidate validation rejects a footprint that is inactive, occupied, reserved, on ROW, inside an existing envelope, or occupied by a citizen's current exclusive movement cell. It requires a complete active envelope, an exterior entrance, and at least three staging-capable envelope cells. The starter envelopes are joined by a deterministic two-cell-wide connector; every later accepted project reserves its footprint, envelope, and connector atomically.
+Candidate validation rejects a footprint that is inactive, occupied, reserved, inside an existing clearance zone, or occupied by a citizen's current exclusive movement cell. It requires a complete active footprint, valid access cells, and available staging cells. Accepted projects reserve only their footprint and placement clearance atomically.
 
 The pure score is rounded to six decimal places after applying these normalized weights:
 
@@ -71,11 +77,11 @@ The pure score is rounded to six decimal places after applying these normalized 
 - 0.05 construction cost
 ```
 
-Candidates are ranked by higher score, higher seed influence, better expected access improvement, lower `y`, lower `x`, stable building-type order, then stable entrance order. A paired connector search uses A* over adjacent-cell pair states. Its tie order is lower `f`, lower `g`, fewer turns, row-major first pair, row-major second pair, horizontal before vertical orientation, then insertion sequence. Straight transitions translate the pair; turns share one cell inside a deterministic `2 × 2` block. At most one candidate becomes a project during a complete evaluation. Snapshots retain a bounded ranked candidate list, connector cells, envelope, and the primary player-readable reason.
+Candidates are ranked by higher score, higher seed influence, better expected Access improvement, lower y, lower x, stable building-type order, then stable access-cell order. At most one candidate becomes a project during a complete evaluation. Snapshots retain bounded candidates, clearance geometry, staging cells, and the player-readable reason.
 
-The selected project's entire footprint is reserved at survey start by marking every occupied logical cell non-walkable. The reservation remains in place through completion, when those same cells become the completed building. Existing ROW is reusable and never consumed. Routine all-citizen route preservation and all entrance-pair validation were removed from candidate scoring; after acceptance, only citizens whose stored future route intersects the new footprint are replanned. A candidate is rejected if a citizen currently occupies its footprint. This keeps project evaluation bounded while preserving Step 9's movement reservations and deadlock semantics.
+The selected project's entire footprint is reserved at survey start by marking every occupied logical cell non-walkable. The reservation remains in place through completion, when those same cells become the completed building. After acceptance, only citizens whose stored future route intersects the new footprint are replanned. A candidate is rejected if a citizen currently occupies its footprint. This keeps project evaluation bounded while preserving movement reservations and deadlock semantics.
 
-Each accepted project stores exactly three distinct staging cells. Selection puts the entrance first, then uses shortest distance along the circulation perimeter, followed by `(y, x)`. The cells are marked ROW at project start and are reserved exclusively only while assigned to a citizen. A project cannot start unless all three cells are valid.
+Each accepted project stores exactly three distinct staging cells. Selection puts the entrance first, then uses shortest distance along the open perimeter, followed by `(y, x)`. The cells are reserved exclusively only while assigned to a citizen. A project cannot start unless all three cells are valid.
 
 Construction labor is authoritative. The phase contracts are survey `2/1`, blueprint `3/1`, foundation `8/2`, frame `18/3`, and completion `2/2` for labor/max-workers. One constructing citizen contributes one unit per logical tick. Existing citizens can be recruited only when a completed home/work activity reaches its boundary; ordinary activity and commutes are not interrupted. The saved ordinary destination is resumed after release. Assignment candidates are sorted by project ID, shortest reachable route length, staging index, then citizen ID, so citizen storage order cannot affect staffing.
 
@@ -102,7 +108,7 @@ Construction uses the existing full-staff target durations: survey 2 ticks, blue
 
 Services Core is the first explicit progression state and costs exactly 50 Data. Its authoritative requirements are one Living seed, one Working seed, population at least 20, and 40 completed work activities. A purchase command must include `space`, `access`, or `activity`; accepted purchase deducts once, records the selected focus, and unlocks the Services seed. Rejected purchases return one stable reason without consuming RNG, IDs, or Data. Rank-1 effects are not part of this slice.
 
-Services seed placement uses the existing preview-and-confirm command path. It remains locked before Core, costs base 20 with the existing same-type exponential price, and contributes only matching Services influence within the fixed square radius of 8 (side 17). Services local-capacity coverage uses the same Chebyshev radius. A completed service building has a 4 x 4 footprint, capacity 8, an exterior entrance, a one-cell envelope, three staging cells, and a two-cell-wide ROW connector.
+Services seed placement uses the existing preview-and-confirm command path. It remains locked before Core, costs base 20 with the existing same-type exponential price, and contributes only matching Services influence within the fixed square radius of 8 (side 17). Services local-capacity coverage uses the same Chebyshev radius. A completed service building has a 4 x 4 footprint, capacity 8, all valid access cells, and deterministic staging cells.
 
 Citizens carry integer `serviceNeed` in `[0, 4]`. Completing work adds one, and a citizen at home with need at least 2 attempts a completed, reachable, capacity-compatible Services destination before its next work trip. The service use activity lasts exactly two logical ticks, then subtracts exactly 2 need and contributes one base activity value through the shared city-efficiency multiplier. If no destination is available, need is retained and the ordinary home/work loop continues. Destination scores are normalized, rounded to six decimals, and tied by score, route length, occupancy ratio, then stable building ID; reservations are counted authoritatively through the destination reference.
 
@@ -124,11 +130,25 @@ The city scene owns separate renderer layers for chunk ground, completed buildin
 
 The Research drawer exposes the Services Core card with exact requirement progress, missing requirements, the 50 Data cost, and a required tier-1 focus selection. After purchase it shows the installed Core and selected focus; rank-1 upgrade cards are intentionally absent. The Build drawer reveals Services only after the authoritative Core state unlocks it.
 
+The default browser configuration creates the empty opening (one idle citizen,
+no buildings, projects, seeds, or Data). The compact HUD keeps Population and
+Data prominent, while Build and Research are mutually exclusive. Before both
+bootstrap seeds are accepted, the HUD exposes a `Gather Data +1` action that
+calls only `gatherManualData()`; it is hidden and disabled once that
+authoritative command becomes unavailable. Opening Research cancels any
+transient Build candidate without spending Data.
+
 ## Browser district placement
 
-The Build drawer exposes the unlocked Living, Working, and Services seed kinds. Base costs are Living 10, Working 12, and Services 20 Data; the simulation charges `ceil(baseCost × 1.25^activeSameTypeCount)` and exposes the current count-based price to the UI. The game shell reads the simulation-owned definition and current-placement-info APIs; it does not duplicate radius, side length, Data, occupancy, ROW, lock, or active-chunk rules. Selecting a kind enters placement mode without spending. Hover previews are transient axis-aligned squares anchored at the candidate cell, a click/tap locks a candidate, and only the explicit `Place <Type> for <Cost> Data` button submits the authoritative command. Confirmation revalidates and is mutation-free on rejection. Accepted and rejected command results update an `aria-live` status, while the renderer immediately reconciles the detached snapshot and projects the seed.
+The Build drawer exposes the unlocked Living, Working, and Services seed kinds. Base costs are Living 10, Working 12, and Services 20 Data; the simulation charges `ceil(baseCost × 1.25^activeSameTypeCount)` and exposes the current count-based price to the UI. The game shell reads simulation-owned definitions and placement-info APIs; it does not duplicate radius, side length, Data, occupancy, lock, or active-chunk rules. Selecting a kind enters placement mode without spending. Hover previews are transient axis-aligned squares anchored at the candidate cell, a click/tap locks a candidate, and only the explicit `Place <Type> for <Cost> Data` button submits the authoritative command. Confirmation revalidates and is mutation-free on rejection.
 
 Pointer picking is renderer-owned. Babylon picks only visible active-chunk ground meshes, then centralized coordinate helpers convert the picked world position to a logical cell and signed chunk using floor-based conversion. The renderer owns one reusable valid/invalid placement preview mesh plus bounded influence line resources. The game shell tracks one primary pointer with capture and an 8 CSS pixel drag threshold; only a matching non-drag release locks a candidate, and the confirmation button submits it. Touch uses the same pointer event path, and cancellation, lost capture, Build close, reset, and explicit cancel clear the gesture and preview without touching simulation state.
+
+While Build is open, completed buildings and active projects switch to shared
+neutral planning materials, while seed influence zones remain vivid by seed
+kind. The candidate preview uses the invalid material when authoritative
+placement info rejects it. Closing Build restores normal materials without
+allocating or disposing shared resources.
 
 Renderer structural counters expose visible/rendered chunks, visible/rendered citizens, chunk rebuilds, and mesh count for bounded-resource tests. Ground continues to reconcile by stable chunk key and explicit occupancy/static-topology revisions, while entity layers reconcile by authoritative entity ID.
 
@@ -136,8 +156,8 @@ Renderer structural counters expose visible/rendered chunks, visible/rendered ci
 
 Snapshots scale with active chunk metadata and active entities, not coordinate extent. They contain no inactive chunks, empty bounding-box cells, or ordinary full demand fields. Detailed demand payloads are bounded and opt-in.
 
-The headless balance runner reports active/allocated chunks, optional occupancy, demand, and ROW buffers, ROW/static-topology revisions, demand dirty/evaluation counts, path nodes expanded, path chunks touched, bounded traffic edge summaries and counters, construction offers/acceptances, construction commutes and arrivals, labor units, paused ticks, phase completions, worker releases, Services Core purchases, work/service activity and Data-source counters, incremental developer job progress, per-tick budget peaks, snapshot chunk summaries, invariant failures, and a determinism hash. Structural scenarios exercise sparse outward activation, coordinate extent beyond `1000 × 1000` without filling the box, localized demand dirtying, long multi-chunk routes, repeated traffic corridors, seed boundaries, same-type pricing, sparse local development, connected ROW, narrow connector budgets, dense circulation, supersession, long incremental jobs, one-worker and full-staff construction, corridor competition, staging queues, blocked-worker replanning, labor starvation, cap reduction, dense construction commute, off-screen projects, repeated deterministic construction, Services Core progression, service shortage, nearby and competing Services destinations, capacity bottlenecks, service-seed development, and dense service commutes.
+The headless balance runner reports active/allocated chunks, occupancy, demand, path and traffic counters, construction offers/acceptances, labor, Services Core purchases, work/service activity and Data-source counters, developer progress, snapshot summaries, invariant failures, and a determinism hash. Phase 2 scenarios cover the empty opening, manual Data, distant open-land construction, construction cadence, capacity, multi-access routing, crossing flows, congestion recovery, and overlapping square seeds.
 
 ## Deferred systems
 
-This step intentionally does not add rank-1 research effects, apartments, mixed-use buildings, congestion costs, player-facing Traffic Analysis, paved roads, transit, chunk removal, ROW removal, player-facing expansion controls, polygon footprints, detailed voxel meshing, demolition, conversion, redevelopment, construction bots, a Travel Flow overlay, or traffic-dependent routing. The next focused task is limited to tier-1 research effects.
+This step intentionally does not add rank-1 research effects, apartments, mixed-use buildings, congestion costs, player-facing Traffic Analysis, paved roads, transit, chunk removal, player-facing expansion controls, polygon footprints, detailed voxel meshing, demolition, conversion, redevelopment, construction bots, a Travel Flow overlay, or traffic-dependent routing. Active empty land and building clearance remain the authoritative terrain model. The next focused task is limited to tier-1 research effects.

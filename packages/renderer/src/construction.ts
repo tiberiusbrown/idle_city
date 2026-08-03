@@ -12,6 +12,7 @@ import type { CityMaterials } from './materials';
 
 export interface ConstructionLayer {
   reconcile(projects: readonly ConstructionProject[]): void;
+  setPlanningMode(active: boolean): void;
   dispose(): void;
 }
 
@@ -65,6 +66,8 @@ export function createConstructionLayer(
 ): ConstructionLayer {
   const visuals = new Map<string, ConstructionVisual>();
   let disposed = false;
+  let planningMode = false;
+  let currentProjects: readonly ConstructionProject[] = [];
 
   const createVisual = (project: ConstructionProject): ConstructionVisual => {
     const root = new TransformNode(`construction-${project.id}`, scene);
@@ -103,13 +106,16 @@ export function createConstructionLayer(
                 : phaseHeights[phase];
       setBoxDimensions(mesh, size.width, height, size.depth);
       mesh.isVisible = phase === project.phase;
-      if (phase === project.phase && project.paused) mesh.material = materials.constructionPaused;
+      if (planningMode) mesh.material = materials.planningConstruction;
+      else if (phase === project.phase && project.paused)
+        mesh.material = materials.constructionPaused;
       else mesh.material = phaseMaterial(phase, materials);
     }
   };
 
   const reconcile = (projects: readonly ConstructionProject[]): void => {
     if (disposed) throw new Error('Cannot update a disposed construction layer.');
+    currentProjects = projects;
     const desiredIds = new Set<string>();
     for (const project of projects) {
       if (desiredIds.has(project.id))
@@ -138,6 +144,16 @@ export function createConstructionLayer(
       for (const visual of visuals.values()) visual.root.dispose();
       visuals.clear();
       disposed = true;
+    },
+    setPlanningMode(active: boolean): void {
+      if (disposed)
+        throw new Error('Cannot change construction planning mode on a disposed layer.');
+      if (planningMode === active) return;
+      planningMode = active;
+      for (const [id, visual] of visuals) {
+        const project = currentProjects.find((candidate) => candidate.id === id);
+        if (project !== undefined) updateVisual(visual, project);
+      }
     },
   };
 }

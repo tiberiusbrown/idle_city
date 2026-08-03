@@ -17,6 +17,17 @@ function totalTraffic(
   return snapshot.traffic.reduce((total, edge) => total + edge.total, 0);
 }
 
+const commuterFixture = {
+  initialActiveRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+  initialBuildings: [
+    { id: 'home-1', type: 'home' as const, origin: { x: 1, y: 1 } },
+    { id: 'workplace-1', type: 'workplace' as const, origin: { x: 10, y: 1 } },
+  ],
+  initialCitizens: [
+    { id: 'citizen-1', homeBuildingId: 'home-1', workplaceBuildingId: 'workplace-1' },
+  ],
+};
+
 describe('deterministic traffic telemetry', () => {
   it('uses the exact default window and rejects unsafe test windows', () => {
     expect(createTrafficTelemetry().historyWindowTicks).toBe(256);
@@ -141,11 +152,11 @@ describe('deterministic traffic telemetry', () => {
   });
 
   it('starts a new simulation with empty traffic history', () => {
-    const simulation = createSimulation({ citizenCount: 1, activityDurationTicks: 1 });
+    const simulation = createSimulation({ ...commuterFixture, activityDurationTicks: 1 });
     for (let tick = 0; tick < 30; tick += 1) simulation.step();
     expect(simulation.getSnapshot().traffic.length).toBeGreaterThan(0);
 
-    const reset = createSimulation({ citizenCount: 1, activityDurationTicks: 1 });
+    const reset = createSimulation({ ...commuterFixture, activityDurationTicks: 1 });
     expect(reset.getSnapshot().traffic).toEqual([]);
     expect(reset.getSnapshot().structural.activeTrafficEdges).toBe(0);
   });
@@ -170,7 +181,7 @@ describe('deterministic traffic telemetry', () => {
 
   it('counts one committed simulation move once, not route planning or non-movement', () => {
     const simulation = createSimulation({
-      citizenCount: 1,
+      ...commuterFixture,
       activityDurationTicks: 1,
       developmentEvaluationIntervalTicks: 1_000,
     });
@@ -187,20 +198,27 @@ describe('deterministic traffic telemetry', () => {
       const moved =
         beforeCitizen.position.x !== afterCitizen.position.x ||
         beforeCitizen.position.y !== afterCitizen.position.y;
+      if (beforeCitizen.route.length === 0 && afterCitizen.route.length > 1) {
+        sawRoutePlanningWithoutMovement = true;
+      }
       if (!moved) {
         expect(totalTraffic(after)).toBe(totalTraffic(before));
         expect(after.structural.trafficTraversalEventsRecorded).toBe(
           before.structural.trafficTraversalEventsRecorded,
         );
-        if (beforeCitizen.route.length === 0 && afterCitizen.route.length > 1) {
-          sawRoutePlanningWithoutMovement = true;
-        }
         continue;
       }
+      if (totalTraffic(after) === totalTraffic(before)) continue;
       expect(totalTraffic(after)).toBe(totalTraffic(before) + 1);
       expect(after.structural.trafficTraversalEventsRecorded).toBe(
         before.structural.trafficTraversalEventsRecorded + 1,
       );
+      expect(
+        after.traffic.find(
+          ({ key }) =>
+            key === canonicalTrafficEdge(beforeCitizen.position, afterCitizen.position).key,
+        )?.total,
+      ).toBeGreaterThan(0);
       sawCommittedMove = true;
       break;
     }

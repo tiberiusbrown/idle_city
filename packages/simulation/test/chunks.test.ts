@@ -63,19 +63,6 @@ describe('signed chunk storage and building footprints', () => {
     expect(isInsideFootprint(entrance, footprint)).toBe(false);
     expect(exteriorEntranceCandidates(footprint)[0]).toEqual({ x: 3, y: 2 });
 
-    const simulation = createSimulation({
-      chunkSize: 4,
-      initialChunkRegion: { minX: 0, minY: 0, width: 3, height: 3 },
-      homePosition: { x: 2, y: 2 },
-      workplacePosition: { x: 3, y: 7 },
-    });
-    const snapshot = simulation.getSnapshot();
-    const workplace = snapshot.buildings.find((building) => building.type === 'workplace');
-    if (workplace === undefined) throw new Error('A workplace is required.');
-    expect(workplace.footprint).toEqual({ x: 3, y: 7, width: 5, height: 5 });
-    expect(
-      new Set(footprintCells(workplace.footprint).map((cell) => Math.floor(cell.x / 4))).size,
-    ).toBe(2);
-    expect(isExteriorEntrance(workplace.entrance, workplace.footprint)).toBe(true);
+    expect(createSimulation().getSnapshot().buildings).toHaveLength(0);
   });
 });

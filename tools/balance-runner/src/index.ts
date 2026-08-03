@@ -17,7 +17,7 @@ function integerArgument(name: string, fallback: number): number {
 
 function scenarioArgument(): BalanceScenarioName {
   const index = process.argv.indexOf('--scenario');
-  if (index === -1) return 'baseline';
+  if (index === -1) return 'empty-city-opening';
   const raw = process.argv[index + 1];
   if (raw === undefined || !isBalanceScenarioName(raw)) {
     throw new Error(`--scenario requires one of ${balanceScenarioNames.join(', ')}.`);

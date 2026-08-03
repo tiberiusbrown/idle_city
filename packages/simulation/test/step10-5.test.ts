@@ -1,22 +1,37 @@
 import { describe, expect, it } from 'vitest';
-import { stableHash } from '@idle-city/shared';
 import {
   buildMovementProposals,
   calculateCityDemand,
   calculateDistrictSeedInfluence,
   createSimulation,
-  findGridPath,
   isMovementReplanDue,
   recoveryQueuePenalty,
   replanMovementRoute,
   resolveMovementReservations,
-  routeTieProfile,
-  ROUTE_DIRECTION_ORDERS,
-  ROUTE_TIE_PROFILE_COUNT,
   squareDistance,
   type Building,
   type MovementCandidate,
 } from '../src/index';
+
+const criticalBuildings = [
+  ...Array.from({ length: 20 }, (_, index) => ({
+    id: `home-${String(index + 1)}`,
+    type: 'home' as const,
+    origin: { x: 1 + (index % 5) * 6, y: 1 + Math.floor(index / 5) * 6 },
+  })),
+  ...Array.from({ length: 5 }, (_, index) => ({
+    id: `workplace-${String(index + 1)}`,
+    type: 'workplace' as const,
+    origin: { x: 1 + index * 10, y: 40 },
+  })),
+];
+
+const criticalCitizens = (count: number) =>
+  Array.from({ length: count }, (_, index) => ({
+    id: `citizen-${String(index + 1)}`,
+    homeBuildingId: `home-${String(index + 1)}`,
+    workplaceBuildingId: `workplace-${String((index % 5) + 1)}`,
+  }));
 
 function candidate(
   id: string,
@@ -47,97 +62,7 @@ function stepUntil(
   throw new Error(`Condition was not reached within ${String(maximumTicks)} ticks.`);
 }
 
-describe('Step 10.5 deterministic route diversity and recovery', () => {
-  it('derives all four route profiles from stable citizen IDs', () => {
-    expect(ROUTE_TIE_PROFILE_COUNT).toBe(4);
-    expect(['citizen-1', 'citizen-2', 'citizen-3', 'citizen-4'].map(routeTieProfile)).toEqual([
-      1, 2, 3, 0,
-    ]);
-    expect(
-      ['citizen-1', 'citizen-2', 'citizen-3', 'citizen-4'].map(
-        (id) => Number.parseInt(stableHash(id), 16) % 4,
-      ),
-    ).toEqual(['citizen-1', 'citizen-2', 'citizen-3', 'citizen-4'].map(routeTieProfile));
-  });
-
-  it('uses the four exact direction orders and keeps equal-cost paths shortest', () => {
-    expect(ROUTE_DIRECTION_ORDERS).toEqual([
-      [
-        { x: 1, y: 0 },
-        { x: 0, y: 1 },
-        { x: -1, y: 0 },
-        { x: 0, y: -1 },
-      ],
-      [
-        { x: 0, y: 1 },
-        { x: -1, y: 0 },
-        { x: 0, y: -1 },
-        { x: 1, y: 0 },
-      ],
-      [
-        { x: -1, y: 0 },
-        { x: 0, y: -1 },
-        { x: 1, y: 0 },
-        { x: 0, y: 1 },
-      ],
-      [
-        { x: 0, y: -1 },
-        { x: 1, y: 0 },
-        { x: 0, y: 1 },
-        { x: -1, y: 0 },
-      ],
-    ]);
-    const paths = [0, 1, 2, 3].map((profile) =>
-      findGridPath(
-        { width: 9, height: 9, isWalkable: () => true },
-        { x: 0, y: 0 },
-        { x: 8, y: 8 },
-        { routeTieProfile: profile },
-      ),
-    );
-    expect(paths.map((path) => path.length - 1)).toEqual([16, 16, 16, 16]);
-    expect(paths[0]?.[1]).toEqual({ x: 1, y: 0 });
-    expect(paths[1]?.[1]).toEqual({ x: 0, y: 1 });
-    expect(new Set(paths.map((path) => JSON.stringify(path))).size).toBeGreaterThan(1);
-
-    const blocked = new Set(['2,1', '2,2', '3,2', '4,2']);
-    const detouredPaths = [0, 1, 2, 3].map((profile) =>
-      findGridPath(
-        {
-          width: 9,
-          height: 9,
-          isWalkable: (position) => !blocked.has(`${String(position.x)},${String(position.y)}`),
-        },
-        { x: 0, y: 0 },
-        { x: 8, y: 8 },
-        { routeTieProfile: profile },
-      ),
-    );
-    expect(detouredPaths.map((path) => path.length - 1)).toEqual([16, 16, 16, 16]);
-  });
-
-  it('is independent of array order and uses the profile on every route call site', () => {
-    const grid = {
-      chunkSize: 4,
-      activeChunks: [
-        { x: 1, y: 1 },
-        { x: 0, y: 1 },
-        { x: 1, y: 0 },
-        { x: 0, y: 0 },
-      ],
-      isWalkable: (position: { readonly x: number; readonly y: number }) =>
-        !(position.x === 2 && position.y === 1),
-    } as const;
-    const left = findGridPath(grid, { x: 0, y: 0 }, { x: 5, y: 5 }, { routeTieProfile: 2 });
-    const right = findGridPath(
-      { ...grid, activeChunks: [...grid.activeChunks].reverse() },
-      { x: 0, y: 0 },
-      { x: 5, y: 5 },
-      { routeTieProfile: 2 },
-    );
-    expect(right).toEqual(left);
-  });
-
+describe('Step 10.5 deterministic movement recovery', () => {
   it('triggers recovery at 4, 8, 12 and applies the exact queue penalty', () => {
     expect([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(isMovementReplanDue)).toEqual([
       false,
@@ -252,19 +177,17 @@ describe('Step 10.5 critical construction movement', () => {
   it('promotes an assigned reachable builder on the twelfth zero-labor tick and clears it', () => {
     const simulation = createSimulation({
       chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 20,
-      housingCapacity: 20,
-      workplaceCapacity: 20,
+      initialChunkRegion: { minX: 0, minY: 0, width: 8, height: 8 },
+      initialBuildings: criticalBuildings,
+      initialCitizens: criticalCitizens(20),
       populationCap: 20,
       activityDurationTicks: 1,
       developmentEvaluationIntervalTicks: 1,
+      developmentMinimumScore: 0,
       startingData: 10,
     });
     expect(
-      simulation.placeDistrictSeed({ kind: 'living', position: { x: 5, y: 1 } }).accepted,
+      simulation.placeDistrictSeed({ kind: 'living', position: { x: 50, y: 50 } }).accepted,
     ).toBe(true);
 
     let promotedProjectId: string | undefined;
@@ -316,13 +239,21 @@ describe('Step 10.5 critical construction movement', () => {
   it('does not promote a project with no assigned eligible worker', () => {
     const simulation = createSimulation({
       chunkSize: 8,
-      initialChunkRegion: { minX: 0, minY: 0, width: 2, height: 2 },
-      homePosition: { x: 0, y: 0 },
-      workplacePosition: { x: 8, y: 8 },
-      citizenCount: 0,
-      housingCapacity: 0,
-      workplaceCapacity: 0,
-      populationCap: 0,
+      initialChunkRegion: { minX: 0, minY: 0, width: 4, height: 4 },
+      initialBuildings: [
+        { id: 'home-1', type: 'home', origin: { x: 1, y: 1 } },
+        { id: 'workplace-1', type: 'workplace', origin: { x: 8, y: 8 } },
+      ],
+      initialCitizens: [
+        {
+          id: 'citizen-1',
+          homeBuildingId: 'home-1',
+          workplaceBuildingId: 'workplace-1',
+          activity: 'work',
+        },
+      ],
+      populationCap: 1,
+      activityDurationTicks: 100_000,
       developmentEvaluationIntervalTicks: 1,
       startingData: 10,
     });

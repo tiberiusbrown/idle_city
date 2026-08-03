@@ -8,6 +8,7 @@ export {
   worldToChunk,
   worldToLogicalCell,
   type CityScene,
+  type CityPlanningModeOptions,
   type CitySceneOptions,
   type CitySceneStructuralCounters,
   type PickedLogicalCell,
