@@ -8,10 +8,10 @@ The repository has been reset to a clean target-core skeleton for rebuilding the
 
 The current implementation contains:
 
-- A minimal `createSimulation()` API whose detached snapshot is `{ tick: 0 }`.
-- A deterministic simulation hash for headless smoke checks.
-- A Babylon.js scene with a neutral background, camera controls, and continuous-looking ground.
-- A small browser shell labeled “Idle City / Rebuild skeleton”.
+- A `createSimulation()` API whose detached snapshot contains the four-citizen opening state and 10 Data.
+- A deterministic simulation hash for the authoritative opening state.
+- A Babylon.js scene with a neutral background, camera controls, continuous-looking ground, and four citizens.
+- A small browser HUD showing Data, population, and tick.
 - The existing npm workspaces, PWA setup, and validation infrastructure.
 
 Gameplay systems are intentionally not implemented yet.
@@ -59,7 +59,9 @@ npm run build
 npm run sim:run -- --seed 1234 --ticks 0
 ```
 
-The balance runner prints one machine-readable JSON object containing the current tick and stable hash.
+The balance runner prints one machine-readable JSON object containing the current tick, Data, population,
+citizen positions, and stable hash. `--ticks` currently accepts only `0`; tick execution is the next
+migration step.
 
 Playwright remains configured through `playwright.config.ts`; browser tests will be added when a user-facing interaction exists.
 
