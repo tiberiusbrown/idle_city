@@ -86,6 +86,14 @@ body {
   line-height: 1.35;
 }
 
+.assignment-status {
+  max-width: 280px;
+  margin: 8px 0 0;
+  color: #aebbd2;
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
 .zone-controls {
   display: grid;
   gap: 8px;

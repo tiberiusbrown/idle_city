@@ -15,7 +15,10 @@ import './style.css';
 const canvas = document.querySelector<HTMLCanvasElement>('#game-canvas');
 const dataValue = document.querySelector<HTMLElement>('#data-value');
 const populationValue = document.querySelector<HTMLElement>('#population-value');
+const homeCapacityValue = document.querySelector<HTMLElement>('#home-capacity-value');
+const workCapacityValue = document.querySelector<HTMLElement>('#work-capacity-value');
 const constructionWorkersValue = document.querySelector<HTMLElement>('#construction-workers-value');
+const assignmentStatus = document.querySelector<HTMLElement>('#assignment-status');
 const constructionStatus = document.querySelector<HTMLElement>('#construction-status');
 const tickValue = document.querySelector<HTMLElement>('#tick-value');
 const pauseButton = document.querySelector<HTMLButtonElement>('#pause-button');
@@ -30,7 +33,10 @@ if (
   canvas === null ||
   dataValue === null ||
   populationValue === null ||
+  homeCapacityValue === null ||
+  workCapacityValue === null ||
   constructionWorkersValue === null ||
+  assignmentStatus === null ||
   constructionStatus === null ||
   tickValue === null ||
   pauseButton === null ||
@@ -172,6 +178,36 @@ const queuePlacementAt = (origin: GridPosition): void => {
 const updateHud = (snapshot: ReturnType<typeof simulation.getSnapshot>): void => {
   dataValue.textContent = String(snapshot.data);
   populationValue.textContent = String(snapshot.population);
+  const completedBuildings = snapshot.buildings.filter(
+    (building) => building.state.kind === 'complete',
+  );
+  const homeBuildings = completedBuildings.filter(
+    (building) => getBuildingArchetype(building.archetypeId).capacities.residents > 0,
+  );
+  const workBuildings = completedBuildings.filter(
+    (building) => getBuildingArchetype(building.archetypeId).capacities.workers > 0,
+  );
+  const homeCapacity = homeBuildings.reduce(
+    (capacity, building) =>
+      capacity + getBuildingArchetype(building.archetypeId).capacities.residents,
+    0,
+  );
+  const workCapacity = workBuildings.reduce(
+    (capacity, building) =>
+      capacity + getBuildingArchetype(building.archetypeId).capacities.workers,
+    0,
+  );
+  const homeAssignments = homeBuildings.reduce(
+    (count, building) => count + building.assignments.residentCitizenIds.length,
+    0,
+  );
+  const workAssignments = workBuildings.reduce(
+    (count, building) => count + building.assignments.workerCitizenIds.length,
+    0,
+  );
+  homeCapacityValue.textContent = String(homeCapacity);
+  workCapacityValue.textContent = String(workCapacity);
+  assignmentStatus.textContent = `Home assignments: ${String(homeAssignments)}/${String(homeCapacity)} · Work assignments: ${String(workAssignments)}/${String(workCapacity)}`;
   const incompleteBuildings = snapshot.buildings.filter(
     (building) => building.state.kind === 'incomplete',
   );
