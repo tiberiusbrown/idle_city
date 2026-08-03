@@ -435,6 +435,8 @@ export interface CreateBuildingInstanceOptions {
   readonly archetype: BuildingArchetype | BuildingArchetypeId;
   readonly origin: GridPosition;
   readonly transform?: BuildingTransform;
+  /** Optional scenario override used by focused simulation tests. */
+  readonly laborRequired?: number;
   readonly state?: BuildingState;
   readonly assignments?: BuildingAssignments;
 }
@@ -493,9 +495,15 @@ export function createBuildingInstance(options: CreateBuildingInstanceOptions): 
   const archetype = resolveBuildingArchetype(options.archetype);
   const transform = options.transform ?? 'identity';
   const geometry = getBuildingGeometry(archetype, options.origin, transform);
+  const laborRequired =
+    options.laborRequired ??
+    (options.state?.kind === 'incomplete' ? options.state.laborRequired : archetype.labor);
+  if (!Number.isSafeInteger(laborRequired) || laborRequired <= 0) {
+    throw new Error('Building labor requirements must be positive safe integers.');
+  }
   const state = copyBuildingState(
-    options.state ?? { kind: 'incomplete', laborCompleted: 0, laborRequired: archetype.labor },
-    archetype.labor,
+    options.state ?? { kind: 'incomplete', laborCompleted: 0, laborRequired },
+    laborRequired,
   );
   const assignments = copyAssignments(options.assignments ?? createEmptyBuildingAssignments());
 

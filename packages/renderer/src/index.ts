@@ -176,6 +176,18 @@ function completedBuildingHeight(visualKind: BuildingVisualKind): number {
   return 0.12;
 }
 
+function buildingDisplayHeight(
+  building: SimulationSnapshot['buildings'][number],
+  visualKind: BuildingVisualKind,
+): number {
+  if (building.state.kind === 'complete') return completedBuildingHeight(visualKind);
+  const progress = Math.min(
+    1,
+    Math.max(0, building.state.laborCompleted / building.state.laborRequired),
+  );
+  return Math.max(0.08, completedBuildingHeight(visualKind) * (0.12 + progress * 0.88));
+}
+
 function buildingMaterial(
   materials: Readonly<Record<BuildingVisualKind, StandardMaterial>>,
   constructionMaterial: StandardMaterial,
@@ -194,10 +206,10 @@ function createBuildingVisual(
   const visualKind = getBuildingArchetype(building.archetypeId).visualKind;
   const incomplete = building.state.kind === 'incomplete';
   const bounds = physicalFootprintBounds(building.physicalCells);
-  const height = incomplete ? 0.22 : completedBuildingHeight(visualKind);
+  const height = buildingDisplayHeight(building, visualKind);
   const mesh = MeshBuilder.CreateBox(
     `building-${building.id}`,
-    { width: bounds.width, height, depth: bounds.height },
+    { width: bounds.width, height: 1, depth: bounds.height },
     scene,
   );
   mesh.material = buildingMaterial(materials, constructionMaterial, visualKind, incomplete);
@@ -210,6 +222,7 @@ function createBuildingVisual(
 
 function updateBuildingVisual(visual: BuildingVisual, bounds: GridRect, height: number): void {
   const center = logicalRectToWorldCenter(bounds, DEFAULT_LOGICAL_CELL_WORLD_SCALE);
+  visual.mesh.scaling.y = height;
   visual.mesh.position.set(center.x, height / 2 + 0.05, center.z);
 }
 
@@ -369,7 +382,7 @@ export function createCityScene(
         visual = createBuildingVisual(scene, building, buildingMaterials, constructionMaterial);
         buildingVisuals.set(building.id, visual);
       } else {
-        const height = incomplete ? 0.22 : completedBuildingHeight(visualKind);
+        const height = buildingDisplayHeight(building, visualKind);
         visual.mesh.material = buildingMaterial(
           buildingMaterials,
           constructionMaterial,
@@ -440,10 +453,21 @@ export function createCityScene(
   citizenMaterial.diffuseColor = new Color3(0.98, 0.62, 0.26);
   citizenMaterial.emissiveColor = new Color3(0.12, 0.06, 0.02);
   citizenMaterial.specularColor = new Color3(0.08, 0.06, 0.03);
+  const constructionCitizenMaterial = new StandardMaterial('construction-citizen-material', scene);
+  constructionCitizenMaterial.diffuseColor = new Color3(0.98, 0.88, 0.24);
+  constructionCitizenMaterial.emissiveColor = new Color3(0.18, 0.12, 0.02);
+  constructionCitizenMaterial.specularColor = new Color3(0.08, 0.06, 0.03);
 
   const citizenVisuals = new Map<CitizenId, Mesh>();
   const reconcileCitizens = (snapshot: SimulationSnapshot, interpolationAlpha: number): void => {
     const seenIds = new Set<CitizenId>();
+    const constructionCitizenIds = new Set<CitizenId>();
+    for (const building of snapshot.buildings) {
+      if (building.state.kind !== 'incomplete') continue;
+      for (const citizenId of building.assignments.constructionWorkerIds) {
+        constructionCitizenIds.add(citizenId);
+      }
+    }
 
     for (const citizen of snapshot.citizens) {
       if (seenIds.has(citizen.id)) throw new Error(`Duplicate citizen ID ${citizen.id}.`);
@@ -461,6 +485,9 @@ export function createCityScene(
         citizenVisuals.set(citizen.id, visual);
       }
 
+      visual.material = constructionCitizenIds.has(citizen.id)
+        ? constructionCitizenMaterial
+        : citizenMaterial;
       const interpolatedPosition = interpolatedLogicalToWorld(
         citizen.previousPosition,
         citizen.position,

@@ -77,6 +77,15 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.construction-status {
+  max-width: 280px;
+  min-height: 1.4em;
+  margin: 12px 0 0;
+  color: #e8c879;
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
 .zone-controls {
   display: grid;
   gap: 8px;

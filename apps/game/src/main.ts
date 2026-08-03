@@ -2,6 +2,7 @@ import { Engine } from '@babylonjs/core/Engines/engine';
 import { createCityScene } from '@idle-city/renderer';
 import {
   createSimulation,
+  getBuildingArchetype,
   ZONE_DEFINITIONS,
   type PlaceZoneCommand,
   type PlaceZoneRejectionReason,
@@ -14,6 +15,8 @@ import './style.css';
 const canvas = document.querySelector<HTMLCanvasElement>('#game-canvas');
 const dataValue = document.querySelector<HTMLElement>('#data-value');
 const populationValue = document.querySelector<HTMLElement>('#population-value');
+const constructionWorkersValue = document.querySelector<HTMLElement>('#construction-workers-value');
+const constructionStatus = document.querySelector<HTMLElement>('#construction-status');
 const tickValue = document.querySelector<HTMLElement>('#tick-value');
 const pauseButton = document.querySelector<HTMLButtonElement>('#pause-button');
 const normalButton = document.querySelector<HTMLButtonElement>('#normal-button');
@@ -27,6 +30,8 @@ if (
   canvas === null ||
   dataValue === null ||
   populationValue === null ||
+  constructionWorkersValue === null ||
+  constructionStatus === null ||
   tickValue === null ||
   pauseButton === null ||
   normalButton === null ||
@@ -167,6 +172,27 @@ const queuePlacementAt = (origin: GridPosition): void => {
 const updateHud = (snapshot: ReturnType<typeof simulation.getSnapshot>): void => {
   dataValue.textContent = String(snapshot.data);
   populationValue.textContent = String(snapshot.population);
+  const incompleteBuildings = snapshot.buildings.filter(
+    (building) => building.state.kind === 'incomplete',
+  );
+  const constructionWorkerCount = incompleteBuildings.reduce(
+    (count, building) => count + building.assignments.constructionWorkerIds.length,
+    0,
+  );
+  constructionWorkersValue.textContent = String(constructionWorkerCount);
+  constructionStatus.textContent =
+    incompleteBuildings.length === 0
+      ? 'No active construction.'
+      : incompleteBuildings
+          .map((building) => {
+            if (building.state.kind !== 'incomplete') return '';
+            const visualKind = getBuildingArchetype(building.archetypeId).visualKind;
+            const name = visualKind === 'house' ? 'House' : visualKind === 'shop' ? 'Shop' : 'Park';
+            const labor = `${String(building.state.laborCompleted)}/${String(building.state.laborRequired)} labor`;
+            const workers = `${String(building.assignments.constructionWorkerIds.length)} worker${building.assignments.constructionWorkerIds.length === 1 ? '' : 's'}`;
+            return `${name}: ${labor} · ${workers}`;
+          })
+          .join(' | ');
   tickValue.textContent = String(snapshot.tick);
   livingZoneButton.textContent = `Living - ${String(snapshot.nextZoneCosts.living)} Data`;
   workingZoneButton.textContent = `Working - ${String(snapshot.nextZoneCosts.working)} Data`;

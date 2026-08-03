@@ -15,6 +15,7 @@ import {
   cloneBuildingInstance,
   createBuildingInstance,
   createBuildingSnapshot,
+  BUILDING_ARCHETYPE_ORDER,
   getBuildingArchetype,
   type BuildingArchetypeId,
   type BuildingGeometry,
@@ -27,6 +28,7 @@ import {
   createBuildingPassabilityCallback,
   decrementBuildingActivityTicks,
   isBuildingPassable,
+  selectBuildingDestinationCell,
   selectInternalBuildingDestinationCell,
 } from './navigation';
 import {
@@ -205,6 +207,8 @@ export interface SimulationOptions {
   readonly seed?: number;
   /** Overrides the default 0.02 planning coefficient for controlled scenarios. */
   readonly planningChance?: number;
+  /** Test-only balance overrides for keeping focused construction tests short. */
+  readonly constructionLaborRequirements?: Partial<Record<BuildingArchetypeId, number>>;
 }
 
 /** The authoritative order of work inside one logical tick. */
@@ -263,7 +267,7 @@ export interface PlanningJobSnapshot {
   readonly candidateChecks: number;
 }
 
-export type BuildingActivityKind = 'generic';
+export type BuildingActivityKind = 'generic' | 'construction';
 
 export interface CitizenRouteSnapshot {
   readonly sourceBuildingId: BuildingId | null;
@@ -285,6 +289,9 @@ export interface CitizenSnapshot {
   readonly previousPosition: GridPosition;
   readonly movementCredit: number;
   readonly wanderingAnchor: GridPosition;
+  readonly homeBuildingId: BuildingId | null;
+  readonly workBuildingId: BuildingId | null;
+  readonly constructionBuildingId: BuildingId | null;
   readonly route: CitizenRouteSnapshot | null;
   readonly activity: BuildingActivitySnapshot | null;
 }
@@ -351,6 +358,9 @@ interface CitizenState {
   pathIndex: number;
   goalStartTick: number;
   tripSequence: number;
+  homeBuildingId: BuildingId | null;
+  workBuildingId: BuildingId | null;
+  constructionBuildingId: BuildingId | null;
   route: CitizenRouteState | null;
   activity: BuildingActivityState | null;
   internalTarget: GridPosition | null;
@@ -384,6 +394,7 @@ interface AuthoritativeState {
   readonly world: WorldState;
   readonly metrics: MutableMovementMetrics;
   readonly planningChance: number;
+  readonly constructionLaborRequirements: Readonly<Record<BuildingArchetypeId, number>>;
   lastPlanningJob: PlanningJobSnapshot;
   movementNoProgressTicks: number;
 }
@@ -511,6 +522,29 @@ function validatePlanningChance(planningChance: number): number {
   return planningChance;
 }
 
+function createConstructionLaborRequirements(
+  overrides: Partial<Record<BuildingArchetypeId, number>> | undefined,
+): Readonly<Record<BuildingArchetypeId, number>> {
+  const requirements = {} as Record<BuildingArchetypeId, number>;
+  for (const archetypeId of BUILDING_ARCHETYPE_ORDER) {
+    requirements[archetypeId] = getBuildingArchetype(archetypeId).labor;
+  }
+
+  for (const [archetypeId, requirement] of Object.entries(overrides ?? {})) {
+    if (!BUILDING_ARCHETYPE_ORDER.includes(archetypeId as BuildingArchetypeId)) {
+      throw new Error(`Unknown construction labor archetype ${archetypeId}.`);
+    }
+    if (!Number.isSafeInteger(requirement) || requirement <= 0) {
+      throw new Error(
+        `Construction labor requirements must be positive safe integers; received ${String(requirement)}.`,
+      );
+    }
+    requirements[archetypeId as BuildingArchetypeId] = requirement;
+  }
+
+  return Object.freeze(requirements);
+}
+
 function copyPosition(position: GridPosition): GridPosition {
   return createGridPosition(position.x, position.y);
 }
@@ -614,6 +648,9 @@ function createCitizenState(id: CitizenId, position: GridPosition): CitizenState
     pathIndex: 0,
     goalStartTick: 0,
     tripSequence: 0,
+    homeBuildingId: null,
+    workBuildingId: null,
+    constructionBuildingId: null,
     route: null,
     activity: null,
     internalTarget: null,
@@ -781,7 +818,11 @@ function validatePlaceZoneCommand(
   };
 }
 
-function createInitialState(seed: number, planningChance: number): AuthoritativeState {
+function createInitialState(
+  seed: number,
+  planningChance: number,
+  constructionLaborRequirements: Readonly<Record<BuildingArchetypeId, number>>,
+): AuthoritativeState {
   const validatedSeed = validateSeed(seed);
   const validatedPlanningChance = validatePlanningChance(planningChance);
   const world = createWorld();
@@ -803,6 +844,7 @@ function createInitialState(seed: number, planningChance: number): Authoritative
     world,
     metrics: createMutableMetrics(),
     planningChance: validatedPlanningChance,
+    constructionLaborRequirements,
     lastPlanningJob: createIdlePlanningJobSnapshot(),
     movementNoProgressTicks: 0,
   };
@@ -823,6 +865,9 @@ function copyCitizenForPending(citizen: CitizenState): CitizenState {
     pathIndex: citizen.pathIndex,
     goalStartTick: citizen.goalStartTick,
     tripSequence: citizen.tripSequence,
+    homeBuildingId: citizen.homeBuildingId,
+    workBuildingId: citizen.workBuildingId,
+    constructionBuildingId: citizen.constructionBuildingId,
     route: copyRoute(citizen.route),
     activity: copyActivity(citizen.activity),
     internalTarget: citizen.internalTarget === null ? null : copyPosition(citizen.internalTarget),
@@ -897,6 +942,9 @@ function createSnapshot(state: AuthoritativeState): SimulationSnapshot {
       previousPosition: copySnapshotPosition(citizen.previousPosition),
       movementCredit: citizen.movementCredit,
       wanderingAnchor: copySnapshotPosition(citizen.wanderingAnchor),
+      homeBuildingId: citizen.homeBuildingId,
+      workBuildingId: citizen.workBuildingId,
+      constructionBuildingId: citizen.constructionBuildingId,
       route:
         citizen.route === null
           ? null
@@ -986,6 +1034,7 @@ function createPendingTick(
       world: cloneWorld(state.world),
       metrics: copyMetrics(state.metrics),
       planningChance: state.planningChance,
+      constructionLaborRequirements: state.constructionLaborRequirements,
       lastPlanningJob: { ...state.lastPlanningJob },
       movementNoProgressTicks: state.movementNoProgressTicks,
     },
@@ -1096,6 +1145,85 @@ function clearInvalidBuildingDestinations(state: AuthoritativeState): void {
   }
 }
 
+function compareStableIds(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function replaceBuildingAssignments(
+  building: BuildingInstance,
+  constructionWorkerIds: readonly CitizenId[],
+): BuildingInstance {
+  return createBuildingInstance({
+    id: building.id,
+    zoneId: building.zoneId,
+    archetype: building.archetypeId,
+    origin: building.origin,
+    transform: building.transform,
+    state: building.state,
+    assignments: {
+      constructionWorkerIds,
+      residentCitizenIds: building.assignments.residentCitizenIds,
+      workerCitizenIds: building.assignments.workerCitizenIds,
+      visitorReservationCitizenIds: building.assignments.visitorReservationCitizenIds,
+    },
+  });
+}
+
+function replaceBuildingAsComplete(
+  building: BuildingInstance,
+  assignments: BuildingInstance['assignments'],
+): BuildingInstance {
+  return createBuildingInstance({
+    id: building.id,
+    zoneId: building.zoneId,
+    archetype: building.archetypeId,
+    origin: building.origin,
+    transform: building.transform,
+    state: { kind: 'complete' },
+    assignments,
+  });
+}
+
+function clearConstructionState(citizen: CitizenState, buildingId: BuildingId): void {
+  if (citizen.constructionBuildingId === buildingId) citizen.constructionBuildingId = null;
+  if (citizen.route?.destinationBuildingId === buildingId) clearBuildingRoute(citizen);
+  if (citizen.activity?.buildingId === buildingId && citizen.activity.kind === 'construction') {
+    clearBuildingActivity(citizen);
+  }
+}
+
+/** Keeps the temporary per-citizen and per-project assignment views consistent. */
+function clearInvalidConstructionAssignments(state: AuthoritativeState): void {
+  const citizensById = new Map<CitizenId, CitizenState>();
+  for (const citizen of state.citizens) citizensById.set(citizen.id, citizen);
+
+  for (let index = 0; index < state.buildings.length; index += 1) {
+    const building = state.buildings[index];
+    if (building === undefined || building.state.kind !== 'incomplete') continue;
+
+    const validWorkerIds = building.assignments.constructionWorkerIds.filter((citizenId) => {
+      const citizen = citizensById.get(citizenId);
+      return citizen?.constructionBuildingId === building.id;
+    });
+    if (validWorkerIds.length !== building.assignments.constructionWorkerIds.length) {
+      state.buildings[index] = replaceBuildingAssignments(building, validWorkerIds);
+    }
+  }
+
+  for (const citizen of state.citizens) {
+    const buildingId = citizen.constructionBuildingId;
+    if (buildingId === null) continue;
+    const building = findBuildingById(state, buildingId);
+    if (
+      building === undefined ||
+      building.state.kind !== 'incomplete' ||
+      !building.assignments.constructionWorkerIds.includes(citizen.id)
+    ) {
+      clearConstructionState(citizen, buildingId);
+    }
+  }
+}
+
 function selectNextInternalActivityTarget(
   state: AuthoritativeState,
   citizen: CitizenState,
@@ -1157,6 +1285,39 @@ function startGenericBuildingActivity(
   citizen.internalPathNeedsReplan = false;
 }
 
+function startConstructionBuildingActivity(
+  state: AuthoritativeState,
+  citizen: CitizenState,
+  buildingId: BuildingId,
+): void {
+  const building = findBuildingById(state, buildingId);
+  if (
+    building === undefined ||
+    building.state.kind !== 'incomplete' ||
+    citizen.constructionBuildingId !== building.id ||
+    !buildingContainsCell(building, citizen.position)
+  ) {
+    clearBuildingRoute(citizen);
+    return;
+  }
+
+  citizen.activity = {
+    buildingId,
+    kind: 'construction',
+    ticksRemaining: 0,
+    internalWanderingSequence: 0,
+  };
+  citizen.route = null;
+  citizen.path = null;
+  citizen.pathIndex = 0;
+  citizen.routeNeedsReplan = false;
+  citizen.replanWithOccupancy = false;
+  citizen.internalTarget = null;
+  citizen.internalPath = null;
+  citizen.internalPathIndex = 0;
+  citizen.internalPathNeedsReplan = false;
+}
+
 function startWanderingSegment(state: AuthoritativeState, citizen: CitizenState): void {
   citizen.wanderingSequence += 1;
   citizen.wanderingAnchor = copyPosition(citizen.position);
@@ -1174,23 +1335,189 @@ function startWanderingSegment(state: AuthoritativeState, citizen: CitizenState)
   ensureChunkAt(state.world, citizen.wanderingTarget);
 }
 
+function manhattanDistanceToFootprint(
+  position: GridPosition,
+  physicalCells: readonly GridPosition[],
+): number {
+  let distance = Number.POSITIVE_INFINITY;
+  for (const cell of physicalCells) {
+    distance = Math.min(distance, Math.abs(position.x - cell.x) + Math.abs(position.y - cell.y));
+  }
+  return distance;
+}
+
+function selectConstructionDestinationCell(
+  state: AuthoritativeState,
+  citizen: CitizenState,
+  building: BuildingInstance,
+  tripSequence: number,
+): GridPosition {
+  return selectBuildingDestinationCell({
+    worldSeed: state.seed,
+    citizenId: citizen.id,
+    buildingId: building.id,
+    tripSequence,
+    purpose: 'construction-destination',
+    physicalCells: building.physicalCells,
+  });
+}
+
+function canReachConstructionProject(
+  state: AuthoritativeState,
+  citizen: CitizenState,
+  building: BuildingInstance,
+): boolean {
+  const tripSequence = citizen.tripSequence + 1;
+  const destinationCell = selectConstructionDestinationCell(state, citizen, building, tripSequence);
+  const sourceBuilding = findBuildingContainingCell(state, citizen.position);
+  const passability = createBuildingPassabilityCallback({
+    buildings: state.buildings,
+    sourceBuildingId: sourceBuilding?.id ?? null,
+    destinationBuildingId: building.id,
+    isAuthorizedForIncompleteBuilding: (candidate) => candidate.id === building.id,
+  });
+  const search = createAStarSearch({
+    start: citizen.position,
+    goal: destinationCell,
+    isWalkable: passability,
+  });
+  return search.advance(Number.MAX_SAFE_INTEGER).status === 'found';
+}
+
+function isCitizenAvailableForConstruction(citizen: CitizenState): boolean {
+  if (citizen.constructionBuildingId !== null) return false;
+  if (citizen.activity !== null || citizen.route !== null || citizen.routeNeedsReplan) return false;
+  return citizen.path === null || citizen.pathIndex >= citizen.path.length;
+}
+
+function startConstructionTrip(
+  state: AuthoritativeState,
+  citizen: CitizenState,
+  building: BuildingInstance,
+): void {
+  const tripSequence = citizen.tripSequence + 1;
+  citizen.tripSequence = tripSequence;
+  const sourceBuilding = findBuildingContainingCell(state, citizen.position);
+  citizen.route = {
+    sourceBuildingId: sourceBuilding?.id ?? null,
+    destinationBuildingId: building.id,
+    destinationCell: selectConstructionDestinationCell(state, citizen, building, tripSequence),
+    tripSequence,
+  };
+  citizen.path = null;
+  citizen.pathIndex = 0;
+  citizen.goalStartTick = state.tick;
+  citizen.routeNeedsReplan = false;
+  citizen.replanWithOccupancy = false;
+}
+
+function countConstructionAssignedCitizens(state: AuthoritativeState): number {
+  return state.citizens.reduce(
+    (count, citizen) => count + (citizen.constructionBuildingId === null ? 0 : 1),
+    0,
+  );
+}
+
+interface ConstructionCandidate {
+  readonly citizen: CitizenState;
+  readonly preferred: boolean;
+  readonly distance: number;
+}
+
+function selectConstructionCandidate(
+  state: AuthoritativeState,
+  building: BuildingInstance,
+): CitizenState | null {
+  const constructionAssignedCount = countConstructionAssignedCitizens(state);
+  const fullyAssignedCitizensProtected =
+    state.citizens.length > 0 && constructionAssignedCount * 2 >= state.citizens.length;
+  const candidates: ConstructionCandidate[] = [];
+
+  for (const citizen of state.citizens) {
+    if (!isCitizenAvailableForConstruction(citizen)) continue;
+    const preferred = citizen.homeBuildingId === null || citizen.workBuildingId === null;
+    if (!preferred && fullyAssignedCitizensProtected) continue;
+    if (!canReachConstructionProject(state, citizen, building)) continue;
+    candidates.push({
+      citizen,
+      preferred,
+      distance: manhattanDistanceToFootprint(citizen.position, building.physicalCells),
+    });
+  }
+
+  if (candidates.length === 0) return null;
+  const preferredCandidates = candidates.filter((candidate) => candidate.preferred);
+  const ranked = (preferredCandidates.length > 0 ? preferredCandidates : candidates).sort(
+    (left, right) =>
+      right.preferred === left.preferred
+        ? left.distance - right.distance || compareStableIds(left.citizen.id, right.citizen.id)
+        : left.preferred
+          ? -1
+          : 1,
+  );
+  return ranked[0]?.citizen ?? null;
+}
+
+function assignConstructionWorker(
+  state: AuthoritativeState,
+  citizen: CitizenState,
+  building: BuildingInstance,
+): void {
+  if (citizen.constructionBuildingId !== null) {
+    throw new Error(`Citizen ${citizen.id} already has a construction assignment.`);
+  }
+  const buildingIndex = state.buildings.findIndex((candidate) => candidate.id === building.id);
+  if (buildingIndex < 0) throw new Error(`Unknown construction project ${building.id}.`);
+  const currentBuilding = state.buildings[buildingIndex];
+  if (currentBuilding === undefined || currentBuilding.state.kind !== 'incomplete') {
+    throw new Error(`Construction project ${building.id} is not incomplete.`);
+  }
+  const capacity = getBuildingArchetype(currentBuilding.archetypeId).capacities.constructionWorkers;
+  if (currentBuilding.assignments.constructionWorkerIds.length >= capacity) {
+    throw new Error(`Construction project ${building.id} has no open worker slot.`);
+  }
+
+  state.buildings[buildingIndex] = replaceBuildingAssignments(currentBuilding, [
+    ...currentBuilding.assignments.constructionWorkerIds,
+    citizen.id,
+  ]);
+  citizen.constructionBuildingId = currentBuilding.id;
+  citizen.path = null;
+  citizen.pathIndex = 0;
+  citizen.route = null;
+  citizen.routeNeedsReplan = false;
+  citizen.replanWithOccupancy = false;
+}
+
+function processFillConstructionAssignments(pending: PendingTick): boolean {
+  const cursor = pending.cursors.fillConstructionAssignments;
+  consumeSingleStage(cursor);
+  const state = pending.nextState;
+  clearInvalidConstructionAssignments(state);
+
+  const projects = state.buildings
+    .filter((building) => building.state.kind === 'incomplete')
+    .sort((left, right) => compareStableIds(left.id, right.id));
+  for (const project of projects) {
+    const capacity = getBuildingArchetype(project.archetypeId).capacities.constructionWorkers;
+    while (true) {
+      const currentProject = findBuildingById(state, project.id);
+      if (currentProject === undefined || currentProject.state.kind !== 'incomplete') break;
+      if (currentProject.assignments.constructionWorkerIds.length >= capacity) break;
+      const candidate = selectConstructionCandidate(state, currentProject);
+      if (candidate === null) break;
+      assignConstructionWorker(state, candidate, currentProject);
+    }
+  }
+  return true;
+}
+
 const PLANNING_ARCHETYPE_BY_ZONE_TYPE: Readonly<Record<ZoneType, BuildingArchetypeId>> =
   Object.freeze({
     living: 'single-house',
     working: 'small-shop',
     leisure: 'small-park',
   });
-
-function countConstructionAssignedCitizens(state: AuthoritativeState): number {
-  const assignedCitizenIds = new Set<CitizenId>();
-  for (const building of state.buildings) {
-    if (building.state.kind !== 'incomplete') continue;
-    for (const citizenId of building.assignments.constructionWorkerIds) {
-      assignedCitizenIds.add(citizenId);
-    }
-  }
-  return assignedCitizenIds.size;
-}
 
 function isPlanningEligible(state: AuthoritativeState): boolean {
   const population = state.citizens.length;
@@ -1337,7 +1664,7 @@ function acceptPlanningCandidate(
     state: {
       kind: 'incomplete',
       laborCompleted: 0,
-      laborRequired: archetype.labor,
+      laborRequired: state.constructionLaborRequirements[archetype.id] ?? archetype.labor,
     },
   });
 
@@ -1515,6 +1842,22 @@ function processSelectNonConstructionGoals(pending: PendingTick): boolean {
 
   for (const citizen of pending.nextState.citizens) {
     if (citizen.activity !== null) continue;
+
+    const constructionBuildingId = citizen.constructionBuildingId;
+    if (constructionBuildingId !== null) {
+      const constructionBuilding = findBuildingById(pending.nextState, constructionBuildingId);
+      if (
+        constructionBuilding === undefined ||
+        constructionBuilding.state.kind !== 'incomplete' ||
+        !constructionBuilding.assignments.constructionWorkerIds.includes(citizen.id)
+      ) {
+        clearConstructionState(citizen, constructionBuildingId);
+      } else if (citizen.route === null) {
+        startConstructionTrip(pending.nextState, citizen, constructionBuilding);
+      }
+      if (citizen.constructionBuildingId !== null) continue;
+    }
+
     if (citizen.routeNeedsReplan) continue;
 
     if (citizen.route !== null) {
@@ -1904,7 +2247,7 @@ function processDecrementTimers(pending: PendingTick): boolean {
   const cursor = pending.cursors.decrementTimers;
   consumeSingleStage(cursor);
   for (const citizen of pending.nextState.citizens) {
-    if (citizen.activity !== null && citizen.activity.ticksRemaining > 0) {
+    if (citizen.activity?.kind === 'generic' && citizen.activity.ticksRemaining > 0) {
       citizen.activity.ticksRemaining = decrementBuildingActivityTicks(
         citizen.activity.ticksRemaining,
       );
@@ -1917,7 +2260,7 @@ function processCompleteExpiredActivities(pending: PendingTick): boolean {
   const cursor = pending.cursors.completeExpiredActivities;
   consumeSingleStage(cursor);
   for (const citizen of pending.nextState.citizens) {
-    if (citizen.activity !== null && citizen.activity.ticksRemaining <= 0) {
+    if (citizen.activity?.kind === 'generic' && citizen.activity.ticksRemaining <= 0) {
       clearBuildingActivity(citizen);
     }
   }
@@ -1949,7 +2292,87 @@ function processStartBuildingActivities(pending: PendingTick): boolean {
   for (const citizen of pending.nextState.citizens) {
     const buildingId = pending.arrivedBuildingIds.get(citizen.id);
     if (buildingId === undefined) continue;
-    startGenericBuildingActivity(pending.nextState, citizen, buildingId);
+    const building = findBuildingById(pending.nextState, buildingId);
+    if (building?.state.kind === 'incomplete') {
+      startConstructionBuildingActivity(pending.nextState, citizen, buildingId);
+    } else {
+      startGenericBuildingActivity(pending.nextState, citizen, buildingId);
+    }
+  }
+  return true;
+}
+
+function processApplyConstructionLabor(pending: PendingTick): boolean {
+  const cursor = pending.cursors.applyConstructionLabor;
+  consumeSingleStage(cursor);
+  const state = pending.nextState;
+
+  for (let index = 0; index < state.buildings.length; index += 1) {
+    const building = state.buildings[index];
+    if (building === undefined || building.state.kind !== 'incomplete') continue;
+
+    const assignedWorkerIds = new Set(building.assignments.constructionWorkerIds);
+    let workersInside = 0;
+    for (const citizen of state.citizens) {
+      if (
+        assignedWorkerIds.has(citizen.id) &&
+        citizen.constructionBuildingId === building.id &&
+        citizen.activity?.kind === 'construction' &&
+        buildingContainsCell(building, citizen.position)
+      ) {
+        workersInside += 1;
+      }
+    }
+    if (workersInside === 0) continue;
+
+    const laborCompleted = Math.min(
+      building.state.laborRequired,
+      building.state.laborCompleted + workersInside,
+    );
+    state.buildings[index] = createBuildingInstance({
+      id: building.id,
+      zoneId: building.zoneId,
+      archetype: building.archetypeId,
+      origin: building.origin,
+      transform: building.transform,
+      state: {
+        kind: 'incomplete',
+        laborCompleted,
+        laborRequired: building.state.laborRequired,
+      },
+      assignments: building.assignments,
+    });
+  }
+  return true;
+}
+
+function processCompleteBuildings(pending: PendingTick): boolean {
+  const cursor = pending.cursors.completeBuildings;
+  consumeSingleStage(cursor);
+  const state = pending.nextState;
+
+  for (let index = 0; index < state.buildings.length; index += 1) {
+    const building = state.buildings[index];
+    if (
+      building === undefined ||
+      building.state.kind !== 'incomplete' ||
+      building.state.laborCompleted < building.state.laborRequired
+    ) {
+      continue;
+    }
+
+    const constructionWorkerIds = new Set(building.assignments.constructionWorkerIds);
+    state.buildings[index] = replaceBuildingAsComplete(building, {
+      constructionWorkerIds: [],
+      residentCitizenIds: building.assignments.residentCitizenIds,
+      workerCitizenIds: building.assignments.workerCitizenIds,
+      visitorReservationCitizenIds: building.assignments.visitorReservationCitizenIds,
+    });
+    for (const citizen of state.citizens) {
+      if (constructionWorkerIds.has(citizen.id) || citizen.constructionBuildingId === building.id) {
+        clearConstructionState(citizen, building.id);
+      }
+    }
   }
   return true;
 }
@@ -1981,7 +2404,7 @@ function processStage(pending: PendingTick, stage: TickStage): boolean {
     case 'mark-citizens-requiring-goal':
       return consumeSingleStage(pending.cursors.markCitizensRequiringGoal);
     case 'fill-construction-assignments':
-      return consumeSingleStage(pending.cursors.fillConstructionAssignments);
+      return processFillConstructionAssignments(pending);
     case 'select-non-construction-goals':
       return processSelectNonConstructionGoals(pending);
     case 'advance-path-planning':
@@ -2001,9 +2424,9 @@ function processStage(pending: PendingTick, stage: TickStage): boolean {
     case 'produce-workplace-data':
       return consumeSingleStage(pending.cursors.produceWorkplaceData);
     case 'apply-construction-labor':
-      return consumeSingleStage(pending.cursors.applyConstructionLabor);
+      return processApplyConstructionLabor(pending);
     case 'complete-buildings':
-      return consumeSingleStage(pending.cursors.completeBuildings);
+      return processCompleteBuildings(pending);
     case 'apply-assignment-changes':
       return consumeSingleStage(pending.cursors.applyAssignmentChanges);
     case 'evaluate-population-growth':
@@ -2034,6 +2457,7 @@ function hashableState(state: AuthoritativeState): unknown {
     nextZoneId: state.nextZoneId,
     nextBuildingId: state.nextBuildingId,
     planningChance: state.planningChance,
+    constructionLaborRequirements: state.constructionLaborRequirements,
     lastPlanningJob: state.lastPlanningJob,
     chunks: getSortedChunks(state.world),
     metrics: state.metrics,
@@ -2044,6 +2468,7 @@ export function createSimulation(options: SimulationOptions = {}): Simulation {
   let committedState = createInitialState(
     options.seed ?? 0,
     options.planningChance ?? DEFAULT_PLANNING_CHANCE,
+    createConstructionLaborRequirements(options.constructionLaborRequirements),
   );
   let pendingTick: PendingTick | null = null;
   let queuedCommands: SimulationCommand[] = [];
