@@ -1,1251 +1,2254 @@
-# Virtual Crowd-Built City
+# Idle City — Design and Architecture
 
-## 0. Document Authority
+## 1. Document Authority
 
-This document is the authoritative gameplay-design contract for Idle City.
+This document defines the approved target design and architecture for Idle City.
 
-It serves two audiences:
+It serves as the authoritative contract for:
 
-- People designing, implementing, testing, and balancing the game.
-- AI coding agents that need exact boundaries and must not invent mechanics outside the approved plan.
+* Gameplay mechanics
+* Simulation behavior
+* Balance defaults
+* State ownership
+* Determinism requirements
+* Rendering boundaries
+* Testing invariants
+* Incremental implementation work
 
-Every substantial mechanic has one of three statuses:
+The current repository is being migrated toward this design. During the migration, current code may disagree with this document.
 
-- **Implemented** — exists in the repository and must remain consistent with code and tests.
-- **Contracted** — approved future behavior. It may be implemented only when a task explicitly includes it.
-- **Deferred** — intentionally undefined or postponed. Agents must not invent an implementation.
+Rules for interpreting this document:
 
-Rules for interpretation:
-
-1. Implemented and Contracted sections are normative.
-2. Examples, visual descriptions, and design rationale do not override a stated contract.
-3. A future mechanic mentioned outside a Contracted section is not permission to implement it.
-4. If code and an Implemented contract disagree, the discrepancy must be reported and reconciled. Do not silently choose one.
-5. Balance constants in this document are authoritative defaults until deliberately revised.
-6. All progression requirements are based on state, completed actions, or numeric thresholds. Elapsed real time and fixed tick-wait gates are prohibited.
-7. Determinism, stable ordering, and mutation-free rejection are gameplay requirements as well as engineering requirements.
-8. New systems should be introduced through the progression structure in this document rather than exposed immediately.
+1. This document defines the target state.
+2. The current branch defines what is presently implemented.
+3. Coding agents must implement only the explicitly assigned migration step.
+4. Agents must not attempt to reconcile the entire repository with this document in one change.
+5. Agents must not invent omitted mechanics.
+6. Determinism, stable ordering, and mutation-free rejection are gameplay requirements, not optional implementation details.
+7. Balance values in this document are authoritative defaults and must be centralized rather than duplicated as scattered literals.
+8. Any deliberate deviation from this document must update the document as part of the same design change.
+9. Rendering, browser timing, and machine performance must never affect authoritative outcomes.
+10. Features listed as out of scope must not be preserved merely because they exist in the old implementation.
 
 ---
 
-## 1. Concept
+## 2. Game Concept
 
-Idle City is a touch-friendly incremental game about operating a visibly artificial, voxel-based city simulation.
+Idle City is a browser-first incremental city simulation about creating broad development zones and watching a virtual population organize itself.
 
-The player does not place individual buildings, roads, or citizens. The player uses two recurring actions:
+The player does not place individual buildings or assign individual citizens.
 
-1. Place broad **district seeds** that influence where activity develops.
-2. Purchase **simulation research** that changes autonomous behavior.
+The player:
 
-Citizens follow schedules. Developers react to demand. Construction projects reserve sites and assemble structures. Repeated travel creates movement corridors. The city expands through active simulation chunks rather than through a fixed maximum map.
+1. Earns Data.
+2. Purchases and places broad zones.
+3. Watches autonomous planners select building sites.
+4. Watches citizens construct buildings.
+5. Gains population through available housing.
+6. Watches citizens receive homes and jobs.
+7. Earns more Data from citizen work trips.
+8. Builds leisure capacity that temporarily improves productivity.
+9. Repeats the loop at increasing scale.
 
 The central fantasy is:
 
-> Give a virtual society a few high-level incentives, then watch it organize itself into a functioning city.
+> Define where the city may grow, then watch its citizens build and inhabit it.
 
-The city must remain interesting to watch between decisions. Commutes, service visits, construction, queues, relocations, expansion, and redevelopment should create continuous visible consequences.
-
----
-
-## 2. Design Priorities
-
-1. **Immediate visible consequences**  
-   A purchase should cause a visible change in movement, construction, land use, or agent decisions.
-
-2. **Emergent city form**  
-   Layout should result from seeds, demand, access, citizen schedules, and developer decisions rather than fixed plans.
-
-3. **Minimal micromanagement**  
-   The player does not draw roads, approve normal buildings, assign citizens, or tune numeric quantities.
-
-4. **Gradual conceptual progression**  
-   The game introduces one major system at a time. New systems remain hidden until their fixed prerequisites are met.
-
-5. **Meaningful run identity**  
-   Research depth, specialization choices, seed topology, procedural conditions, and Kernel loadouts should create different viable runs.
-
-6. **Deep paths beat shallow generalism in their domain**  
-   A generalist remains flexible, but high research ranks unlock capabilities that cannot be reproduced by buying many shallow upgrades.
-
-7. **High explainability**  
-   Important autonomous decisions expose plain-language reasons and relevant overlays.
-
-8. **Low physics emphasis**  
-   The authoritative simulation uses deterministic fixed logical steps. Rendering interpolates but never affects outcomes.
-
-9. **Scalability from the start**  
-   The world expands through chunks. Simulation and rendering work should scale with active entities, dirty chunks, and visible chunks rather than coordinate extent.
-
-10. **Mouse- and touch-only play**  
-    Core play requires no keyboard input, text entry, numeric steppers, or repeated plus/minus controls.
+The city should remain visually active between player decisions. Citizens wander, commute, construct buildings, visit leisure destinations, and reorganize their assignments as new capacity becomes available.
 
 ---
 
 ## 3. Core Gameplay Loop
 
-1. Citizens attempt scheduled activities.
-2. Completed activities generate **Data**.
-3. Space, Access, Activity, demand, congestion, and underuse reveal the city’s current problems.
-4. The player chooses one action:
-   - place or relocate a district seed, or
-   - purchase a Core Protocol or research-track advancement.
-5. Developers, citizens, construction, and movement systems react.
-6. The city gains capacity, changes shape, or changes behavior.
-7. New scale creates a new problem.
-8. The player reaches fixed progression milestones.
-9. Late in the run, the player validates the city and recompiles the simulation for permanent metaprogression.
+The initial core gameplay loop is:
 
-A decision should create a chain of autonomous effects rather than a single isolated modifier.
+1. The player places a Living zone and a Working zone.
+2. Autonomous planning creates an incomplete building inside one eligible zone.
+3. Citizens travel to the incomplete building and contribute construction labor.
+4. Completed homes provide population capacity.
+5. Completed workplaces provide work assignments.
+6. Citizens with both assignments commute between home and work.
+7. Entering a workplace produces Data.
+8. Data purchases additional zones.
+9. Leisure zones eventually create leisure buildings.
+10. Leisure visits temporarily double Data produced by work visits.
+11. Additional capacity generates more citizens and expands the loop.
+
+The game must remain functional without:
+
+* Manual citizen assignment
+* Manual building placement
+* Player-built roads
+* Research upgrades
+* Prestige systems
+* Specialization systems
+* Demand overlays
+* City-wide performance indicators
 
 ---
 
-## 4. Current Simulation Foundation
+## 4. Current Scope
 
-### 4.1 Fixed-step authority — Implemented
+### 4.1 Included systems
 
-The simulation is authoritative and advances only through logical steps.
+The target core includes:
 
-- Rendering frame rate does not affect simulation outcomes.
-- Citizens move by no more than one logical cell per simulation tick.
-- Random behavior uses explicit seeded state.
-- Simulation snapshots are detached and serializable.
-- Rejected commands do not mutate authoritative state.
+* Infinite signed grid coordinates
+* Chunked world storage
+* Living, Working, and Leisure zones
+* Autonomous building planning
+* Incomplete and completed buildings
+* Citizen construction labor
+* Home and work assignments
+* Population growth
+* Citizen wandering
+* Home-to-work commuting
+* Leisure visits
+* Data production
+* Deterministic A* pathfinding
+* Fixed-point citizen movement
+* Local citizen collision handling
+* Tick slicing across multiple calls or render frames
+* Zone removal
+* Snapshot-driven rendering
+* Headless deterministic simulation testing
 
-The default opening is intentionally empty: zero buildings, projects, and
-seeds, Data 0, and one idle citizen on the deterministic center-nearest active
-cell. Living and Working seeds are the first development inputs; no starter
-plaza or road is created.
+### 4.2 Explicitly out of scope
 
-`gatherManualData()` is the opening bootstrap action. Each accepted activation
-adds exactly one Data without advancing the tick or consuming RNG. It remains
-available until both a Living and Working seed have been accepted, then rejects
-permanently. Automatic Data begins only after a citizen has both a completed
-home and workplace assignment.
+The following concepts are not part of the target core and must not be implemented unless this document is deliberately revised:
 
-### 4.2 Chunked world — Implemented
+* District seeds
+* Spatial demand fields
+* Space, Access, or Activity indicators
+* Services Core
+* Research tracks
+* Specialization
+* Prestige
+* Recompilation
+* Metaprogression
+* Learning districts
+* Industry districts
+* Entertainment districts
+* Service needs
+* Traffic-analysis progression
+* Roads
+* Transit
+* Congestion-based long-range route costs
+* Building redevelopment
+* Individual building demolition
+* Manual building approval
+* Manual citizen assignment
+* Citizen statistics beyond those required by this loop
+* Multiplayer
+* Backend simulation
+* Save compatibility with pre-migration builds
 
-The world uses signed logical coordinates divided into active chunks.
+Traffic instrumentation may be retained internally when useful for debugging, but it must not affect gameplay or routing in the core design.
 
-- Inactive chunks are not part of ordinary simulation space.
-- Ordinary snapshots expose active-chunk summaries rather than a dense maximum rectangle.
-- Detailed demand cells are queried through bounded chunk or region requests.
-- Chunk ordering and demand-cell ordering are deterministic.
-- Future worlds may extend beyond `1000 × 1000` logical coordinates without allocating every cell in the bounding rectangle.
+---
 
-### 4.3 Building footprints and entrances — Implemented
+## 5. Repository Architecture
 
-Initial footprints are:
-
-| Building type |             Footprint |
-| ------------- | --------------------: |
-| Home          | `3 × 3` logical cells |
-| Workplace     | `5 × 5` logical cells |
-
-Buildings occupy their complete footprint. Citizens route to valid exterior entrance cells rather than to blocked interiors.
-
-Capacity is an independent balance value. Footprint area does not automatically determine capacity.
-
-### 4.4 Demand — Implemented
-
-The simulation exposes Living, Working, and Services demand.
-
-Demand:
-
-- Is normalized and deterministic.
-- Uses aggregate shortage, local saturation, Access pressure, complementary uses, and matching district-seed influence.
-- Is stored and recalculated by affected active chunks.
-- Uses stable chunk summaries in ordinary snapshots.
-- Uses detached bounded detail queries for cell-level overlays and tests.
-
-### 4.5 Developer projects — Implemented foundation
-
-Developer scoring is deterministic and currently supports homes, workplaces, and Services buildings.
-
-The implemented normalized score is:
+The intended package dependency direction is:
 
 ```text
-project_score =
-    0.30 × local_matching_demand
-  + 0.35 × matching_seed_influence
-  + 0.10 × complementary_use
-  + 0.10 × entrance_accessibility
-  + 0.15 × expected_access_improvement
-  - 0.15 × same_use_saturation
-  - 0.05 × construction_cost
+shared <- simulation <- renderer <- game
+             ^
+             +-- balance-runner
 ```
 
-The score is clamped to `[0, 1]` and rounded to six decimal places.
+Reverse dependencies are prohibited unless the architecture is deliberately revised.
 
-Candidate tie-breaking is:
+### 5.1 `packages/shared`
 
-1. Higher score.
-2. Higher matching seed influence.
-3. Higher expected Access improvement.
-4. Lower footprint `y`.
-5. Lower footprint `x`.
-6. Stable building-type order.
-7. Stable entrance order.
+`packages/shared` contains small, engine-independent primitives that are genuinely shared by multiple packages.
 
-No randomness is used in the score or tie-breaker.
+Examples include:
 
-### 4.6 Circulation-aware development — Implemented Step 9.5
+* Integer grid coordinates
+* Chunk coordinates
+* Grid rectangles
+* Stable comparison helpers
+* Stable hash primitives
+* General fixed-point primitives
 
-Buildings derive a one-cell building clearance zone by expanding their
-complete footprint. Clearance is placement geometry only and remains ordinary
-walkable land. A candidate cannot overlap another footprint or clearance zone.
+It must not become a miscellaneous utility package.
 
-Active empty land is universally walkable and buildable. Inactive cells are
-neither walkable nor buildable, while completed and active construction
-footprints are blocked. Seeds influence demand only and never require a
-connector or network attachment. Distant seeded areas can develop when
-staging and labor are reachable across open land.
+### 5.2 `packages/simulation`
 
-Developer evaluation is an incremental deterministic job. It considers only
-relevant active chunks, checks at most 512 anchors per logical tick, retains
-at most 32 preliminary candidates, validates at most four finalists, and
-expands at most 2,048 paired corridor states per tick. A job is superseded by
-an explicit development-state version change. At most one project starts after
-a complete non-superseded evaluation.
+`packages/simulation` owns all authoritative state and behavior.
 
-An accepted project reserves its complete footprint and placement clearance in
-one authoritative transition. The simulation replans only citizens whose
-stored future route intersects the newly reserved footprint.
+It must:
 
-### 4.7 Citizen construction labor — Implemented Step 9.6
+* Run under Node without a browser
+* Import no Babylon.js modules
+* Use no DOM APIs
+* Use no browser timing APIs
+* Avoid `Math.random()`
+* Own explicit deterministic randomness
+* Own stable entity IDs
+* Own command validation
+* Own all zone, building, citizen, movement, and economy rules
+* Advance only through explicit logical simulation work
+* Expose detached serializable snapshots
+* Keep observation mutation-free
+* Remain usable by the balance runner
 
-Projects reserve their complete footprint and progress through:
+### 5.3 `packages/renderer`
 
-1. Survey
-2. Blueprint
-3. Foundation
-4. Frame
-5. Completion
+`packages/renderer` is a downstream projection of completed simulation snapshots.
 
-Construction is performed by existing citizens. Each project stores exactly
-three distinct staging cells outside its footprint. The selected entrance is
-first; remaining staging cells are ordered by shortest perimeter distance from
-the entrance, then `y`, then `x`. Project staging cells are ordinary active
-cells reserved only for their assigned workers during construction.
+It may own:
 
-The labor contract is:
+* Babylon.js scenes
+* Meshes
+* Instances
+* Materials
+* Camera state
+* Renderer-only animation
+* Interpolation
+* Renderer-only caches
+* Visibility selection
+* Chunk or multi-chunk mesh batching
 
-| Phase      | Labor required | Maximum workers |
-| ---------- | -------------: | --------------: |
-| Survey     |              2 |               1 |
-| Blueprint  |              3 |               1 |
-| Foundation |              8 |               2 |
-| Frame      |             18 |               3 |
-| Completion |              2 |               2 |
+It must not:
 
-One constructing citizen contributes one labor unit per logical tick. Labor
-is aggregated after movement arrival resolution, does not carry into the
-next phase, and advances at most one phase per tick. A project with no
-constructing workers pauses without labor progress.
+* Decide authoritative behavior
+* Generate authoritative IDs
+* Change citizen goals
+* Change building placement
+* Change citizen positions
+* Mutate simulation snapshots
+* Make simulation outcomes frame-rate dependent
+* Treat Babylon transforms as authoritative logical state
 
-Each active project also tracks `ticksSinceLastLabor`. A zero-labor tick
-increments it; any labor resets it. At 12 consecutive zero-labor ticks, the
-project may designate at most one assigned, reachable worker who is currently
-commuting to that project as its critical lead builder. Candidates are ordered
-by greater wait age, fewer remaining route cells, earlier trip start tick,
-then stable citizen ID. The designation is explanatory state, not a new
-worker or a teleport: it is cleared on labor, arrival, reassignment,
-completion, or trip change. A project with no assigned eligible worker never
-receives critical movement priority.
+### 5.4 `apps/game`
 
-Citizens are recruited only at a completed home or work activity boundary.
-In-progress activities and commutes are never interrupted. Recruitment saves
-the ordinary next destination, enters an explicit construction commute, and
-then enters `constructing` at the assigned staging cell. Assignment order is
-project ID, shortest reachable route, staging-cell index, then citizen ID.
-Workers are retained through a phase transition up to the next phase cap in
-stable citizen-ID order; excess and final workers resume their saved ordinary
-destination. Construction labor generates no Data, while home/work capacity
-occupancy remains attached to every citizen.
+`apps/game` owns:
 
-Default full-staff target durations are:
+* Browser startup
+* DOM controls
+* Player input
+* Zone placement interaction
+* Zone removal interaction
+* Pause and speed controls
+* Timing and work-budget orchestration
+* Command submission
+* PWA registration
+* Passing completed snapshots to the renderer
 
-| Phase      | Logical ticks |
-| ---------- | ------------: |
-| Survey     |             2 |
-| Blueprint  |             3 |
-| Foundation |             4 |
-| Frame      |             6 |
-| Completion |             1 |
+Substantial simulation rules must not live in the browser application.
 
-The full-staff target is 16 logical ticks (`2 + 3 + 4 + 6 + 1`). These are
-target durations rather than unconditional timers: the former duration
-configuration now represents the duration at the phase's maximum staffing.
-Understaffed phases take longer, and labor-starved phases can remain paused
-indefinitely.
+### 5.5 `tools/balance-runner`
 
-Future visual sub-stages may exist inside renderer animation, but they must not create additional authoritative construction phases unless this contract is revised.
+The balance runner executes the same simulation under Node.
+
+It must:
+
+* Import no Babylon.js modules
+* Accept explicit seeds and scenario parameters
+* Advance the simulation deterministically
+* Support different tick-work budgets
+* Produce machine-readable output
+* Report invariant violations
+* Support long-run economy and gridlock scenarios
+* Produce stable hashes for repeated identical runs
 
 ---
 
-## 5. District Seeds
+## 6. Determinism
 
-### 5.1 Seed catalog
+The complete authoritative outcome must be determined by:
 
-The complete planned catalog contains exactly six district seed types.
+* Initial configuration
+* World seed
+* Ordered accepted player commands
+* Logical tick number
 
-| Contract ID          | Seed          | Status      | Base cost | Unlock                              |
-| -------------------- | ------------- | ----------- | --------: | ----------------------------------- |
-| `SEED-LIVING`        | Living        | Implemented |   10 Data | Bootstrap                           |
-| `SEED-WORKING`       | Working       | Implemented |   12 Data | Bootstrap                           |
-| `SEED-SERVICES`      | Services      | Implemented |   20 Data | Services Core                       |
-| `SEED-LEARNING`      | Learning      | Contracted  |   40 Data | Choose Learning specialization      |
-| `SEED-INDUSTRY`      | Industry      | Contracted  |   45 Data | Choose Industry specialization      |
-| `SEED-ENTERTAINMENT` | Entertainment | Contracted  |   40 Data | Choose Entertainment specialization |
+The outcome must not depend on:
 
-There are no Transit or Research district seeds.
+* Render frame rate
+* Wall-clock timing
+* CPU speed
+* Number of simulation calls used to complete a tick
+* Snapshot observation frequency
+* Array insertion order where a stable ordering is required
+* Browser or renderer state
 
-- Transit emerges from route usage plus Access research.
-- Research-oriented development emerges from Learning, Working, and later specialization interactions.
-- Mixed-use development emerges from overlapping activity influence plus Space research.
+### 6.1 Randomness
 
-### 5.2 Shared seed contract
+All authoritative randomness must be explicit and deterministic.
 
-Every district seed:
+The simulation must not use `Math.random()`.
 
-- Has a stable authoritative ID.
-- Has one type, one anchor cell, and one placement tick.
-- Must be placed in an active buildable chunk.
-- Must not share its anchor cell with another seed.
-- Does not directly place a building.
-- Adds only matching-type influence.
-- Uses deterministic influence, rounding, and iteration order.
-- Consumes no RNG when placed, moved, or rejected.
-- Appears in the Seed Influence overlay.
-- Exposes a plain-language explanation of the uses it encourages.
+Random decisions should use one of two models:
 
-Different seed types may overlap.
-
-Same-type influences add together and cap at `1`.
-
-### 5.3 Influence — Implemented Step 10.5
-
-Seed influence is an axis-aligned square measured with Chebyshev distance.
-
-The implemented neighborhood radii are fixed simulation definitions:
-
-| Seed     |   Radius | Side length |
-| -------- | -------: | ----------: |
-| Living   | 10 cells |    21 cells |
-| Working  | 12 cells |    25 cells |
-| Services |  8 cells |    17 cells |
-
-These radii never derive from chunk dimensions. The simulation exposes the
-definitions and a detached current-placement-info result containing the exact
-row-major square cells, active and inactive covered-cell counts, current cost,
-and validation reason. The browser, renderer, and balance runner consume that
-authoritative information.
-
-For a matching seed:
+1. A stored seeded random generator whose consumption order is explicitly stable.
+2. Keyed deterministic randomness derived from values such as:
 
 ```text
-square_distance = max(abs(dx), abs(dy))
-
-single_seed_influence =
-    distance > radius
-        ? 0
-        : (radius + 1 - distance) / (radius + 1)
+world seed
+logical tick
+entity ID
+decision kind
+attempt index
 ```
 
-The outer boundary has positive influence `1 / (radius + 1)`; cells outside
-the square have zero influence. Contributions and running matching totals are
-rounded to six decimal places. Matching contributions add and cap at `1`.
-Different seed types may overlap without contributing to one another.
+Keyed randomness is preferred for local decisions whose result should not change merely because an unrelated subsystem consumed an additional random value.
 
-The placement preview and placed influence overlay use the same square
-definition; ordinary buildings and open land remain visible beneath it.
+Examples include:
 
-The configured radius is authoritative simulation balance data. UI previews must read the authoritative value rather than duplicate it.
+* Selecting a building-interior destination cell
+* Selecting a wandering destination
+* Choosing among equivalent sidestep cells
+* Population growth rolls
+* Building-planning rolls
+* Building transform ordering
+* Zone selection
 
-### 5.4 Gentle exponential placement cost — Contracted
+### 6.2 Stable ordering
 
-The cost of the next seed of a type is:
+Every authoritative iteration with potentially ambiguous results must define stable ordering or deterministic tie-breaking.
+
+Stable ordering is required for:
+
+* Zones
+* Buildings
+* Citizens
+* Projects
+* Candidate construction workers
+* Candidate assignments
+* Pathfinding neighbors
+* Building transforms
+* Planning anchors
+* Movement proposals
+* Movement conflicts
+* Snapshot arrays
+* Command application
+
+Stable entity IDs are the final tie-breaker unless a more specific rule is stated.
+
+### 6.3 Mutation-free rejection
+
+Rejected commands must not change:
+
+* Data
+* Zones
+* Buildings
+* Citizens
+* Projects
+* Routes
+* Assignment reservations
+* Entity ID counters
+* Random state
+* Tick state
+* Structural counters
+* Completed snapshots
+* Determinism hashes
+
+---
+
+## 7. Logical Time and Tick Slicing
+
+The simulation advances through fixed logical ticks.
+
+The default target speed is:
 
 ```text
-placement_cost(type) =
-    ceil(base_cost(type) × 1.25 ^ active_same_type_seed_count)
+5 logical ticks per second
 ```
 
-The first seed uses exponent `0`.
+Rendering runs independently through `requestAnimationFrame`.
 
-Examples for Living:
+### 7.1 Transactional ticks
 
-| Existing Living seeds | Next Living cost |
-| --------------------: | ---------------: |
-|                     0 |               10 |
-|                     1 |               13 |
-|                     2 |               16 |
-|                     3 |               20 |
-|                     4 |               25 |
-|                     5 |               31 |
-|                     6 |               39 |
+A logical tick is transactional.
 
-Only active seeds of the same type affect the exponent. Different seed types do not increase one another’s cost.
+A tick may require multiple calls to complete, but partial tick state is private to the simulation.
 
-The existing fixed 10/12/20 costs represent the first seed of each implemented type.
+During an incomplete tick:
 
-### 5.5 Placement rejection
+* The renderer continues using completed snapshots.
+* The tick number has not yet advanced.
+* A new completed snapshot is not exposed.
+* Observation must not change the pending work.
+* Player commands are queued for a defined tick boundary.
+* The simulation may retain private cursors, proposals, jobs, and temporary buffers.
 
-A seed-placement command rejects when:
+The tick commits only after all required stages complete.
 
-- The type is locked.
-- The anchor is outside active space.
-- The anchor is not buildable.
-- The anchor is not buildable under an explicit footprint or clearance rule.
-- Another seed already occupies the anchor.
-- The player lacks Data.
-- Another explicit future placement rule fails.
+### 7.2 Work-unit API
 
-A rejected command changes none of:
+The simulation should expose a bounded work interface conceptually equivalent to:
 
-- Data
-- seed collection
-- ID counters
-- RNG state
-- demand revisions
-- snapshots
-- determinism hash
+```ts
+interface TickWorkResult {
+  readonly status: "in-progress" | "committed";
+  readonly stage: TickStage;
+  readonly workUnitsConsumed: number;
+}
 
-Selecting a seed type does not purchase it. Hovering shows a transient exact
-axis-aligned square preview anchored at the candidate cell; clicking or tapping locks the candidate; an explicit
-`Place <Type> for <Cost> Data` confirmation revalidates the command and
-charges once. Cancel, drag, pointer cancellation, and lost capture clear the
-candidate without mutation. The placement panel shows radius, side length,
-coordinates, active and inactive covered-cell counts, current cost, and a
-plain-language reason.
+interface Simulation {
+  advanceTickWork(maxWorkUnits: number): TickWorkResult;
+}
+```
 
-### 5.6 Seed relocation — Contracted
+The exact API may evolve, but these contracts are mandatory:
 
-Seed relocation unlocks with Traffic Analysis.
+* The caller supplies a deterministic work-unit budget.
+* The simulation never receives a millisecond budget.
+* The browser may use elapsed time to decide how many times to invoke the method.
+* Each simulation call advances a stable amount of authoritative work.
+* Different work-unit budgets must produce the same completed state.
 
-Relocation:
-
-- Is an atomic simulation command.
-- Keeps the seed’s stable ID.
-- Validates the destination using placement rules.
-- Does not refund the original placement cost.
-- Costs:
+The following runs must produce identical completed snapshots and hashes:
 
 ```text
-relocation_cost(type) =
-    ceil(
-      base_cost(type)
-      × 1.25 ^ max(0, active_same_type_seed_count - 1)
-      × 0.50
-    )
+same initial state
+same world seed
+same accepted commands
+same number of completed ticks
+different work-unit budgets
+different calls per render frame
 ```
 
-- Removes old influence and adds new influence in the same state transition.
-- Does not create a moment when both anchors are active.
-- Is mutation-free on rejection.
+### 7.3 Completed snapshots
 
-Seeds cannot be deleted for a refund.
+The simulation retains at least the two latest completed snapshots needed for renderer interpolation.
+
+Rendering must never inspect a partially computed tick.
+
+If the simulation cannot complete ticks quickly enough, the logical tick rate may fall below its target. The simulation must not skip required work or alter results to keep up with rendering.
+
+### 7.4 Tick stages
+
+The target authoritative tick order is:
+
+1. Apply queued commands for the tick.
+2. Apply zone removals and invalidate removed references.
+3. Freeze start-of-tick citizen occupancy.
+4. Decrement activity and leisure-cooldown timers.
+5. Complete activities whose timers expired.
+6. Mark citizens requiring a new goal.
+7. Fill available construction assignments.
+8. Select non-construction goals.
+9. Advance bounded path-planning work.
+10. Accrue fixed-point movement credit.
+11. Generate movement proposals.
+12. Resolve movement conflicts and dependencies.
+13. Commit accepted movement simultaneously.
+14. Process arrivals.
+15. Start building activities.
+16. Produce Data for workplace entries.
+17. Apply construction labor.
+18. Complete buildings that reached their labor requirement.
+19. Apply home and work assignment changes caused by completion.
+20. Evaluate population growth.
+21. Advance building-planning work.
+22. Commit the completed tick and snapshot.
+
+Individual stages may be internally divided into resumable jobs.
+
+A citizen or building must not be processed twice in the same stage because a tick was split across multiple calls.
 
 ---
 
-## 6. Citizens, Buildings, and Movement
+## 8. World Coordinates and Chunks
 
-### 6.1 Citizen foundation
+### 8.1 Logical grid
 
-Citizens have:
+The world uses signed integer two-dimensional grid coordinates.
 
-- A stable ID.
-- A home.
-- A job, school, or other primary assignment when the relevant system exists.
-- A current activity.
-- A route and route progress.
-- Activity timers.
-- Needs unlocked by progression.
-- Limited deterministic state needed for destination choice and schedule adaptation.
+```ts
+interface GridPosition {
+  readonly x: number;
+  readonly y: number;
+}
+```
 
-The simulation does not expose arbitrary personality statistics before they affect an implemented decision.
+Citizens occupy individual grid cells.
 
-### 6.2 Activity progression
+Buildings and zones occupy sets of grid cells.
 
-Activities unlock in this order:
+Movement is orthogonal:
 
-| Core stage            | Activities introduced                                                  |
-| --------------------- | ---------------------------------------------------------------------- |
-| Bootstrap             | Home, commute, work                                                    |
-| Services              | Eat and basic service use                                              |
-| Traffic Analysis      | Waiting and route-delay response                                       |
-| Transit               | Walk-to-stop, wait, ride, transfer                                     |
-| Specialization        | Learn, Produce/Deliver, or Recreate depending on chosen specialization |
-| Verticality           | Vertical circulation and multi-level destinations                      |
-| Megacity Coordination | Coordinated multi-stop plans and predictive adaptation                 |
+* North
+* East
+* South
+* West
 
-A system must not create demand for an activity before a valid destination and completion path exist.
+Diagonal movement is not used.
 
-### 6.3 Destination choice
+### 8.2 Chunks
 
-When multiple valid destinations exist, citizens use a deterministic utility score with explicit weights:
+The logical world is divided into square chunks.
+
+The initial default chunk size is:
 
 ```text
-destination_score =
-    need_value
-  + preference
-  + quality
-  - route_cost
-  - expected_wait
-  - price_cost
+32 × 32 logical cells
 ```
 
-Each implemented activity must define:
+Chunk size is centralized and may be adjusted at compile or configuration time for performance testing.
 
-- Candidate destinations.
-- Normalization of every term.
-- Weights.
-- Tie-breaking.
-- Failure behavior.
-- Player-facing primary reason.
+Chunks are an internal storage and rendering concept.
 
-Agents must not invent a generic all-purpose destination planner without an explicit task.
+They must not:
 
-### 6.4 Buildings
+* Be visibly outlined during normal play
+* Restrict zone placement
+* Affect building-planning rules
+* Affect pathfinding semantics at boundaries
+* Affect zone cost
+* Affect citizen decisions
 
-Building categories are unlocked by research and specialization.
+Negative coordinates must use floor-based chunk conversion so that chunk boundaries are stable on both sides of zero.
 
-Initial implemented categories:
+### 8.3 Lazy allocation
 
-- Home
-- Workplace
-- Services building
+World storage must scale with used space rather than coordinate extent.
 
-Contracted categories:
+Placing a zone may lazily allocate all chunks intersected by that zone.
 
-- Apartment
-- Larger workplace
-- Food service
-- General service
-- Mixed-use building
-- Learning facility
-- Industrial facility
-- Entertainment venue
-- Vertical variants
-- Transit-support structures
+Additional spatial buffers should remain lazy where practical.
 
-Each building contract must define:
+The simulation must not preallocate a maximum world rectangle.
 
-- Footprint
-- Entrance rules
-- Capacity
-- Compatible activities
-- Developer eligibility
-- Construction cost normalization
-- Upgrade or conversion prerequisites
-- Occupancy rules
-- Explanation text
+---
 
-### 6.5 Movement and infrastructure
+## 9. Zones
 
-The player does not draw roads.
+### 9.1 Zone types
 
-Movement infrastructure evolves through:
+The core contains exactly three zone types:
+
+```ts
+type ZoneType = "living" | "working" | "leisure";
+```
+
+A zone permits only buildings associated with its own type.
+
+### 9.2 Zone geometry
+
+Zones are axis-aligned cell rectangles.
+
+Each zone has:
+
+* Stable ID
+* Type
+* World-space rectangle
+* Placement tick
+* Planning state
+* Saturation state where applicable
+
+Zones:
+
+* May cross chunk boundaries
+* May contain citizens
+* May not overlap other zones
+* May not rotate
+* May not change size after placement
+* Lazily allocate their affected chunks
+* Remain visible while active
+
+### 9.3 Zone placement
+
+The player directly places zones.
+
+A placement command must specify:
+
+* Zone type
+* Zone origin or rectangle
+* Expected current cost where needed for stale-command protection
+
+The simulation validates:
+
+* The zone type is valid.
+* The rectangle matches the authoritative dimensions for that zone type.
+* Coordinates are safe integers.
+* The zone does not overlap another active zone.
+* The player has enough Data.
+* No other explicit placement restriction fails.
+
+Citizens do not block zone placement.
+
+A successful placement:
+
+* Deducts Data exactly once.
+* Creates one stable zone ID.
+* Allocates intersected chunks as needed.
+* Makes the zone eligible for an immediate building-planning opportunity.
+* Updates the cost of the next zone of the same type.
+
+### 9.4 Zone removal
+
+The player may remove an existing zone.
+
+Zone removal:
+
+* Gives no Data refund.
+* Removes every incomplete building in the zone.
+* Removes every completed building in the zone.
+* Releases every construction assignment in the zone.
+* Removes every building assignment referencing the removed buildings.
+* Cancels routes targeting removed buildings.
+* Cancels leisure reservations targeting removed buildings.
+* Leaves citizens at their current logical positions.
+* Makes removed building footprints ordinary open land.
+* Recalculates the next zone cost using the reduced active same-type zone count.
+
+A citizen finishing an activity in a building removed by the same command does not continue that activity. Removal invalidates the building immediately at the command boundary.
+
+Removing a zone does not remove its chunks merely because they become empty. Chunk deallocation is an implementation optimization and must not affect gameplay.
+
+### 9.5 Zone cost
+
+The cost of the next zone of a type is:
 
 ```text
-informal route
-→ walkway
-→ street or service corridor
-→ bus corridor
-→ high-capacity transit
+zone_cost(type) =
+    ceil(base_cost(type) × 1.25 ^ active_same_type_zone_count)
 ```
 
-Progression rules:
+The first zone uses exponent `0`.
 
-- Route usage is measured before infrastructure upgrades exist.
-- Congestion-aware route choice requires Access research.
-- Immediate citizen conflict resolution uses deterministic movement reservations, not global permanent blocking.
-- Transit corridors require both qualifying traffic and the relevant Core/Access research.
-- High-capacity transit cannot appear before Access rank 5.
+Only active zones of the same type affect the exponent.
 
-### 6.6 Movement reservations â€” Implemented
+Removing a zone lowers future same-type costs because the active zone count decreases.
 
-Commuting citizens reserve exclusive logical movement cells. Home, work, and other inside-building activities do not reserve entrances. Each logical tick snapshots moving occupancy, creates deterministic next-cell proposals, resolves same-target conflicts and dependencies, permits uncontested cycles of length three or greater, rejects ordinary two-citizen swaps, and commits accepted moves simultaneously. Priority is greater wait age, fewer remaining route cells, earlier trip start tick, then stable citizen ID. Arrivals complete their trip and release the entrance in the same commit; `previousPosition` remains detached for renderer interpolation.
-
-Blocked commuters replan with bounded deterministic A* at exactly 4
-consecutive blocked ticks and every 4 additional blocked ticks. Recovery uses
-only the start-of-tick moving occupancy and wait state: other occupied cells
-are temporary blockers, and each candidate edge costs `100 +
-min(150, 50 × orthogonalQueueNeighbors)`, with a Manhattan heuristic scaled by 100. Recovery uses the citizen's stable route-tie profile, installs only a
-valid route that differs from the remaining route, and leaves the route
-untouched after a failure or identical result. Ordinary trip-start routing
-does not read historical traffic; historical congestion remains reserved for
-the later ACCESS-2 upgrade. Repeated identical direct head-on pairs receive
-one atomic emergency swap at exactly 12 consecutive blocked ticks. Movement
-snapshots expose wait state and cumulative reservation, conflict, replan,
-cycle, and recovery counters. A critical builder outranks a noncritical
-mover only when both propose the same target cell; dependency, cycle,
-one-cell-per-tick, and exclusivity rules remain unchanged. Traffic telemetry
-counts committed moves only.
+There is no removal refund.
 
 ---
 
-## 7. Player Understanding
+## 10. Buildings
 
-### 7.1 Primary indicators
+### 10.1 Building types
 
-The main interface exposes only:
+The core contains one initial building archetype per zone type:
 
-- **Space** — whether sufficient compatible capacity exists.
-- **Access** — whether citizens can reach activities efficiently.
-- **Activity** — whether citizens and buildings are productively used.
+* Single House
+* Small Shop
+* Small Park
 
-The browser opening keeps Population and Data as the prominent persistent HUD
-metrics. Build and Research are compact mutually exclusive drawers. Until both
-bootstrap seeds are accepted, a visible `Gather Data +1` control performs the
-authoritative manual-data action; it disappears once that action is no longer
-available. Entering Build mode desaturates existing buildings and projects,
-keeps Living/Working/Services seed influence colors vivid, and shows a single
-authoritative valid or invalid placement candidate. Leaving Build mode clears
-that transient candidate without spending Data.
+Additional archetypes may be added only through an intentional design revision.
 
-All three are normalized to `[0, 1]`.
+### 10.2 Archetypes and instances
 
-Detailed diagnostics may exist in inspection panels and development tools, but progression and explanations should use these three terms consistently.
+Static building definitions should be separated from dynamic building instances.
 
-### 7.2 Overlays
+A building archetype defines:
 
-Overlays unlock only with their mechanic:
+* Stable archetype ID
+* Compatible zone type
+* Physical footprint
+* Exclusion shape
+* Assignment capacity
+* Construction-worker capacity
+* Required labor
+* Supported transformations
+* Renderer visual kind
 
-| Overlay                | Unlock                               |
-| ---------------------- | ------------------------------------ |
-| Space demand           | Bootstrap                            |
-| Seed influence         | First seed placement                 |
-| Building activity      | First completed building             |
-| Travel flow            | Traffic Analysis                     |
-| Transit network        | Transit                              |
-| Specialization demand  | Matching specialization              |
-| Redevelopment forecast | Space 6 or Activity 5, as applicable |
+A building instance defines:
 
-Only one major overlay is active at a time.
+* Stable building ID
+* Owning zone ID
+* Archetype ID
+* Origin
+* Transform
+* Physical footprint cells
+* Exclusion-shape cells
+* Completion state
+* Labor completed
+* Assigned construction-worker IDs
+* Permanent citizen assignments where applicable
+* Temporary destination reservations where applicable
 
-Placed seed markers remain compact. Their full influence and active-world
-boundary are hidden by default and become visible when the seed is selected,
-the influence overlay is active, or the player is placing or relocating a
-seed. Placement previews show the complete authoritative axis-aligned square
-and distinguish its currently active and inactive cells near world boundaries.
+### 10.3 Physical footprint
 
-### 7.3 Explanations
+The physical footprint is the set of grid cells physically occupied by the building.
 
-Inspection panels show the primary reason, not an unexplained raw score.
+It is used for:
 
-Citizen:
+* Rendering
+* Building-interior citizen movement
+* Static navigation blocking
+* Placement validation
+* Construction presence
+* Arrival detection
 
-- Current activity
-- Next destination
-- Primary destination reason
-- Unmet need
-- Current delay or wait
-- Follow control
+A completed or incomplete physical footprint is blocked to ordinary world navigation except when it is the citizen’s current route source or route destination.
 
-Building:
+### 10.4 Exclusion shape
 
-- Purpose
-- Occupancy and capacity
-- Relevant local demand
-- Why it was built, upgraded, moved, or converted
-- Recent activity
+The exclusion shape is a placement-only region around the physical footprint.
 
-Seed:
+Its purpose is to prevent physical buildings from being placed immediately adjacent to one another.
 
-- Type
-- Current placement cost for another seed of that type
-- Influence radius
-- Matching uses encouraged
-- Local influence strength
+Exclusion-shape cells:
 
-Route:
+* Do not block citizen movement by themselves
+* Do not need to be visually rendered
+* Must fit entirely inside the owning zone
+* May overlap another building’s exclusion shape
+* May contain citizens
 
-- Usage
-- Congestion
-- Average trip contribution
-- Current infrastructure class
-- Next eligible upgrade and missing prerequisite
+Placement relationships are symmetric:
 
-Research:
+* A candidate physical footprint may not overlap an existing physical footprint.
+* A candidate physical footprint may not overlap an existing exclusion shape.
+* A candidate exclusion shape may not overlap an existing physical footprint.
+* A candidate exclusion shape may overlap another exclusion shape.
 
-- Exact mechanical effect
-- Prerequisites
-- Base or delayed cost
-- Visible consequence
-- Whether it resets on recompilation
+Incomplete buildings participate in these rules exactly like completed buildings.
+
+### 10.5 Transformations
+
+Buildings may be:
+
+* Rotated
+* Reflected
+* Rotated and reflected
+
+Only unique transformed shapes should be considered.
+
+Transform enumeration must be stable.
+
+For rectangular archetypes whose transformations produce identical geometry, duplicate transformations must not create duplicate planning candidates.
+
+### 10.6 Building states
+
+A building is either:
+
+```ts
+type BuildingState =
+  | {
+      readonly kind: "incomplete";
+      readonly laborCompleted: number;
+      readonly laborRequired: number;
+    }
+  | {
+      readonly kind: "complete";
+    };
+```
+
+An incomplete building exists authoritatively from the moment its site is accepted.
+
+It immediately reserves:
+
+* Its physical footprint
+* Its exclusion relationships
+* Its construction-worker capacity
+
+An incomplete building becomes complete when its accumulated labor reaches its required labor.
+
+Completion occurs at the building-completion stage of the current logical tick.
+
+The building becomes available for ordinary citizen goals beginning with subsequent goal selection.
 
 ---
 
-## 8. Data Economy
+## 11. Citizen State
 
-### 8.1 Single run resource
+Each citizen has:
 
-The player manages one run resource: **Data**.
+* Stable citizen ID
+* Current grid position
+* Previous completed-tick position
+* Fixed-point movement credit
+* Movement speed
+* Current goal
+* Current path
+* Path index
+* Blocked-movement count
+* Home assignment or `null`
+* Work assignment or `null`
+* Construction assignment or `null`
+* Leisure destination reservation or `null`
+* Leisure cooldown ticks remaining
+* Current building activity
+* Activity ticks remaining
+* Wandering anchor
+* Wandering target
+* Relevant deterministic recovery state
 
-The simulation may internally model costs or viability, but the player does not directly manage money, materials, taxes, or construction budgets.
+Home and work assignments are persistent relationships.
 
-### 8.2 Generation
+Construction and leisure destinations are temporary goal-related reservations.
 
-Data is generated by completed activities.
+### 11.1 Assignment capacities
+
+Building capacities have distinct meanings:
+
+* A house has resident-assignment capacity.
+* A shop has worker-assignment capacity.
+* A park has temporary visitor-reservation capacity.
+* An incomplete building has construction-worker assignment capacity.
+
+These capacities must not be conflated.
+
+A citizen may simultaneously have:
+
+* One home assignment
+* One work assignment
+* One construction assignment
+
+A construction assignment does not release the citizen’s home or work assignment.
+
+---
+
+## 12. Citizen Goals
+
+A citizen tracks one active goal.
+
+The goal priority is:
+
+1. Construct an incomplete building.
+2. Visit a leisure building.
+3. Produce Data through home/work activity.
+4. Wander.
+
+Citizens normally select a new goal only after finishing their current activity or trip.
+
+Newly available construction work does not interrupt an active:
+
+* Home trip
+* Home stay
+* Work trip
+* Work stay
+* Leisure trip
+* Leisure stay
+
+The citizen checks for construction opportunities when it next requires a goal.
+
+A construction assignment, once accepted, remains active until:
+
+* The building completes
+* The owning zone is removed
+* The project is otherwise invalidated by an authoritative command
+
+### 12.1 Construction goal selection
+
+When an incomplete building has an open construction-worker slot, candidate citizens are selected in two groups.
+
+First preference:
+
+* Citizens not already assigned to construction
+* Citizens missing a home assignment or work assignment
+* Citizens able to reach the project
+
+If no preferred candidate is available, the project may consider:
+
+* Any citizen not already assigned to construction
+* Any citizen able to reach the project
+
+Citizens who already have both home and work assignments may not be newly assigned when at least 50% of all citizens are currently assigned to construction.
+
+The 50% rule protects productive citizens. It does not prevent citizens missing a home or work assignment from taking construction work.
+
+Candidates are ranked by:
+
+1. Preferred incomplete-assignment group before fully assigned citizens.
+2. Lower Manhattan distance to the building physical footprint.
+3. Lower stable citizen ID.
+
+A project slot is reserved immediately when the assignment is accepted.
+
+Citizens traveling to construction count as assigned construction workers.
+
+### 12.2 Construction behavior
+
+An assigned construction worker:
+
+1. Navigates to a deterministic destination cell inside the incomplete building’s physical footprint.
+2. Enters the footprint.
+3. Remains within the footprint until completion.
+4. Wanders inside the footprint using ordinary movement rules.
+5. Contributes one labor unit per logical tick while inside the footprint.
+
+Construction labor does not depend on whether the worker successfully moved within the footprint during that tick.
+
+A worker contributes no construction labor while still traveling.
+
+Each worker contributes at most one labor unit per tick.
+
+### 12.3 Leisure goal selection
+
+A citizen may select leisure when:
+
+* The citizen is not assigned to construction.
+* The citizen is not on leisure cooldown.
+* At least one completed leisure building is reachable.
+* At least one reachable leisure building has an unreserved visitor slot.
+
+Leisure capacity includes:
+
+* Citizens currently inside the building
+* Citizens traveling to the building
+* Citizens holding an accepted leisure reservation before route completion
+
+The reservation is created when the leisure goal is accepted.
+
+The reservation is released when:
+
+* The leisure visit completes
+* The destination zone is removed
+* The leisure goal is invalidated
+* The citizen is removed
+
+Destination choice should prefer a reachable building with available capacity and use deterministic tie-breaking.
+
+The initial rule is:
+
+1. Shorter path length.
+2. Lower occupancy ratio.
+3. Lower stable building ID.
+
+### 12.4 Data-production goal
+
+A citizen can produce Data when it has both:
+
+* A completed home assignment
+* A completed work assignment
+
+The citizen alternates:
 
 ```text
-data_generated =
-    completed_activity_value
-  × city_efficiency_factor
+home stay
+travel to work
+work entry and Data production
+work stay
+travel home
+home stay
+repeat
 ```
 
-The efficiency factor is derived from Space, Access, and Activity and is bounded so a weak city continues to progress.
+Data is produced when the citizen enters its assigned workplace.
 
-Every activity contract must define its base Data value.
+The activity timers begin after arrival. The arrival tick does not also consume the first full stay tick.
 
-Implemented work generation remains authoritative until revised by an explicit economy task.
+### 12.5 Wandering goal
 
-### 8.3 Spending
+A citizen wanders when it is not:
 
-Data is spent on:
+* Assigned to construction
+* Visiting leisure
+* Able to perform the home/work loop
 
-- District seed placement
-- District seed relocation
-- Core Protocols
-- Research-track advancements
-- Explicit future run actions approved by this document
+When a citizen begins a wandering episode, it records its current position as the wandering anchor.
 
-The player never buys arbitrary quantities through numeric selectors.
-
-### 8.4 Research menu size
-
-The Research screen shows at most four primary purchase cards:
-
-- The next eligible Core Protocol, when available.
-- The next relevant Space purchase.
-- The next relevant Access purchase.
-- The next relevant Activity purchase.
-
-Additional delayed research is accessed through one secondary “Available Research” view. It must not overwhelm the default screen.
-
----
-
-## 9. Research and Strict Progression
-
-### 9.1 Progression model
-
-Progression has two layers:
-
-1. **Core Protocols** introduce major systems in a fixed order.
-2. **Research tracks** let the player deepen Space, Access, or Activity.
-
-Core order is fixed. Research depth is player-directed.
-
-There are six Core tiers after Bootstrap.
-
-| Tier | Core Protocol         | New major concept                                      |
-| ---: | --------------------- | ------------------------------------------------------ |
-|    0 | Bootstrap             | Living, Working, homes, workplaces, walking, work Data |
-|    1 | Services Core         | Needs and destination selection                        |
-|    2 | Traffic Analysis      | Route usage, congestion visibility, seed relocation    |
-|    3 | Transit Core          | Autonomous transit corridors and multimodal trips      |
-|    4 | Specialization Core   | First specialized activity and seed                    |
-|    5 | Vertical Simulation   | Second specialization and vertical development         |
-|    6 | Megacity Coordination | Predictive coordination and recompilation eligibility  |
-
-Core Protocols cannot be skipped in a normal run.
-
-### 9.2 Core costs
-
-| Core                  | Data cost |
-| --------------------- | --------: |
-| Services Core         |        50 |
-| Traffic Analysis      |       150 |
-| Transit Core          |       450 |
-| Specialization Core   |     1,200 |
-| Vertical Simulation   |     3,200 |
-| Megacity Coordination |     8,000 |
-
-Kernel effects may reduce effective cost. Effective cost is always rounded up and cannot fall below 50% of the table value.
-
-### 9.3 Core milestones
-
-Core eligibility requires all listed state conditions.
-
-#### Services Core
-
-- At least one Living seed placed.
-- At least one Working seed placed.
-- Population at least 20.
-- At least 40 completed work activities.
-
-#### Traffic Analysis
-
-- Services Core purchased.
-- At least one Services seed placed.
-- At least 30 completed service activities.
-- Population at least 40.
-- At least 100 completed trips.
-
-#### Transit Core
-
-- Traffic Analysis purchased.
-- At least 300 completed trips.
-- At least one route edge reaches 25 traversals within the authoritative traffic-history window.
-- Population at least 75.
-
-#### Specialization Core
-
-- Transit Core purchased.
-- At least 100 completed transit rides.
-- Population at least 150.
-- At least 10 occupied buildings.
-
-#### Vertical Simulation
-
-- Specialization Core purchased.
-- At least 100 activities from the first specialization.
-- Population at least 300.
-- At least 20 occupied buildings.
-- At least 3 chunk activations beyond the initial active region.
-
-#### Megacity Coordination
-
-- Vertical Simulation purchased.
-- Population at least 600.
-- At least 1,500 total completed activities.
-- At least 35 occupied buildings.
-- At least 6 chunk activations beyond the initial active region.
-
-No Core milestone may require:
-
-- A fixed number of elapsed ticks.
-- Real-world time.
-- Keeping the game open.
-- Owning a system for a minimum duration.
-
-Future Kernel effects may reduce numeric thresholds. A reduced threshold is rounded up.
-
-### 9.4 Track focus and delayed availability
-
-Each Core tier from 1 through 6 unlocks one new rank in each track.
-
-When a Core Protocol is purchased:
-
-1. The player selects one eligible track as the tier’s **Research Focus**.
-2. That tier’s rank in the chosen track receives **Focused** pricing.
-3. The same tier’s ranks in the other two tracks receive **Delayed** pricing.
-4. All three ranks remain available for the rest of the run.
-5. A rank still requires the prior rank in its track.
-6. A delayed rank may be purchased at any later point after its prerequisite is owned.
-7. Focus status is permanent for that rank during the run.
-
-This allows catch-up while strongly rewarding a deep path.
-
-### 9.5 Track costs
-
-Base costs by rank:
-
-| Rank | Base cost |
-| ---: | --------: |
-|    1 |        30 |
-|    2 |        90 |
-|    3 |       250 |
-|    4 |       700 |
-|    5 |     1,800 |
-|    6 |     4,500 |
-
-Focused cost:
+The citizen must remain within Chebyshev distance 16 of that anchor:
 
 ```text
-focused_cost(rank) = base_cost(rank)
+max(abs(x - anchorX), abs(y - anchorY)) <= 16
 ```
 
-Delayed cost:
+Wandering uses finite wandering segments:
+
+1. Select a deterministic random reachable target within the allowed area.
+2. Navigate to it.
+3. On arrival, check higher-priority goals.
+4. If no higher-priority goal exists, select another wandering target.
+
+This ensures that wandering citizens regularly reconsider construction and newly available assignments.
+
+---
+
+## 13. Assignments and Reassignments
+
+### 13.1 General rules
+
+Assignments may reference only completed buildings of the compatible type.
+
+A home assignment must reference a completed Living building.
+
+A work assignment must reference a completed Working building.
+
+Assignment counts must never exceed building assignment capacity.
+
+Assignment changes do not interrupt the citizen’s current non-construction trip or building activity.
+
+A citizen may finish:
+
+* Its current trip to an old assignment
+* Its current stay in an old assignment
+* Its current leisure visit
+
+The new assignment is used when the citizen next selects a home/work destination.
+
+Temporary presence in a former home or workplace does not continue consuming an assignment slot there.
+
+### 13.2 Home completion
+
+When a new Living building completes:
+
+1. Assign citizens with no home.
+2. If capacity remains, consider commute-improving reassignment.
+
+Homeless citizens are ranked by:
+
+1. Citizens with a work assignment before citizens without one.
+2. Lower distance from the new home to the assigned workplace, when present.
+3. Lower citizen ID.
+
+For commute improvement:
+
+1. Find the ten closest completed Working buildings to the new home.
+2. Gather citizens assigned to those workplaces.
+3. Exclude citizens with no current home.
+4. Calculate the old and new commute distances.
+5. Keep only citizens whose new commute is strictly shorter.
+6. Rank eligible citizens by:
+
+   * Greater commute-distance reduction
+   * Greater old commute distance
+   * Lower citizen ID
+7. Reassign until the new home is full.
+
+### 13.3 Workplace completion
+
+When a new Working building completes:
+
+1. Assign citizens with no work assignment.
+2. If capacity remains, consider commute-improving reassignment.
+
+Citizens without work are ranked by:
+
+1. Citizens with a home assignment before citizens without one.
+2. Lower distance from the assigned home to the new workplace, when present.
+3. Lower citizen ID.
+
+For commute improvement:
+
+1. Find the ten closest completed Living buildings to the new workplace.
+2. Gather citizens assigned to those homes.
+3. Exclude citizens with no current workplace.
+4. Calculate the old and new commute distances.
+5. Keep only citizens whose new commute is strictly shorter.
+6. Rank eligible citizens by:
+
+   * Greater commute-distance reduction
+   * Greater old commute distance
+   * Lower citizen ID
+7. Reassign until the workplace is full.
+
+### 13.4 Building distance
+
+Building-to-building Manhattan distance is the minimum Manhattan distance between any cell in the first physical footprint and any cell in the second physical footprint.
+
+This definition must be used consistently for:
+
+* Reassignment ranking
+* Nearest-building selection
+* Construction-candidate distance where a route length is not used
+
+Path length remains authoritative for actual travel when a path has been computed.
+
+---
+
+## 14. Navigation
+
+### 14.1 A* pathfinding
+
+Citizens use deterministic A* pathfinding over orthogonally adjacent logical cells.
+
+A* must define:
+
+* Stable neighbor order
+* Stable open-set tie-breaking
+* Integer movement costs
+* Explicit no-path status
+* Explicit bounded-work or node-expansion behavior
+* Resumable search when required by tick slicing
+
+The initial canonical neighbor order is:
 
 ```text
-delayed_cost(rank) = ceil(base_cost(rank) × 2.50)
+North
+East
+South
+West
 ```
 
-Kernel effects may reduce both costs. Effective research cost is rounded up and cannot fall below 50% of the applicable focused or delayed value.
+Equivalent shortest paths use stable coordinate and insertion-sequence tie-breaking.
 
-The focused rank from the current tier must be purchased before the next Core Protocol can be purchased.
+### 14.2 Building passability
 
-Delayed ranks are optional.
+All physical building footprints are blocked to ordinary navigation except:
 
-### 9.6 Space track
+* The citizen’s current route source building
+* The citizen’s current route destination building
 
-| Rank | Contract ID | Upgrade                  | Fixed effect                                                                                                                                                                         |
-| ---: | ----------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-|    1 | `SPACE-1`   | Apartments               | Developers may construct dense residential buildings when local Living demand is at least `0.60` and expected occupancy is at least `75%`.                                           |
-|    2 | `SPACE-2`   | Adaptive Density         | Residential and workplace candidate generation may choose small or dense forms based on demand, saturation, and Access instead of using one form per type.                           |
-|    3 | `SPACE-3`   | Mixed Use                | Developers may construct compatible Living/Services or Working/Services mixed-use buildings where both matching local demands are at least `0.50`.                                   |
-|    4 | `SPACE-4`   | Vertical Neighborhoods   | Dense and mixed-use buildings may add vertical capacity modules instead of requiring a new footprint when local demand is at least `0.70`.                                           |
-|    5 | `SPACE-5`   | Satellite Development    | Developer evaluation may begin a disconnected satellite cluster in an activated region when central buildable capacity is constrained and a specialization or service anchor exists. |
-|    6 | `SPACE-6`   | Predictive Redevelopment | Developers may coordinate conversion, merging, and replacement using forecast demand and Access rather than responding only after failure.                                           |
+An incomplete building footprint is passable only to citizens assigned to construct that building.
 
-### 9.7 Access track
+An unrelated building may not be used as a shortcut.
 
-| Rank | Contract ID | Upgrade                     | Fixed effect                                                                                                                                            |
-| ---: | ----------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|    1 | `ACCESS-1`  | Better Job Matching         | New citizens choose compatible home/work assignments using route cost, then stable building ID, rather than first available capacity.                   |
-|    2 | `ACCESS-2`  | Congestion-Aware Routing    | Long-range route cost includes bounded historical congestion. Current citizen positions remain local reservation concerns, not static global obstacles. |
-|    3 | `ACCESS-3`  | Coordinated Transfers       | Citizens may combine walking and transit legs and evaluate transfer wait in destination cost.                                                           |
-|    4 | `ACCESS-4`  | Express Corridors           | High-use transit corridors may skip local stops and form a route hierarchy when both local and express demand thresholds are met.                       |
-|    5 | `ACCESS-5`  | High-Capacity Transit       | Qualifying express corridors may upgrade to high-capacity transit with greater throughput and higher construction requirements.                         |
-|    6 | `ACCESS-6`  | Predictive Network Planning | The simulation may reserve or upgrade corridors based on forecast movement demand before sustained gridlock occurs.                                     |
+A citizen inside a source building may path outward through that building’s footprint.
 
-### 9.8 Activity track
+A citizen approaching a destination building may path into the chosen destination cell inside that building’s footprint.
 
-| Rank | Contract ID  | Upgrade                 | Fixed effect                                                                                                                       |
-| ---: | ------------ | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-|    1 | `ACTIVITY-1` | Schedule Chaining       | A citizen may travel directly from one completed out-of-home activity to the next valid activity instead of always returning home. |
-|    2 | `ACTIVITY-2` | Staggered Schedules     | Citizens with repeated delay may choose an earlier or later deterministic departure band.                                          |
-|    3 | `ACTIVITY-3` | Business Relocation     | Persistently underused service or specialized businesses may relocate to a better valid site instead of only closing.              |
-|    4 | `ACTIVITY-4` | Multi-Stop Plans        | Citizens may form deterministic plans containing up to three out-of-home destinations before returning home.                       |
-|    5 | `ACTIVITY-5` | Demand Forecasting      | Developers and businesses may use forecast activity demand when evaluating capacity and location.                                  |
-|    6 | `ACTIVITY-6` | Autonomous Coordination | Schedules, destination capacity, construction timing, and service availability may coordinate through a shared forecast horizon.   |
+### 14.3 Destination cells
 
-### 9.9 Research-depth intent
+When traveling to a building, the citizen selects a deterministic random destination cell within the building’s physical footprint.
 
-Expected run profiles include:
-
-- `6/0/0` specialist
-- `5/1/0` deep specialist
-- `4/1/1` focused
-- `3/3/0` hybrid
-- `2/2/2` generalist
-
-A specialist pays focused price for its defining ranks and reaches transformative behavior earlier in its domain.
-
-A generalist may purchase all available ranks but pays delayed cost for most of them.
-
-No track may be replaced by a generic percentage-only ladder.
-
----
-
-## 10. Specializations
-
-### 10.1 Choice schedule
-
-At Specialization Core:
-
-- Choose exactly one of Learning, Industry, or Entertainment.
-- The matching seed, demand, buildings, and activity unlock.
-- The choice is permanent for the run.
-
-At Vertical Simulation:
-
-- Choose one of the two remaining specializations.
-- The matching systems unlock.
-- The third specialization remains unavailable for that run.
-
-A normal run never unlocks all three specializations.
-
-### 10.2 Learning specialization
-
-Unlocks:
-
-- Learning seed.
-- Learning demand.
-- Learn activity.
-- School and campus development.
-- Education completion Data.
-- Skilled-job compatibility for future job contracts.
-
-### 10.3 Industry specialization
-
-Unlocks:
-
-- Industry seed.
-- Industry demand.
-- Produce and Deliver activities.
-- Workshop, production, and logistics development.
-- Freight or delivery traffic.
-- Production completion Data.
-
-### 10.4 Entertainment specialization
-
-Unlocks:
-
-- Entertainment seed.
-- Entertainment demand.
-- Recreate activity.
-- Venue and entertainment-complex development.
-- Evening and off-peak travel patterns.
-- Recreation completion Data.
-
----
-
-## 11. Expansion
-
-The world expands by activating chunks.
-
-- Activation is authoritative and deterministic.
-- Only active chunks contain ordinary buildable or walkable space.
-- Expansion allocates only activated chunks.
-- A distant coordinate does not allocate the rectangle between it and existing chunks.
-
-At defined milestones the player may choose:
-
-- **Expand Outward**
-- **Expand Upward**
-- **Start Satellite District**
-
-The exact Data cost and automatic-expansion thresholds remain Deferred until chunk activation, developer expansion, and population growth are balanced together.
-
-Agents must not invent those costs before that task.
-
----
-
-## 12. Recompilation and Permanent Progression
-
-### 12.1 Player-facing name
-
-The prestige action is called **Recompile Simulation**.
-
-### 12.2 Availability
-
-Recompilation is manual and never forced.
-
-It becomes available when:
-
-- Megacity Coordination is purchased.
-- The prestige-scaled population target is met.
-- The prestige-scaled completed-activity target is met.
-- The prestige-scaled active-chunk target is met.
-- Space is at least `0.65`.
-- Access is at least `0.65`.
-- Activity is at least `0.60`.
-- One Validation objective is complete.
-- The simulation has no critical invalid or permanently stalled state.
-
-There is no elapsed-time or tick-count requirement.
-
-### 12.3 Prestige-scaled targets
-
-Let `P` be the current Prestige Level before recompiling.
+The selection key should include:
 
 ```text
-population_target(P) =
-    600 + 250P + 50P²
-
-completed_activity_target(P) =
-    1,500 + 1,000P + 200P²
-
-active_chunk_target(P) =
-    16 + 2P
+world seed
+citizen ID
+building ID
+goal instance or trip sequence
+decision kind
 ```
 
-### 12.4 Validation objectives
+A citizen is considered inside the building whenever its current cell lies within the physical footprint.
 
-The player completes one Validation per run.
+### 14.4 Route lifetime
 
-#### Space Validation
+A path is normally calculated once per trip.
 
-- Space at least `0.80`.
-- Housing and job capacity each at least `125%` of population.
-- At least `ceil(10 × (1 + 0.10P))` occupied dense, mixed-use, vertical, or satellite buildings.
+A route may be invalidated when:
 
-#### Access Validation
+* Its destination building is removed.
+* A newly planned physical footprint blocks a future route cell.
+* The citizen performs a sidestep.
+* The citizen reaches a defined deadlock-recovery threshold.
+* The route is otherwise found to be invalid.
 
-- Access at least `0.80`.
-- At least `ceil(500 × (1 + 0.15P))` completed transit rides.
-- No critical route remains above the contracted severe-congestion threshold.
+Other citizens are not treated as permanent A* obstacles during ordinary route planning.
 
-#### Activity Validation
+---
 
-- Activity at least `0.75`.
-- Occupied-building ratio at least `0.80`.
-- At least `ceil(500 × (1 + 0.15P))` completed specialization activities.
+## 15. Fixed-Point Movement
 
-### 12.5 Reset boundary
+### 15.1 Fixed-point scale
 
-Recompilation resets:
+Authoritative citizen speed uses fixed-point units.
 
-- World and active chunks
-- Citizens
-- Buildings and projects
-- District seeds
-- Data
-- Core Protocols
-- Research ranks and focus selections
-- Specializations
-- Route and congestion history
-- Run-specific counters and milestones
-
-Recompilation preserves:
-
-- Prestige Level
-- Kernel Capacity
-- Unspent Kernel Points
-- Permanently purchased Kernel Modules
-- Permanent Kernel Optimization ranks
-- Cosmetics
-- Settings and accessibility preferences
-
-The game is not required to preserve past city summaries, screenshots, time-lapses, or replay archives.
-
-### 12.6 Reward every prestige
-
-Every recompilation grants:
-
-- Prestige Level `+1`
-- Kernel Capacity `+1`
-- One unrestricted Kernel Point
-- One Validation Kernel Point that must be spent in the selected Validation branch
-- One additional unrestricted Kernel Point when the new Prestige Level is divisible by `5`
-
-### 12.7 Kernel Matrix
-
-The Kernel Matrix has four branches:
-
-- Bootstrap
-- Space
-- Access
-- Activity
-
-Major Kernel Modules:
-
-- Are purchased permanently.
-- Cost one Kernel Point unless stated otherwise.
-- Must be equipped before a run.
-- Consume Kernel Capacity.
-- Cannot be changed during a run.
-- May be rearranged freely before a new run.
-
-### 12.8 Repeatable Kernel Optimizations
-
-After purchasing all six major modules in a branch, that branch unlocks repeatable permanent optimizations.
-
-Repeatable optimizations:
-
-- Cost one Kernel Point per rank.
-- Are always active.
-- Do not consume Kernel Capacity.
-- Have diminishing returns.
-- Never reach their asymptotic floor at a finite rank.
-
-Representative contracted formulas:
+The initial scale is:
 
 ```text
-core_cost_factor(r) =
-    0.50 + 0.50 × 0.95^r
-
-construction_duration_factor(r) =
-    0.50 + 0.50 × 0.95^r
-
-seed_growth_factor(r) =
-    1.15 + 0.10 × 0.95^r
-
-core_threshold_factor(r) =
-    0.60 + 0.40 × 0.95^r
-
-research_cost_factor(r) =
-    0.50 + 0.50 × 0.95^r
-
-validation_count_factor(r) =
-    0.60 + 0.40 × 0.95^r
+1024 movement units = 1 logical cell
 ```
 
-All factors are rounded to six decimal places before use.
+The initial citizen speed is:
+
+```text
+512 movement units per tick
+```
+
+This represents:
+
+```text
+0.5 cells per tick
+```
+
+### 15.2 Movement credit
+
+At the movement-credit stage:
+
+```text
+movementCredit =
+    min(1024, movementCredit + movementSpeed)
+```
+
+A citizen may propose one adjacent move when its movement credit is at least 1024.
+
+A successful move consumes 1024 movement credit.
+
+A blocked move does not consume movement credit.
+
+Credit is capped at one cell so that blocked citizens cannot accumulate multiple future moves and temporarily exceed their intended speed.
+
+Each citizen moves by at most one cell in one logical tick.
 
 ---
 
-## 13. Touch-Only Interface
+## 16. Citizen Movement Resolution
 
-Persistent controls:
+Citizen movement uses:
 
-- **Build**
-- **Research**
-- **City**
-- **View**
-- **Speed**
+```text
+proposal
+resolution
+simultaneous commit
+```
 
-The Research screen presents:
+Citizen positions must not be sequentially mutated while proposals are still being generated.
 
-- Next Core Protocol or its missing requirements.
-- Current-tier Space option.
-- Current-tier Access option.
-- Current-tier Activity option.
+### 16.1 Proposal generation
 
-Delayed research appears in a secondary view.
+Proposals are generated against start-of-tick occupancy.
 
-Recompile requires explicit confirmation because it resets the run.
+Each eligible citizen proposes at most one adjacent target cell.
+
+Proposal generation may be spread across multiple work calls, but all proposals must use the same frozen occupancy state.
+
+### 16.2 Target conflicts
+
+When multiple citizens propose the same target, priority is:
+
+1. Greater blocked-movement count.
+2. Fewer remaining path cells.
+3. Earlier goal or trip start tick.
+4. Lower citizen ID.
+
+Only one proposal may win an ordinary target conflict.
+
+### 16.3 Dependency chains
+
+A citizen may move into a currently occupied cell when the occupant has an accepted move that vacates the cell during the same commit.
+
+Movement dependencies must be resolved before commit.
+
+### 16.4 Swaps and cycles
+
+Direct two-citizen swaps are allowed when:
+
+* Each citizen proposes the other citizen’s current cell.
+* Both citizens have enough movement credit.
+* Both destination cells are legal for the respective citizens.
+* Neither proposal violates another authoritative restriction.
+
+Movement cycles of three or more citizens are also allowed.
+
+Any valid closed dependency cycle may rotate simultaneously.
+
+Allowing all valid cycles is required to reduce unnecessary gridlock.
+
+### 16.5 Blocked movement
+
+A citizen whose proposal is rejected:
+
+* Remains in place.
+* Retains movement credit.
+* Increments its blocked-movement count.
+
+A citizen whose move commits:
+
+* Updates its position.
+* Consumes movement credit.
+* Resets its blocked-movement count.
+* Advances its path index where applicable.
+
+### 16.6 Sidestep recovery
+
+After four consecutive blocked movement opportunities, a citizen may attempt a deterministic sidestep.
+
+The sidestep:
+
+* Considers orthogonally adjacent cells.
+* Requires the candidate cell to be statically legal.
+* Requires the candidate cell to be open under movement reservations.
+* Must remain inside the current building footprint when the citizen is performing internal movement.
+* Must not enter an unrelated building footprint.
+* Uses keyed deterministic randomness to order equivalent candidates.
+* Commits through the same proposal-resolution system.
+* Invalidates and replans the original route after the sidestep successfully commits.
+
+A failed sidestep leaves the original route unchanged.
+
+### 16.7 Extended deadlock recovery
+
+Complete and permanent gridlock is prohibited.
+
+After eight consecutive blocked movement opportunities, the citizen attempts a bounded route replan that may treat current citizen occupancy as temporary local obstacles or penalties.
+
+After twelve consecutive blocked movement opportunities, deterministic emergency recovery may authorize an otherwise legal atomic swap with the blocking citizen even when the blocker was not independently proposing the reverse move.
+
+Emergency recovery must not:
+
+* Enter a statically invalid cell
+* Enter an unrelated building
+* Move more than one cell
+* Teleport a citizen
+* Change the citizen’s goal
+* Consume nondeterministic randomness
+
+### 16.8 Global liveness requirement
+
+The movement system must satisfy this liveness contract:
+
+> In a connected walkable region containing either an available legal cell or a valid occupancy cycle, movement-ready citizens must not remain permanently unable to move.
+
+A global no-progress watchdog must detect consecutive ticks in which:
+
+* At least one citizen is movement-ready, and
+* No citizen movement commits.
+
+After sixteen such ticks, the resolver must perform deterministic bounded recovery by selecting the highest-waiting citizen and resolving a valid sidestep, swap, dependency-chain move, or occupancy-cycle rotation.
+
+The implementation may evolve, but total gridlock must remain impossible under the stated reachable-space condition.
+
+Adversarial gridlock scenarios must be included in automated tests.
 
 ---
 
-## 14. Balance-Test Apparatus
+## 17. Internal Building Movement
 
-The headless runner must test:
+Citizens inside a building wander randomly within its physical footprint while performing an activity.
 
-- Seed type and placement value
-- Exponential seed-cost pressure
-- Focused versus delayed research
-- Specialist, hybrid, and generalist paths
-- Core milestone pacing
-- Specialization combinations
-- Recompilation target scaling
-- Kernel module combinations
-- Repeatable optimization progression
-- Recovery from poor layouts
-- Long-run determinism and invariants
+Internal movement:
 
-Ticks may be measured for balance comparison. Ticks are not permitted as fixed unlock requirements.
+* Uses the same fixed-point movement credit.
+* Uses the same proposal-resolution-commit system.
+* Is constrained to cells in the current building footprint.
+* Respects other citizens inside the same building.
+* Does not change the current goal.
+* Does not affect activity duration.
+* Does not affect construction labor.
 
----
+A citizen may remain stationary when no internal move is available.
 
-## 15. Recommended MVP
-
-The first complete playable progression slice should contain:
-
-- Living, Working, and Services seeds
-- Services Core
-- One tier-1 Research Focus
-- Space 1: Apartments
-- Access 1: Better Job Matching
-- Activity 1: Schedule Chaining
-- Home, work, and service activities
-- Developer construction
-- Population growth
-- Chunk activation
-- Deterministic scenario runner
-
-Recompilation is not part of the MVP implementation. Its contract exists now so earlier systems do not block it later.
+Internal movement targets use keyed deterministic randomness.
 
 ---
 
-## 16. Design Summary
+## 18. Building Planning
 
-Idle City has two recurring player actions:
+### 18.1 Planning purpose
 
-1. Place district seeds.
-2. Purchase research.
+Buildings are not manually placed by the player.
 
-The six seed types are:
+Building planning autonomously creates incomplete buildings inside compatible zones.
 
-- Living
-- Working
-- Services
-- Learning
-- Industry
-- Entertainment
+### 18.2 Eligibility
 
-Research has:
+A new building-planning job may not begin when:
 
-- Six fixed Core Protocols
-- Six Space ranks
-- Six Access ranks
-- Six Activity ranks
-- One focused rank per Core tier
-- Permanently available delayed ranks at `2.50×` cost
-- One specialization at Core 4
-- A second specialization at Core 5
-- No third specialization in the same run
+```text
+citizens assigned to construction / total citizens >= 0.25
+```
 
-Each recompilation:
+When population is zero, the construction-assignment ratio is treated as zero.
 
-- Resets the city and run research.
-- Increases Prestige Level and Kernel Capacity.
-- Grants unrestricted and branch-aligned Kernel Points.
-- Expands a permanent Kernel Matrix.
-- Supports ongoing progression through repeatable diminishing-return optimizations.
+The 25% threshold prevents the planner from creating excessive construction backlog.
 
-The intended long-term loop is:
+It does not limit the number of workers that an already planned project may recruit.
 
-> Observe a need, place an influence or deepen a research path, watch the city reorganize, validate the resulting megacity, then recompile with a stronger and more specialized simulation kernel.
+The separate 50% construction rule protects fully assigned productive citizens during recruitment.
+
+### 18.3 Planning chance
+
+Each eligible nonsaturated zone receives one deterministic planning roll per logical tick when no planning job is already active for that zone.
+
+The initial chance is:
+
+```text
+planningChance =
+    0.02 × zoneFreeSpaceRatio
+```
+
+The result is clamped to `[0, 0.02]`.
+
+At a completely empty zone, this produces a 2% chance per tick.
+
+At five ticks per second, a full empty zone receives a successful regular planning roll after approximately ten seconds on average.
+
+A newly placed zone receives one immediate planning opportunity without waiting for a regular random roll.
+
+### 18.4 Free-space ratio
+
+The zone free-space ratio is:
+
+```text
+zone cells not covered by any active building exclusion shape
+divided by total zone cells
+```
+
+Incomplete and completed buildings both count.
+
+Exclusion-over-exclusion overlap is counted as covered space, but each cell contributes only once to the covered-cell count.
+
+The ratio is clamped to `[0, 1]`.
+
+### 18.5 Planning rolls
+
+Planning rolls use keyed deterministic randomness based on:
+
+```text
+world seed
+logical tick
+zone ID
+planning sequence
+"building-planning-roll"
+```
+
+The result must not depend on:
+
+* Zone array insertion order
+* Number of sub-tick calls
+* Renderer frame rate
+* Work-unit budget
+
+If multiple zones succeed during the same tick, at most one new world-level planning job begins.
+
+Successful zones are ordered through deterministic keyed selection weighted by their free-space ratios, with zone ID as the final tie-breaker.
+
+### 18.6 Incremental planning job
+
+Building placement search is a resumable deterministic job.
+
+The job records:
+
+* Zone ID
+* Archetype order
+* Transform order
+* Candidate-anchor order
+* Current candidate cursor
+* Valid candidates found
+* Planning sequence
+* Work consumed
+
+Candidate checks may be distributed across multiple simulation calls or completed ticks where necessary.
+
+The planning job must not expose partial candidate state to the renderer.
+
+### 18.7 Candidate validation
+
+A building candidate is valid only when:
+
+* The archetype matches the zone type.
+* Every physical-footprint cell lies inside the owning zone.
+* Every exclusion-shape cell lies inside the owning zone.
+* Its physical footprint overlaps no existing physical footprint.
+* Its physical footprint overlaps no existing exclusion shape.
+* Its exclusion shape overlaps no existing physical footprint.
+* No citizen currently occupies a candidate physical-footprint cell.
+* All physical cells are valid logical cells.
+* At least one assigned worker could theoretically reach the site when active world topology is considered.
+* No other explicit invariant fails.
+
+Candidate exclusion shapes may overlap existing exclusion shapes.
+
+### 18.8 Candidate ordering and selection
+
+The order in which transforms and anchors are considered is deterministically randomized using:
+
+```text
+world seed
+zone ID
+planning sequence
+archetype ID
+decision kind
+```
+
+The result must be stable for the same authoritative state.
+
+At most one incomplete building is created from one completed planning job.
+
+### 18.9 Site acceptance
+
+When a candidate is accepted:
+
+* A stable building ID is created.
+* The building begins incomplete with zero labor.
+* Its physical footprint becomes blocked to unrelated navigation.
+* Its placement relationships become authoritative.
+* Existing routes crossing the new physical footprint are invalidated.
+* The owning zone’s saturation state is updated.
+* Construction slots become available at subsequent goal selection.
+
+### 18.10 Saturation
+
+If an exhaustive planning job finds no valid candidate for a zone and archetype combination, that combination may be marked saturated.
+
+A saturated combination does not receive repeated full searches until relevant geometry changes.
+
+Relevant changes include:
+
+* Zone creation
+* Zone removal
+* Building removal through zone removal
+* Archetype or balance changes
+* Any future mechanic explicitly defined to free building space
+
+Saturation is an optimization state and must be deterministic.
+
+---
+
+## 19. Population Growth
+
+### 19.1 Population capacity
+
+Only completed Living buildings contribute population capacity.
+
+```text
+C = total completed home assignment capacity
+P = current total population
+```
+
+Incomplete homes do not contribute capacity.
+
+Population growth is possible only when:
+
+```text
+C > P
+```
+
+### 19.2 Growth pressure
+
+Population-growth pressure is:
+
+```text
+if P > 0:
+    pressure = max(0, C / P - 1)
+else if C > 0:
+    pressure = 1
+else:
+    pressure = 0
+```
+
+This makes growth faster when available capacity is large relative to current population and slower as the population approaches capacity.
+
+### 19.3 Growth chance
+
+The initial chance per tick is:
+
+```text
+populationGrowthChance =
+    min(0.10, 0.02 × pressure)
+```
+
+Examples:
+
+| Population | Capacity | Pressure | Chance per tick |
+| ---------: | -------: | -------: | --------------: |
+|          4 |        5 |     0.25 |            0.5% |
+|          4 |        6 |     0.50 |            1.0% |
+|          4 |        8 |     1.00 |            2.0% |
+|          1 |        6 |     5.00 |       10.0% cap |
+
+At most one citizen may be generated in one logical tick.
+
+### 19.4 Growth roll
+
+The growth roll uses keyed deterministic randomness based on:
+
+```text
+world seed
+logical tick
+population count
+completed home capacity
+population-growth sequence
+"population-growth-roll"
+```
+
+Changing the number of sub-tick calls must not affect the result.
+
+### 19.5 Selecting a home
+
+When growth succeeds:
+
+1. Gather completed Living buildings with an unassigned resident slot.
+2. Weight each building by its number of unassigned resident slots.
+3. Select a home through keyed deterministic weighted choice.
+4. Create a stable citizen ID.
+5. Assign the citizen to the selected home.
+6. Spawn the citizen in a deterministic cell inside that home’s physical footprint.
+7. Attempt to assign an available workplace through ordinary assignment rules.
+8. If no workplace is available, the citizen wanders after leaving or completing its initial home state.
+
+Population growth does not require available work capacity.
+
+Unemployed citizens are allowed and may contribute construction labor or wander until work becomes available.
+
+---
+
+## 20. Data and Activities
+
+### 20.1 Data
+
+Data is the only core currency.
+
+Data:
+
+* Is authoritative simulation state.
+* Changes only through explicit commands or workplace entry.
+* Must never become negative.
+* Is represented using an exact integer for the current core design.
+* Is independent of rendering.
+* Is independent of wall-clock time.
+
+### 20.2 Work production
+
+A citizen produces base Data when entering its assigned completed workplace.
+
+Base production is:
+
+```text
+1 Data per workplace entry
+```
+
+If the citizen’s leisure cooldown is greater than zero when the workplace arrival is processed:
+
+```text
+2 Data per workplace entry
+```
+
+Data is produced on entry, not after the work stay completes.
+
+### 20.3 Building stay durations
+
+After arriving inside a building, the citizen begins an activity.
+
+Initial durations are:
+
+* Home stay: 75 ticks
+* Work stay: 50 ticks
+* Leisure stay: 50 ticks
+
+The arrival tick initializes the timer.
+
+The timer begins decrementing during the next logical tick.
+
+### 20.4 Leisure cooldown
+
+When a leisure visit completes:
+
+```text
+leisureCooldownTicksRemaining = 1500
+```
+
+While cooldown is greater than zero:
+
+* The citizen may not choose another leisure goal.
+* Workplace entry produces double Data.
+
+Cooldown is decremented during the timer stage at the start of a tick.
+
+The doubled work-entry rule checks the post-decrement cooldown value during arrival processing.
+
+A citizen with cooldown `1` at the beginning of the tick reaches `0` before movement and does not receive doubled Data from a workplace entry later in that tick.
+
+---
+
+## 21. World Rendering
+
+### 21.1 Snapshot authority
+
+The renderer consumes completed detached snapshots.
+
+It must not access private partial-tick state.
+
+Rendering interpolates between the two most recent completed citizen positions.
+
+Interpolation never feeds back into simulation state.
+
+### 21.2 Infinite-plane presentation
+
+The renderer presents the world as a continuous plane.
+
+Chunk boundaries are not visibly displayed during ordinary play.
+
+Ground geometry may be stored as:
+
+* One mesh per visible chunk
+* One mesh per group of chunks
+* Another bounded batching strategy
+
+The chosen batching strategy is renderer-only.
+
+### 21.3 Zone rendering
+
+Zones are always visibly represented as light-colored ground regions with thick outlines.
+
+Initial colors are:
+
+* Living: green
+* Working: blue
+* Leisure: orange
+
+Zone rendering must remain visible beneath or around buildings.
+
+Overlapping zone visualization is unnecessary because zones may not overlap.
+
+### 21.4 Building rendering
+
+Initial visuals are:
+
+* Single House:
+
+  * Green
+  * Two blocks high
+* Small Shop:
+
+  * Blue
+  * Three blocks high
+* Small Park:
+
+  * Green ground
+  * A small number of tree-like details
+
+Incomplete buildings must visibly communicate construction progress.
+
+Construction visuals may interpolate or animate between authoritative snapshots, but renderer animation must not create additional authoritative labor or phases.
+
+### 21.5 Citizen rendering
+
+Citizens are rendered from logical grid positions using centralized logical-to-world conversion.
+
+Citizen interpolation uses:
+
+* Previous completed-tick position
+* Current completed-tick position
+* Renderer-owned interpolation progress
+
+The renderer may visually distinguish:
+
+* Ordinary citizens
+* Construction-assigned citizens
+* Citizens on leisure cooldown
+
+These distinctions are visual only.
+
+### 21.6 Stable-ID reconciliation
+
+Renderer layers reconcile by stable authoritative ID:
+
+```text
+snapshot-only ID -> create
+shared ID        -> update
+renderer-only ID -> dispose
+```
+
+Repeated rendering of an unchanged snapshot must not duplicate resources.
+
+---
+
+## 22. Player Interface
+
+The core interface should expose:
+
+* Current Data
+* Current population
+* Total home capacity
+* Number of construction-assigned citizens
+* Pause control
+* Normal-speed control
+* Fast-speed control
+* Living-zone placement
+* Working-zone placement
+* Leisure-zone placement
+* Current cost of each zone type
+* Zone removal
+* Basic building inspection
+* Construction labor progress
+* Building assignment capacity
+* Citizen assignment inspection where useful
+
+The normal interaction model is mouse- and touch-friendly.
+
+The game must not require:
+
+* Keyboard input
+* Text entry
+* Numeric steppers
+* Manual citizen selection for assignment
+* Manual building placement
+
+Player commands are validated authoritatively by the simulation.
+
+The UI may preview likely placement results, but it must not duplicate authoritative validation as the final source of truth.
+
+---
+
+## 23. Starting State
+
+The default world starts with:
+
+* Four citizens near `(0, 0)`
+* 10 Data
+* No zones
+* No buildings
+* No incomplete buildings
+* No home assignments
+* No work assignments
+* No leisure cooldowns
+
+The initial citizen cells are:
+
+```text
+(0, 0)
+(1, 0)
+(0, 1)
+(1, 1)
+```
+
+If configuration or future world initialization makes one of these cells invalid, startup selects the nearest valid distinct cells in stable row-major order.
+
+All four citizens initially wander.
+
+The first Living zone costs 4 Data.
+
+The first Working zone costs 6 Data.
+
+The player can therefore purchase one initial Living zone and one initial Working zone with the starting 10 Data.
+
+---
+
+## 24. Initial Balance Values
+
+### 24.1 Simulation
+
+| Parameter                                      |            Initial value |
+| ---------------------------------------------- | -----------------------: |
+| Target tick rate                               |           5 ticks/second |
+| Fixed-point units per cell                     |                     1024 |
+| Citizen movement speed                         |           512 units/tick |
+| Sidestep threshold                             |  4 blocked opportunities |
+| Local replan threshold                         |  8 blocked opportunities |
+| Emergency recovery threshold                   | 12 blocked opportunities |
+| Global no-progress threshold                   |                 16 ticks |
+| New-project construction ratio block           |                      25% |
+| Fully assigned citizen construction protection |                      50% |
+| Planning coefficient                           |                     0.02 |
+| Population-growth coefficient                  |                     0.02 |
+| Maximum population-growth chance               |             10% per tick |
+| Wander radius                                  |       16 cells Chebyshev |
+
+### 24.2 Data production
+
+| Parameter                                 | Initial value |
+| ----------------------------------------- | ------------: |
+| Base Data per workplace entry             |             1 |
+| Leisure-enhanced Data per workplace entry |             2 |
+| Home stay                                 |      75 ticks |
+| Work stay                                 |      50 ticks |
+| Leisure stay                              |      50 ticks |
+| Leisure cooldown                          |    1500 ticks |
+
+### 24.3 Zones
+
+| Zone          | Base cost |    Size |
+| ------------- | --------: | ------: |
+| Small Living  |    4 Data | 13 × 13 |
+| Small Working |    6 Data | 13 × 13 |
+| Small Leisure |   40 Data |   8 × 8 |
+
+Zone-cost formula:
+
+```text
+ceil(base cost × 1.25 ^ active same-type zone count)
+```
+
+### 24.4 Single House
+
+| Property                     |    Value |
+| ---------------------------- | -------: |
+| Zone type                    |   Living |
+| Physical footprint           |    2 × 2 |
+| Exclusion shape              |    4 × 4 |
+| Resident capacity            |        1 |
+| Construction-worker capacity |        1 |
+| Required labor               |      100 |
+| Visual height                | 2 blocks |
+
+The exclusion shape extends one cell beyond the physical footprint on every side.
+
+### 24.5 Small Shop
+
+| Property                     |    Value |
+| ---------------------------- | -------: |
+| Zone type                    |  Working |
+| Physical footprint           |    3 × 3 |
+| Exclusion shape              |    5 × 5 |
+| Worker capacity              |        4 |
+| Construction-worker capacity |        2 |
+| Required labor               |      300 |
+| Visual height                | 3 blocks |
+
+The exclusion shape extends one cell beyond the physical footprint on every side.
+
+### 24.6 Small Park
+
+| Property                     |                   Value |
+| ---------------------------- | ----------------------: |
+| Zone type                    |                 Leisure |
+| Physical footprint           |                   6 × 6 |
+| Exclusion shape              |                   8 × 8 |
+| Visitor capacity             |                       5 |
+| Construction-worker capacity |                       2 |
+| Required labor               |                     600 |
+| Visual form                  | Green ground with trees |
+
+The exclusion shape extends one cell beyond the physical footprint on every side.
+
+---
+
+## 25. Authoritative Commands
+
+Initial authoritative commands include:
+
+```ts
+placeZone(...)
+removeZone(...)
+```
+
+Commands must:
+
+* Be validated entirely inside the simulation
+* Return structured accepted or rejected results
+* Use centralized costs
+* Use stable IDs
+* Apply only at defined tick boundaries
+* Be mutation-free when rejected
+* Avoid consuming randomness when rejected
+
+A generic command framework should not be introduced until multiple commands clearly benefit from one.
+
+---
+
+## 26. Snapshot Requirements
+
+Ordinary completed snapshots should include enough detached state for:
+
+* Rendering
+* UI
+* Balance analysis
+* Invariant checks
+* Stable hashing
+
+Expected snapshot concepts include:
+
+* Tick number
+* Seed identity or deterministic random state
+* Data
+* Population
+* Zone definitions and rectangles
+* Building definitions and states
+* Construction labor
+* Building assignments
+* Citizen positions
+* Previous citizen positions
+* Citizen goals or public activity state
+* Home and work references
+* Leisure cooldown
+* Movement wait state where useful
+* Planning-job summary
+* Structural counters
+* Invariant failures in headless scenarios
+
+Private implementation buffers should not be exposed unless needed.
+
+Snapshot reads must not:
+
+* Advance work
+* Consume randomness
+* Change revisions
+* Change counters
+* Complete pending stages
+* Alter hashes
+
+---
+
+## 27. Required Invariants
+
+The simulation must continuously preserve these invariants.
+
+### 27.1 Identity and references
+
+* Every entity ID is unique.
+* Every building references an existing zone.
+* Every building archetype matches its zone type.
+* Every home assignment references a completed Living building.
+* Every work assignment references a completed Working building.
+* Every construction assignment references an existing incomplete building.
+* Every leisure reservation references an existing completed Leisure building.
+
+### 27.2 Geometry
+
+* Zones do not overlap.
+* Every building physical footprint lies inside its zone.
+* Every building exclusion shape lies inside its zone.
+* Physical footprints do not overlap.
+* A physical footprint does not overlap another building’s exclusion shape.
+* An exclusion shape does not overlap another building’s physical footprint.
+* Exclusion shapes may overlap one another.
+* Citizens occupy valid logical cells.
+* Citizens do not occupy unrelated building footprints.
+
+### 27.3 Capacity
+
+* Home assignment occupancy does not exceed resident capacity.
+* Work assignment occupancy does not exceed worker capacity.
+* Leisure reservations do not exceed visitor capacity.
+* Construction assignments do not exceed construction-worker capacity.
+* Population does not exceed completed home capacity after a completed population-growth transition.
+* Zone removal may temporarily leave population greater than home capacity, but no invalid home assignments remain.
+
+### 27.4 Movement
+
+* Every committed move is orthogonally adjacent.
+* A citizen moves at most once per tick.
+* A citizen moves at most one cell per tick.
+* Movement credit remains within `[0, 1024]`.
+* A successful move consumes exactly 1024 credit.
+* A blocked move consumes no credit.
+* No two citizens end a movement commit in the same cell.
+* Valid swaps and movement cycles commit atomically.
+* Different proposal enumeration orders produce the same resolution.
+* Permanent gridlock does not occur under the liveness conditions.
+
+### 27.5 Economy and timers
+
+* Data is a nonnegative integer.
+* Labor is nonnegative.
+* Labor completed does not exceed required labor for an incomplete building.
+* Activity timers are nonnegative integers.
+* Leisure cooldown is a nonnegative integer.
+* Zone costs use active same-type zone count.
+* Zone removal gives no refund.
+
+### 27.6 Determinism
+
+* Repeated identical scenarios produce identical snapshots.
+* Repeated identical scenarios produce identical hashes.
+* Different tick-work budgets produce identical committed results.
+* Snapshot frequency does not affect outcomes.
+* Renderer frame rate does not affect outcomes.
+* Rejected commands do not mutate state.
+* Rejected commands do not consume IDs or randomness.
+
+---
+
+## 28. Testing Strategy
+
+### 28.1 Unit tests
+
+Use focused tests for:
+
+* Chunk conversion
+* Negative coordinates
+* Fixed-point movement
+* Zone-cost formulas
+* Zone placement
+* Zone removal
+* Footprint transforms
+* Exclusion-shape validation
+* Building-planning rolls
+* Building-planning candidate order
+* Construction-worker selection
+* Assignment ranking
+* Population-growth chance
+* Population home selection
+* Data production
+* Leisure cooldown
+* A* tie-breaking
+* Source and destination building passability
+* Movement target conflicts
+* Swaps
+* Three-or-more movement cycles
+* Sidesteps
+* Emergency recovery
+* Mutation-free rejection
+* Stable serialization
+* Stable hashes
+
+### 28.2 Simulation integration tests
+
+Integration scenarios should verify:
+
+* Initial four-citizen opening
+* First Living and Working zone purchase
+* Immediate planning opportunities
+* House construction
+* Shop construction
+* First home/work assignments
+* First Data production
+* Population growth with spare housing
+* Unemployed citizen wandering
+* Later workplace assignment
+* Leisure construction
+* Leisure reservation capacity
+* Leisure cooldown
+* Doubled Data
+* Zone removal
+* Assignment loss after removal
+* Cost reduction after removal
+* Routes invalidated by new construction
+* Citizens finishing current activity after reassignment
+* Long-run progress
+* No invalid references
+* No capacity violations
+* No permanent gridlock
+
+### 28.3 Tick-slicing tests
+
+Every major deterministic scenario should run with several work budgets, including:
+
+```text
+1 work unit
+small uneven budget
+medium budget
+effectively unlimited budget
+```
+
+All runs must produce the same completed snapshot and hash after the same number of completed ticks.
+
+### 28.4 Gridlock tests
+
+Adversarial movement scenarios must include:
+
+* Direct head-on pairs
+* Three-citizen cycles
+* Four-citizen cycles
+* Narrow corridors
+* Intersections
+* Citizens leaving and entering buildings
+* Multiple citizens targeting one cell
+* Fully occupied local rings
+* Blocked chains with one available escape cell
+* Repeated opposing flows
+
+Every scenario must demonstrate bounded progress.
+
+### 28.5 Renderer tests
+
+Use Babylon.js `NullEngine` where practical.
+
+Test:
+
+* Scene creation
+* Scene disposal
+* Zone rendering
+* Building creation and removal
+* Construction-progress updates
+* Citizen interpolation
+* Stable-ID reconciliation
+* No duplicate resources
+* Snapshot immutability
+* Hidden chunk boundaries
+* Cross-chunk zones
+
+### 28.6 Browser tests
+
+Use Playwright for:
+
+* Startup
+* No console errors
+* Canvas creation
+* Mouse zone placement
+* Touch zone placement
+* Invalid overlap rejection
+* Zone-cost display
+* Zone removal
+* Pause
+* Normal speed
+* Fast speed
+* Construction visibility
+* Population growth
+* Data growth
+* Leisure behavior
+* Reset
+* Mobile viewport usability
+
+Screenshot tests must not replace deterministic simulation tests.
+
+---
+
+## 29. Balance Runner Scenarios
+
+The headless balance runner should eventually include named scenarios for:
+
+* `opening`
+* `living-first`
+* `working-first`
+* `first-data`
+* `housing-surplus`
+* `workplace-surplus`
+* `population-growth`
+* `construction-cap`
+* `construction-protection`
+* `zone-saturation`
+* `zone-removal`
+* `commute-reassignment`
+* `leisure-loop`
+* `cross-chunk-zone`
+* `blocked-corridor`
+* `movement-cycle`
+* `gridlock-recovery`
+* `long-run-core-loop`
+* `work-budget-equivalence`
+
+Machine-readable output should report at least:
+
+* Completed ticks
+* Data
+* Population
+* Home capacity
+* Work capacity
+* Zone counts by type
+* Building counts by type and state
+* Construction-worker count
+* Labor contributed
+* Completed buildings
+* Work entries
+* Leisure visits
+* Population-growth attempts and successes
+* Planning attempts and successes
+* Pathfinding expansions
+* Movement proposals
+* Committed movements
+* Blocked movements
+* Sidesteps
+* Replans
+* Emergency recoveries
+* Global no-progress recoveries
+* Invariant failures
+* Final stable hash
+
+---
+
+## 30. Migration Rules
+
+The current repository contains systems that do not belong in this target design.
+
+Migration must proceed through bounded steps.
+
+Agents must:
+
+* Inspect current code before changing it.
+* Preserve tests unrelated to the assigned step where practical.
+* Add transitional adapters only when explicitly useful.
+* Avoid implementing later migration steps early.
+* Avoid preserving obsolete behavior merely because it currently exists.
+* Remove old concepts when the assigned migration step reaches them.
+* Keep the simulation executable after each migration step.
+* Keep deterministic headless validation working after each step.
+* Update this document only for deliberate design changes, not implementation progress.
+
+During migration, temporary coexistence is allowed between:
+
+* Old and new APIs
+* Old and new snapshot fields
+* Old and new renderer layers
+* Old and new scenario fixtures
+
+Temporary coexistence must be narrowly scoped and removed in a later explicit step.
+
+The migration should prioritize establishing the new authoritative model before polishing final rendering or UI.
+
+---
+
+## 31. Definition of the Core Milestone
+
+The core gameplay milestone is complete when a fresh deterministic run can:
+
+1. Start with four wandering citizens and 10 Data.
+2. Place one Living zone and one Working zone.
+3. Autonomously plan incomplete buildings.
+4. Assign citizens to construction.
+5. Complete at least one house and one shop.
+6. Assign citizens to homes and work.
+7. Produce Data through work entry.
+8. Create additional population from spare completed home capacity.
+9. Assign or later reassign new citizens to work.
+10. Place and develop a Leisure zone.
+11. Complete leisure visits.
+12. Double qualifying workplace-entry Data during leisure cooldown.
+13. Remove zones without refunds.
+14. Recover from adversarial local movement congestion.
+15. Produce identical results under different simulation work budgets.
+16. Run headlessly for a long scenario without invariant failures.
+
+Specialization, prestige, research, demand, advanced traffic, and other progression systems remain outside this milestone.
