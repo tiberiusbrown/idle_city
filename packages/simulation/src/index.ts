@@ -110,6 +110,8 @@ export const DEFAULT_CITIZEN_MOVEMENT_SPEED = 512;
 export const WANDERING_CHEBYSHEV_RADIUS = 16;
 export const DEFAULT_HOME_STAY_TICKS = 75;
 export const DEFAULT_WORK_STAY_TICKS = 50;
+export const DEFAULT_POPULATION_GROWTH_COEFFICIENT = 0.02;
+export const MAX_POPULATION_GROWTH_CHANCE = 0.1;
 /** Generic activity duration retained for compatibility with the earlier activity model. */
 export const DEFAULT_GENERIC_BUILDING_ACTIVITY_TICKS = 1;
 
@@ -215,6 +217,8 @@ export interface SimulationOptions {
   readonly homeStayTicks?: number;
   /** Test-only override for the authoritative work-stay duration. */
   readonly workStayTicks?: number;
+  /** Test-only keyed-roll override for forcing a population-growth outcome. */
+  readonly populationGrowthRollOverride?: number;
 }
 
 /** The authoritative order of work inside one logical tick. */
@@ -260,6 +264,8 @@ export interface MovementMetrics {
   readonly planningAttempts: number;
   readonly planningSuccesses: number;
   readonly planningCandidateChecks: number;
+  readonly populationGrowthAttempts: number;
+  readonly populationGrowthSuccesses: number;
 }
 
 export type PlanningJobStatus = 'idle' | 'accepted' | 'saturated';
@@ -309,6 +315,7 @@ export interface SimulationSnapshot {
   readonly tick: number;
   readonly data: number;
   readonly population: number;
+  readonly completedHomeCapacity: number;
   readonly citizens: readonly CitizenSnapshot[];
   readonly zones: readonly ZoneSnapshot[];
   readonly nextZoneCosts: Readonly<Record<ZoneType, number>>;
@@ -337,6 +344,8 @@ interface MutableMovementMetrics {
   planningAttempts: number;
   planningSuccesses: number;
   planningCandidateChecks: number;
+  populationGrowthAttempts: number;
+  populationGrowthSuccesses: number;
 }
 
 interface CitizenRouteState {
@@ -403,12 +412,15 @@ interface AuthoritativeState {
   readonly buildings: BuildingInstance[];
   nextZoneId: number;
   nextBuildingId: number;
+  nextCitizenId: number;
   readonly world: WorldState;
   readonly metrics: MutableMovementMetrics;
   readonly planningChance: number;
   readonly constructionLaborRequirements: Readonly<Record<BuildingArchetypeId, number>>;
   lastPlanningJob: PlanningJobSnapshot;
   movementNoProgressTicks: number;
+  populationGrowthSequence: number;
+  populationGrowthRollOverride: number | null;
 }
 
 interface SelectedPlanningCandidate {
@@ -499,6 +511,8 @@ function createMutableMetrics(): MutableMovementMetrics {
     planningAttempts: 0,
     planningSuccesses: 0,
     planningCandidateChecks: 0,
+    populationGrowthAttempts: 0,
+    populationGrowthSuccesses: 0,
   };
 }
 
@@ -511,6 +525,8 @@ function copyMetrics(metrics: MutableMovementMetrics): MutableMovementMetrics {
     planningAttempts: metrics.planningAttempts,
     planningSuccesses: metrics.planningSuccesses,
     planningCandidateChecks: metrics.planningCandidateChecks,
+    populationGrowthAttempts: metrics.populationGrowthAttempts,
+    populationGrowthSuccesses: metrics.populationGrowthSuccesses,
   };
 }
 
@@ -545,6 +561,16 @@ function validateActivityDuration(name: string, ticks: number): number {
     throw new Error(`${name} must be a positive safe integer; received ${String(ticks)}.`);
   }
   return ticks;
+}
+
+function validatePopulationGrowthRollOverride(value: number | undefined): number | null {
+  if (value === undefined) return null;
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(
+      `Population growth roll overrides must be finite numbers between 0 and 1; received ${String(value)}.`,
+    );
+  }
+  return value;
 }
 
 function createConstructionLaborRequirements(
@@ -613,6 +639,30 @@ function chebyshevDistance(left: GridPosition, right: GridPosition): number {
 
 function isWithinWanderingBounds(anchor: GridPosition, position: GridPosition): boolean {
   return chebyshevDistance(anchor, position) <= WANDERING_CHEBYSHEV_RADIUS;
+}
+
+/** Returns the chance for one population-growth roll in the current state. */
+export function calculatePopulationGrowthChance(
+  completedHomeCapacity: number,
+  population: number,
+): number {
+  if (
+    !Number.isSafeInteger(completedHomeCapacity) ||
+    completedHomeCapacity < 0 ||
+    !Number.isSafeInteger(population) ||
+    population < 0
+  ) {
+    throw new Error('Population and completed home capacity must be nonnegative safe integers.');
+  }
+  if (completedHomeCapacity <= population) return 0;
+
+  const pressure =
+    population > 0
+      ? Math.max(0, completedHomeCapacity / population - 1)
+      : completedHomeCapacity > 0
+        ? 1
+        : 0;
+  return Math.min(MAX_POPULATION_GROWTH_CHANCE, DEFAULT_POPULATION_GROWTH_COEFFICIENT * pressure);
 }
 
 function createWanderOffsets(): readonly (readonly [number, number])[] {
@@ -850,11 +900,15 @@ function createInitialState(
   constructionLaborRequirements: Readonly<Record<BuildingArchetypeId, number>>,
   homeStayTicks: number,
   workStayTicks: number,
+  populationGrowthRollOverride: number | undefined,
 ): AuthoritativeState {
   const validatedSeed = validateSeed(seed);
   const validatedPlanningChance = validatePlanningChance(planningChance);
   const validatedHomeStayTicks = validateActivityDuration('Home-stay duration', homeStayTicks);
   const validatedWorkStayTicks = validateActivityDuration('Work-stay duration', workStayTicks);
+  const validatedPopulationGrowthRollOverride = validatePopulationGrowthRollOverride(
+    populationGrowthRollOverride,
+  );
   const world = createWorld();
   const citizens = INITIAL_CITIZEN_POSITIONS.map((position, index) => {
     const citizen = createCitizenState(createCitizenId(`citizen-${String(index + 1)}`), position);
@@ -873,12 +927,15 @@ function createInitialState(
     buildings: [],
     nextZoneId: 1,
     nextBuildingId: 1,
+    nextCitizenId: INITIAL_CITIZEN_POSITIONS.length + 1,
     world,
     metrics: createMutableMetrics(),
     planningChance: validatedPlanningChance,
     constructionLaborRequirements,
     lastPlanningJob: createIdlePlanningJobSnapshot(),
     movementNoProgressTicks: 0,
+    populationGrowthSequence: 0,
+    populationGrowthRollOverride: validatedPopulationGrowthRollOverride,
   };
 }
 
@@ -968,6 +1025,7 @@ function createSnapshot(state: AuthoritativeState): SimulationSnapshot {
     tick: state.tick,
     data: state.data,
     population: state.citizens.length,
+    completedHomeCapacity: calculateCompletedHomeCapacity(state),
     citizens: state.citizens.map((citizen) => ({
       id: citizen.id,
       position: copySnapshotPosition(citizen.position),
@@ -1016,6 +1074,8 @@ function createMetricsSnapshot(metrics: MutableMovementMetrics): MovementMetrics
     planningAttempts: metrics.planningAttempts,
     planningSuccesses: metrics.planningSuccesses,
     planningCandidateChecks: metrics.planningCandidateChecks,
+    populationGrowthAttempts: metrics.populationGrowthAttempts,
+    populationGrowthSuccesses: metrics.populationGrowthSuccesses,
   };
 }
 
@@ -1066,12 +1126,15 @@ function createPendingTick(
       buildings: state.buildings.map(cloneBuildingInstance),
       nextZoneId: state.nextZoneId,
       nextBuildingId: state.nextBuildingId,
+      nextCitizenId: state.nextCitizenId,
       world: cloneWorld(state.world),
       metrics: copyMetrics(state.metrics),
       planningChance: state.planningChance,
       constructionLaborRequirements: state.constructionLaborRequirements,
       lastPlanningJob: { ...state.lastPlanningJob },
       movementNoProgressTicks: state.movementNoProgressTicks,
+      populationGrowthSequence: state.populationGrowthSequence,
+      populationGrowthRollOverride: state.populationGrowthRollOverride,
     },
     cursors: createTickCursors(),
     commands: commands.map(copyPlaceZoneCommand),
@@ -1351,6 +1414,186 @@ function assignCitizenWork(
   });
   citizen.workBuildingId = workplace.id;
   return true;
+}
+
+function calculateCompletedHomeCapacity(state: AuthoritativeState): number {
+  return state.buildings.reduce((capacity, building) => {
+    if (building.state.kind !== 'complete') return capacity;
+    return capacity + getBuildingArchetype(building.archetypeId).capacities.residents;
+  }, 0);
+}
+
+interface PopulationGrowthHomeCandidate {
+  readonly building: BuildingInstance;
+  readonly vacantResidentSlots: number;
+}
+
+interface PopulationGrowthSpawn {
+  readonly home: BuildingInstance;
+  readonly position: GridPosition;
+}
+
+function compareGridPositions(left: GridPosition, right: GridPosition): number {
+  return left.y - right.y || left.x - right.x;
+}
+
+function selectPopulationGrowthSpawnCell(options: {
+  readonly state: AuthoritativeState;
+  readonly home: BuildingInstance;
+  readonly population: number;
+  readonly completedHomeCapacity: number;
+  readonly populationGrowthSequence: number;
+}): GridPosition | null {
+  const occupiedCells = new Set(options.state.citizens.map((citizen) => cellKey(citizen.position)));
+  const cells = [...options.home.physicalCells].map(copyPosition).sort(compareGridPositions);
+  if (cells.length === 0) return null;
+
+  const firstIndex = Math.floor(
+    keyedPlanningUnit({
+      seed: options.state.seed,
+      tick: options.state.tick,
+      population: options.population,
+      completedHomeCapacity: options.completedHomeCapacity,
+      populationGrowthSequence: options.populationGrowthSequence,
+      homeBuildingId: options.home.id,
+      purpose: 'population-growth-spawn-cell',
+    }) * cells.length,
+  );
+
+  for (let offset = 0; offset < cells.length; offset += 1) {
+    const index = (firstIndex + offset) % cells.length;
+    const cell = cells[index];
+    if (cell !== undefined && !occupiedCells.has(cellKey(cell))) return cell;
+  }
+  return null;
+}
+
+function selectPopulationGrowthHome(options: {
+  readonly state: AuthoritativeState;
+  readonly population: number;
+  readonly completedHomeCapacity: number;
+  readonly populationGrowthSequence: number;
+}): PopulationGrowthSpawn | null {
+  const homeCapacity = getBuildingArchetype('single-house').capacities.residents;
+  const candidates = options.state.buildings
+    .filter(
+      (building) => building.state.kind === 'complete' && building.archetypeId === 'single-house',
+    )
+    .map((building): PopulationGrowthHomeCandidate => ({
+      building,
+      vacantResidentSlots: homeCapacity - building.assignments.residentCitizenIds.length,
+    }))
+    .filter((candidate) => candidate.vacantResidentSlots > 0)
+    .sort((left, right) => compareStableIds(left.building.id, right.building.id));
+
+  if (candidates.length === 0) return null;
+
+  const totalVacantSlots = candidates.reduce(
+    (total, candidate) => total + candidate.vacantResidentSlots,
+    0,
+  );
+  const weightedSlot = Math.floor(
+    keyedPlanningUnit({
+      seed: options.state.seed,
+      tick: options.state.tick,
+      population: options.population,
+      completedHomeCapacity: options.completedHomeCapacity,
+      populationGrowthSequence: options.populationGrowthSequence,
+      purpose: 'population-growth-home-selection',
+    }) * totalVacantSlots,
+  );
+  let selectedIndex = 0;
+  let slotStart = 0;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    if (candidate === undefined) continue;
+    const slotEnd = slotStart + candidate.vacantResidentSlots;
+    if (weightedSlot < slotEnd) {
+      selectedIndex = index;
+      break;
+    }
+    slotStart = slotEnd;
+  }
+
+  const orderedCandidates = [
+    candidates[selectedIndex],
+    ...candidates.filter((_candidate, index) => index !== selectedIndex),
+  ];
+  for (const candidate of orderedCandidates) {
+    if (candidate === undefined) continue;
+    const position = selectPopulationGrowthSpawnCell({
+      state: options.state,
+      home: candidate.building,
+      population: options.population,
+      completedHomeCapacity: options.completedHomeCapacity,
+      populationGrowthSequence: options.populationGrowthSequence,
+    });
+    if (position !== null) return { home: candidate.building, position };
+  }
+  return null;
+}
+
+function assignCitizenToAvailableWorkplace(state: AuthoritativeState, citizen: CitizenState): void {
+  const home = findCompletedBuilding(state, citizen.homeBuildingId, 'single-house');
+  const workCapacity = getBuildingArchetype('small-shop').capacities.workers;
+  const workplaces = state.buildings
+    .filter(
+      (building) =>
+        building.state.kind === 'complete' &&
+        building.archetypeId === 'small-shop' &&
+        building.assignments.workerCitizenIds.length < workCapacity,
+    )
+    .sort(
+      (left, right) =>
+        (home === undefined ? 0 : buildingDistance(home, left)) -
+          (home === undefined ? 0 : buildingDistance(home, right)) ||
+        compareStableIds(left.id, right.id),
+    );
+
+  for (const workplace of workplaces) {
+    if (assignCitizenWork(state, citizen, workplace)) return;
+  }
+}
+
+function processPopulationGrowth(state: AuthoritativeState): void {
+  const population = state.citizens.length;
+  const completedHomeCapacity = calculateCompletedHomeCapacity(state);
+  if (completedHomeCapacity <= population) return;
+
+  const populationGrowthSequence = state.populationGrowthSequence + 1;
+  state.populationGrowthSequence = populationGrowthSequence;
+  state.metrics.populationGrowthAttempts += 1;
+
+  const chance = calculatePopulationGrowthChance(completedHomeCapacity, population);
+  const roll =
+    state.populationGrowthRollOverride ??
+    keyedPlanningUnit({
+      seed: state.seed,
+      tick: state.tick,
+      population,
+      completedHomeCapacity,
+      populationGrowthSequence,
+      purpose: 'population-growth-roll',
+    });
+  if (roll >= chance) return;
+
+  const selection = selectPopulationGrowthHome({
+    state,
+    population,
+    completedHomeCapacity,
+    populationGrowthSequence,
+  });
+  if (selection === null) return;
+
+  const citizenId = createCitizenId(`citizen-${String(state.nextCitizenId)}`);
+  const citizen = createCitizenState(citizenId, selection.position);
+  if (!assignCitizenHome(state, citizen, selection.home)) return;
+
+  state.nextCitizenId += 1;
+  state.citizens.push(citizen);
+  ensureChunkAt(state.world, citizen.position);
+  assignCitizenToAvailableWorkplace(state, citizen);
+  state.metrics.populationGrowthSuccesses += 1;
 }
 
 interface BuildingDistanceCandidate {
@@ -2894,7 +3137,9 @@ function processStage(pending: PendingTick, stage: TickStage): boolean {
     case 'apply-assignment-changes':
       return processApplyAssignmentChanges(pending);
     case 'evaluate-population-growth':
-      return consumeSingleStage(pending.cursors.evaluatePopulationGrowth);
+      consumeSingleStage(pending.cursors.evaluatePopulationGrowth);
+      processPopulationGrowth(pending.nextState);
+      return true;
     case 'advance-building-planning':
       return processAdvanceBuildingPlanning(pending);
     case 'commit-completed-tick':
@@ -2922,9 +3167,12 @@ function hashableState(state: AuthoritativeState): unknown {
     buildings: state.buildings,
     nextZoneId: state.nextZoneId,
     nextBuildingId: state.nextBuildingId,
+    nextCitizenId: state.nextCitizenId,
     planningChance: state.planningChance,
     constructionLaborRequirements: state.constructionLaborRequirements,
     lastPlanningJob: state.lastPlanningJob,
+    populationGrowthSequence: state.populationGrowthSequence,
+    populationGrowthRollOverride: state.populationGrowthRollOverride,
     chunks: getSortedChunks(state.world),
     metrics: state.metrics,
   };
@@ -2937,6 +3185,7 @@ export function createSimulation(options: SimulationOptions = {}): Simulation {
     createConstructionLaborRequirements(options.constructionLaborRequirements),
     options.homeStayTicks ?? DEFAULT_HOME_STAY_TICKS,
     options.workStayTicks ?? DEFAULT_WORK_STAY_TICKS,
+    options.populationGrowthRollOverride,
   );
   let pendingTick: PendingTick | null = null;
   let queuedCommands: SimulationCommand[] = [];

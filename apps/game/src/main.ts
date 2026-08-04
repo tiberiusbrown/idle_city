@@ -187,11 +187,7 @@ const updateHud = (snapshot: ReturnType<typeof simulation.getSnapshot>): void =>
   const workBuildings = completedBuildings.filter(
     (building) => getBuildingArchetype(building.archetypeId).capacities.workers > 0,
   );
-  const homeCapacity = homeBuildings.reduce(
-    (capacity, building) =>
-      capacity + getBuildingArchetype(building.archetypeId).capacities.residents,
-    0,
-  );
+  const homeCapacity = snapshot.completedHomeCapacity;
   const workCapacity = workBuildings.reduce(
     (capacity, building) =>
       capacity + getBuildingArchetype(building.archetypeId).capacities.workers,

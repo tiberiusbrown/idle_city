@@ -12,6 +12,7 @@ describe('simulation skeleton', () => {
       tick: 0,
       data: 10,
       population: 4,
+      completedHomeCapacity: 0,
       citizens: [
         {
           id: 'citizen-1',
